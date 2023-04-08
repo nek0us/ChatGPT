@@ -1,13 +1,13 @@
 from setuptools import setup, find_packages 
 
-with open("README.md", "r") as readme_file:
+with open("README.md", "r",encoding="utf8") as readme_file:
     readme = readme_file.read()
 
 requirements = ["playwright","aioconsole"] # 这里填依赖包信息
 
 setup(
     name="ChatGPTWeb",
-    version="0.0.1",
+    version="0.0.4",
     author="nek0us",
     author_email="nekouss@gmail.com",
     description="a ChatGPT API,no web ui",

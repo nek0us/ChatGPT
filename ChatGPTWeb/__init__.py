@@ -1,3 +1,3 @@
-from GPT import chatgpt
+from .ChatGPTWeb import chatgpt
 
 __all__ = ['chatgpt']
