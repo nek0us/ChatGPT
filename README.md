@@ -1,8 +1,20 @@
 # ChatGPT
-a ChatGPT api,no web ui
+ChatGPT api,not openai api,no web ui
 
 一个不怎么使用网页的ChatGPT api
 [![PyPi](https://img.shields.io/pypi/v/ChatGPTWeb.svg)](https://pypi.python.org/pypi/ChatGPTWeb)
+
+# 待填坑
+-   [x] 网页api对话构成
+-   [x] 多人格预设与切换
+-   [x] 聊天记录存储与导出
+-   [x] 自定义人设
+-   [x] 重置聊天或回到某一时刻
+-   [ ] 多账号并发
+-   [ ] GPT4
+-   [ ] 代码过于混乱等优化
+-   [ ] 抽空完善readme
+
 
 # 安装/Install
 Ubuntu & Windows
@@ -18,6 +30,8 @@ playwright install firefox
 
 ### MsgData() 数据类型
 ```bash 
+from ChatGPTWeb.config import MsgData
+
 class MsgData(): 
     status: bool = False,
     msg_type: typing.Optional[typing.Literal["old_session","back_loop","new_session"]] = "new_session",
@@ -31,10 +45,6 @@ class MsgData():
     next_msg_id: str = "",
     post_data: str = ""
 
-
-from ChatGPTWeb.config import MsgData
-data:MsgData = MsgData(conversation_id=c_id,p_msg_id=p_id)
-```
 # 使用/Used
 just simple to use
 
@@ -43,19 +53,31 @@ just simple to use
 ### copy __main__.py or this code to start / 复制 __main__.py 或者以下code来开始
 ```bash
 from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.config import Personality
 import asyncio
 import aioconsole
 
 session_token=""
-person = "hello,my name is 'pig'."
-chat = chatgpt(session_token=session_token,personality=person,log_status=False)
+
+personality_definition = Personality(
+    [
+        {
+            "name":"猪咪",
+            'value':'咩~ '
+            },
+        {
+            "name":"cat",
+            "value":"you are a cat"
+        }
+        ])
+
+chat = chatgpt(session_token=session_token,log_status=False,personality=personality_definition)
 
 async def main():
     
     c_id = await aioconsole.ainput("your conversation_id if you have:")
     p_id = await aioconsole.ainput("your parent_message_id if you have:")
-    data:MsgData = MsgData(conversation_id=c_id,p_msg_id=p_id)
+    chat.data.conversation_id,chat.data.p_msg_id = c_id,p_id
     while 1:
         print("\n------------------------------")
         data.msg_send = await aioconsole.ainput("input：")

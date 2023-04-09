@@ -2,13 +2,62 @@ import typing
 import uuid
 import json
 import logging
-from typing import TypedDict,Optional,Literal
+from typing import TypedDict,Optional,Literal,List,Dict
 
 url_session = "https://chat.openai.com/api/auth/session"
 url_chatgpt = "https://chat.openai.com:443/backend-api/conversation"
 
-formator = logging.Formatter(fmt = "%(asctime)s %(filename)s %(levelname)s %(message)s",
-                                         datefmt="%Y/%m/%d %X")
+formator = logging.Formatter(fmt = "%(asctime)s %(filename)s %(levelname)s %(message)s",datefmt="%Y/%m/%d %X")
+
+
+class Personality:
+    def __init__(self, init_list: List[Dict[str, str]]):
+        self.init_list = []
+        init_list += self.read_data()
+        for item in init_list:
+            if str(item) not in [str(x) for x in self.init_list]:
+                self.init_list.append(item)
+       
+    
+    def show_name(self):
+        name = [f"{index+1}. {x.get('name')}" for index,x in enumerate(self.init_list)]
+        return '\n'.join(name)
+    
+    
+    def get_value_by_name(self, name: str):
+        return next((x.get("value") for x in self.init_list if x.get("name") == name), None)
+    
+    def add_dict_to_list(self, new_dict: dict):
+        self.init_list.append(new_dict)
+        
+    def save_data(self):
+        tmp = '\n'.join([json.dumps(x) for x in self.init_list])
+        try:
+            with open("data/chat_history/personality","w") as f:
+                f.write(tmp)
+        except:
+            pass
+            
+    def read_data(self):
+        try:
+            with open("data/chat_history/personality","r") as f:
+                init_list = [json.loads(x) for x in f.read().split("\n")]
+        except:
+            init_list = []
+        return init_list
+                
+    def flush_data(self):
+        self.save_data()
+        self.read_data()
+        
+    def del_data_by_name(self,name:str):
+        for item in self.init_list:
+            if item.get('name') == name:
+                self.init_list.remove(item)
+        self.save_data()
+        return 
+
+
 class SetCookieParam(TypedDict, total=False):
     name: str
     value: str

@@ -3,7 +3,7 @@ from playwright.async_api import async_playwright, Route, Request
 import asyncio
 import typing
 import threading
-from config import *
+from .config import *
 import logging
 import re
 from pathlib import Path
@@ -12,15 +12,15 @@ class chatgpt():
     def __init__(self,
                  proxy: typing.Optional[ProxySettings] = None,
                  session_token: str = "",
-                 chat_file: Path = Path()/"data"/"chat_history",
-                 personality: str = "",
+                 chat_file: Path = Path()/"data"/"chat_history"/"conversation",
+                 personality: Optional[Personality] = Personality([{"name":"cat","value":"you are a cat now."}]),
                  log_status: bool = True,
                  plugin: bool = False) -> None:
         '''
         proxy : your proxy for openai | 你用于访问openai的代理
         session_token : your session_token | 你的session_token
         chat_file : save the chat history file path | 保存聊天文件的路径，默认 data/chat_history/..  
-        personality : init personality | 初始化人格
+        personality : init personality | 初始化人格 [{"name":"人格名","value":"预设内容"},{"name":"personality name","value":"personality value"},....]
         log_status : start log? | 开启日志输出吗
         plugin : is a Nonebot bot? | 作为Nonebot 插件实现
         '''
@@ -135,6 +135,7 @@ class chatgpt():
         if self.plugin:
             from nonebot.log import logger
             self.logger = logger
+        self.personality.read_data()
         threading.Thread(target=self.tmp(loop)).start()
             
     def tmp(self,loop):
@@ -169,31 +170,35 @@ class chatgpt():
             await route.continue_(method="POST",headers=self.header,post_data=msg_data.post_data)
             
         await self.page.route("**/backend-api/conversation",route_handle) # type: ignore
-        
-        async with self.page.expect_response("https://chat.openai.com/backend-api/conversation") as response_info:
-            try:
-                self.logger.debug(f"send:{msg_data.msg_send}")
-                await self.page.goto(url_chatgpt)
-            except:
-                pass
-        resp = await response_info.value
-        stream_text = await resp.text()
-        stream_lines = stream_text.splitlines()
-        for x in stream_lines:
+        try:
+            async with self.page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=600000) as response_info:
+                try:
+                    self.logger.debug(f"send:{msg_data.msg_send}")
+                    await self.page.goto(url_chatgpt,timeout=600000)
+                except:
+                    pass
+            resp = await response_info.value
+            stream_text = await resp.text()
+            stream_lines = stream_text.splitlines()
             for x in stream_lines:
-                if "finish_details" in x:
-                    msg = json.loads(x[6:])
-                    msg_data.msg_recv = self.markdown_to_text(msg["message"]["content"]["parts"][0]) 
-                    msg_data.conversation_id = msg["conversation_id"]
-                    msg_data.next_msg_id = msg["message"]["id"]
-                    msg_data.status = True
-                    msg_data.msg_type = "old_session"
-        if stream_lines:
-            self.logger.debug(f"recive:{msg_data.msg_recv}")
-            await self.save_chat(msg_data)
-        else:
-            msg_data.msg_recv = str(resp.status)
-        return msg_data
+                for x in stream_lines:
+                    if "finish_details" in x:
+                        msg = json.loads(x[6:])
+                        msg_data.msg_recv = self.markdown_to_text(msg["message"]["content"]["parts"][0]) 
+                        msg_data.conversation_id = msg["conversation_id"]
+                        msg_data.next_msg_id = msg["message"]["id"]
+                        msg_data.status = True
+                        msg_data.msg_type = "old_session"
+            if stream_lines:
+                self.logger.debug(f"recive:{msg_data.msg_recv}")
+                await self.save_chat(msg_data)
+            else:
+                msg_data.msg_recv = str(resp.status)
+            return msg_data
+        except:
+            msg_data.msg_recv = "error"
+            self.join = True
+            return msg_data
         
 
     async def save_chat(self,msg_data: MsgData):
@@ -323,7 +328,7 @@ class chatgpt():
     async def init_personality(self,msg_data: MsgData):
         '''init_personality
         初始化人格'''
-        msg_data.msg_send = self.personality
+        msg_data.msg_send = self.personality.get_value_by_name(msg_data.msg_send)
         msg_data.conversation_id = ""
         msg_data.p_msg_id = ""
         msg_data.msg_type = "new_session"
@@ -337,3 +342,23 @@ class chatgpt():
         msg_data.msg_type = "back_loop"
         return await self.back_chat_from_input(msg_data)
     
+    async def add_personality(self,personality: dict):
+        '''
+        personality = {"name":"cat1","value":"you are a cat now1."}
+        
+        add personality,please input json just like this.
+        添加人格 ,请传像这样的json数据
+        '''
+        self.personality.add_dict_to_list(personality)
+        self.personality.flush_data()
+        
+    async def show_personality_list(self):
+        '''show_personality_list 
+        展示人格列表'''
+        return self.personality.show_name()
+    
+    async def del_personality(self,name: str):
+        '''del_personality by name
+        删除人格根据名字'''
+        self.personality.del_data_by_name(name)
+        return self.personality.show_name()
