@@ -55,7 +55,6 @@ class Personality:
             if item.get('name') == name:
                 self.init_list.remove(item)
         self.save_data()
-        return 
 
 
 class SetCookieParam(TypedDict, total=False):
@@ -172,25 +171,25 @@ class Payload():
             "TE": "trailers"
         }
         
-        
-def new_payload(prompt: str) -> str:
-    return json.dumps({
-        "action":
-        "next",
-        "messages": [{
-            "id": str(uuid.uuid4()),
-            "author": {
-                "role": "user"
-            },
-            "content": {
-                "content_type": "text",
-                "parts": [prompt]
-            }
-        }],
-        "parent_message_id":
-        str(uuid.uuid4()),
-        "model":
-        "text-davinci-002-render-sha",
-        "timezone_offset_min":
-        -480
-    })
+    @staticmethod        
+    def system_new_payload(prompt: str) -> str:
+        return json.dumps({
+            "action":
+            "next",
+            "messages": [{
+                "id": str(uuid.uuid4()),
+                "author": {
+                    "role": "system"
+                },
+                "content": {
+                    "content_type": "text",
+                    "parts": [prompt]
+                }
+            }],
+            "parent_message_id":
+            str(uuid.uuid4()),
+            "model":
+            "text-davinci-002-render-sha",
+            "timezone_offset_min":
+            -480
+        })

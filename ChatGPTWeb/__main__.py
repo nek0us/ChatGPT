@@ -1,12 +1,31 @@
 from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.config import MsgData,Personality
 import asyncio
 import aioconsole
 
-session_token=""
-person = "hello,my name is 'pig'."
-chat = chatgpt(session_token=session_token,personality=person,log_status=False)
+# from ChatGPTWeb import chatgpt
+# from config import MsgData,Personality
+# import asyncio
+# import aioconsole
 
+session_token=["sessiton_token_one",
+               "sessiton_token_two",
+]
+
+personality_definition = Personality(
+    [
+        {
+            "name":"one",
+            'value':'one value'
+            },
+        {
+            "name":"two",
+            "value":'two value'
+        }
+        ])
+
+chat = chatgpt(session_token=session_token)
+#,log_status=False
 async def main():
     
     c_id = await aioconsole.ainput("your conversation_id if you have:")
@@ -26,6 +45,7 @@ async def main():
             print(f"ChatGPT:{data.msg_recv}")
             continue
         elif data.msg_send == "init_personality":
+            data.msg_send = "your ..."
             data = await chat.init_personality(data)
             print(f"ChatGPT:{data.msg_recv}")
             continue
