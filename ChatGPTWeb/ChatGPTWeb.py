@@ -8,6 +8,7 @@ import logging
 import re
 import random
 from pathlib import Path
+import sys
 
 # import json
 # import random
@@ -60,7 +61,6 @@ class chatgpt():
             } for x in session_token]
         else:
             raise ValueError("session_token is empty!")
-        
         self.manage = {
             "start":False,
             "browser_contexts":[],
@@ -99,80 +99,98 @@ class chatgpt():
         if not self.cc_map.stat().st_size:
             self.cc_map.write_text("{}")
             
+    async def __keep_alive__(self,page: Page,context_index: int):
+        await asyncio.sleep(random.randint(1,60))
+        try:
+            async with page.expect_response(url_check,timeout=10000) as a:
+                res = await page.goto(url_check, timeout=10000)
+            res = await a.value
+            if res.status == 403 and res.url == url_check:
+                async with page.expect_response(url_check,timeout=10000) as b:
+                    resb = await b.value
+                    if resb.status == 200 and resb.url == url_check:
+                        self.logger.info(f"flush {context_index} cf cookie OK!")
+                        await page.wait_for_timeout(1000)
+                        #break
+                    elif resb.status == 401 and resb.url == url_check:   
+                        # token过期 需要重新登录
+                        self.logger.error(f"flush {context_index} cf cookie has expired!")
+                        self.manage["access_token"][context_index] = ""
+                        self.manage["status"][str(context_index)] = False
+                        
+                    else:
+                        self.logger.error(f"flush {context_index} cf cookie error!")
+            elif res.status == 200 and res.url == url_check:
+                self.logger.info(f"flush {context_index} cf cookie OK!")
+                await page.wait_for_timeout(1000)
+            
+            elif res.status == 401 and res.url == url_check:   
+                # token过期 需要重新登录
+                self.logger.error(f"flush {context_index} cf cookie has expired!")
+                self.manage["access_token"][context_index] = ""
+                self.manage["status"][str(context_index)] = False
+                
+            else:
+                self.logger.error(f"flush {context_index} cf cookie error!")
+            
+            #await page.wait_for_timeout(self.timesleep)
+        except:
+            self.logger.error(f"flush {context_index} cf cookie error!")
 
     async def __alive__(self):
         '''keep cf cookie alive
         保持cf cookie存活
         '''
-        while 1:
+        while self.browser.contexts:
             #browser_context:BrowserContext
+            tasks = []
             for context_index,browser_context in enumerate(self.manage["browser_contexts"]):
                 try:
+                    if not self.manage["access_token"][context_index]:
+                        continue
                     page:Page = browser_context.pages[0]
-                    async with page.expect_response(url_session,timeout=20000) as a:
-                        res = await page.goto(url_session, timeout=20000)
-                    res = await a.value
-                    if res.status == 403 and res.url == url_session:
-                        async with page.expect_response(url_session,timeout=20000) as b:
-                            resb = await b.value
-                            if resb.status == 200 and resb.url == url_session:
-                                self.logger.info(f"flush {context_index} cf cookie OK!")
-                                await page.wait_for_timeout(1000)
-                                #break
-                            else:
-                                self.logger.error(f"flush {context_index} cf cookie error!")
-                    elif res.status == 200 and res.url == url_session:
-                        self.logger.info(f"flush {context_index} cf cookie OK!")
-                        await page.wait_for_timeout(1000)
-                    else:
-                        self.logger.error(f"flush {context_index} cf cookie error!")
+                    tasks.append(self.__keep_alive__(page,context_index))
                     
-                    await page.wait_for_timeout(20000)
                 except:
-                    self.logger.error(f"flush {context_index} cf cookie error!")
-                
+                    self.logger.error(f"add {context_index} flush cf task error!")
+            await asyncio.gather(*tasks)
+            self.logger.info("flush over,wait next...")
+            await asyncio.sleep(60)
+            
+        # for task in tasks:
+        #     task.cancel()
+        # await asyncio.gather(*tasks,return_exceptions=True)    
+        
+        await self.browser.close()
+        await self.ap.__aexit__()
+        loop = asyncio.get_event_loop()
+        loop.stop()
+        #loop.close()
+        current_thread = threading.current_thread()
+        current_thread._stop()
+        
+
+
     async def __start__(self,loop):
         '''init 
         初始化'''
-        self.ap = await async_playwright().start()
-        self.browser = await self.ap.firefox.launch(
+        self.ap = async_playwright()
+        self.ass = await self.ap.start()
+        self.browser = await self.ass.firefox.launch(
             #headless=False,
             slow_mo=50,proxy=self.proxy)
-        for x in self.cookie:
-            self.context = await self.browser.new_context(service_workers="block")
-            await self.context.add_cookies([x])
-        for context_index,browser_context in enumerate(self.browser.contexts):
-            page = await browser_context.new_page()
-            while 1:
-                try:
-                    async with page.expect_response(url_session,timeout=30000) as a:
-                        
-                        res = await page.goto(url_session, timeout=30000)
-                        res = await a.value
-                        if res.status == 403 and res.url == url_session:
-                            async with page.expect_response(url_session,timeout=30000) as b:
-                                resb = await b.value
-                                if resb.status == 200 and resb.url == url_session:
-                                    await page.wait_for_timeout(1000)
-                                    break
-                        elif res.status == 200 and res.url == url_session:
-                            await page.wait_for_timeout(1000)
-                            break
-                except:
-                    self.logger.debug(f"{context_index}' session_token login error!")
-
-            try:
-                json_data = await page.evaluate(
-                    '() => JSON.parse(document.querySelector("body").innerText)')
-                access_token = json_data['accessToken']
-            except:
-                access_token = None
-                
-            self.manage["access_token"].append(access_token)
-            if access_token:
-                self.manage["status"][str(context_index)] = True
-            else:
-                self.manage["status"][str(context_index)] = False
+        tasks = []
+        for context_index,x in enumerate(self.cookie):
+            context = await self.browser.new_context(service_workers="block")
+            await context.add_cookies([x])
+            page = await context.new_page()
+            tasks.append(self.load_page(context_index,page))
+        
+        await asyncio.gather(*tasks)
+        #for context_index,browser_context in enumerate(self.browser.contexts):
+            
+            
+            
         self.manage["browser_contexts"] = self.browser.contexts    
         
         if self.plugin:
@@ -181,9 +199,81 @@ class chatgpt():
         self.personality.read_data()
         self.manage["start"] = True
         self.logger.info("start!")
-        threading.Thread(target=self.tmp(loop)).start()
+        self.thread = threading.Thread(target=lambda: self.tmp(loop),daemon=True)
+        self.thread.start()
+        
+    async def load_page(self,context_index:int,page: Page):
+        await asyncio.sleep(random.randint(1,60))
+        retry = 3
+        access_token = None
+        while retry:
+            try:
+                
+                async with page.expect_response(url_session,timeout=30000) as a:
+                    
+                    res = await page.goto(url_session, timeout=30000)
+                    #await page.wait_for_load_state('networkidle')
+                    res = await a.value
+                    if res.status == 403 and res.url == url_session:
+                        async with page.expect_response(url_session,timeout=30000) as b:
+                            await page.wait_for_load_state('load')
+                            resb = await b.value
+                            if resb.status == 200 and resb.url == url_session:
+                                await page.wait_for_timeout(1000)
+                                break
+                            else:
+                                retry -= 1
+                                self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
+                                #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
+                                continue
+                    elif res.status == 200 and res.url == url_session:
+                        await page.wait_for_timeout(1000)
+                        break
+                    else:
+                        retry -= 1
+                        self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
+                        #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
+                        continue
+                    
+            except:
+                retry -= 1
+                self.logger.debug(f"{str(context_index)}'s session_token login error!retry {str(retry)} ")
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                #await page.screenshot(path=f"{str(context_index)}'s session_token login error!retry {str(retry)} .png")
+                continue
+
+        try:
+            await asyncio.sleep(3)
+            await page.wait_for_load_state('load')
+            json_data = await page.evaluate(
+                '() => JSON.parse(document.querySelector("body").innerText)')
+            access_token = json_data['accessToken']
+        except:
+            #retry -= 1
+            try:
+                await asyncio.sleep(1)
+                await page.wait_for_load_state('load')
+                json_data = await page.evaluate(
+                    '() => JSON.parse(document.querySelector("body").innerText)')
+                access_token = json_data['accessToken']
+            except:
+                access_token = None
+                self.logger.debug(f"{str(context_index)}'s have cf checkbox?retry {str(retry)} ")
+            #await page.screenshot(path=f"{str(context_index)}'s have cf checkbox?retry {str(retry)} .png")
+            #continue
+            
+        self.manage["access_token"].append(access_token)
+        if access_token:
+            self.manage["status"][str(context_index)] = True
+            self.logger.info(f"context {context_index} start!")
+        else:
+            self.manage["status"][str(context_index)] = False
+            await page.screenshot(path=f"context {context_index} faild!.png")
+            self.logger.info(f"context {context_index} faild!")
             
     def tmp(self,loop):
+        #task = asyncio.create_task(self.__alive__())
+        #await task
         asyncio.run_coroutine_threadsafe(self.__alive__(),loop)
 
                 
@@ -213,10 +303,10 @@ class chatgpt():
             
         await page.route("**/backend-api/conversation",route_handle) # type: ignore
         try:
-            async with page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=30000) as response_info:
+            async with page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=50000) as response_info:
                 try:
                     self.logger.debug(f"send:{msg_data.msg_send}")
-                    await page.goto(url_chatgpt,timeout=30000)
+                    await page.goto(url_chatgpt,timeout=50000)
                 except:
                     pass
             resp = await response_info.value
@@ -238,9 +328,9 @@ class chatgpt():
                 else:
                     msg_data.msg_recv = str(resp.status)
             elif resp.status == 429:
-                msg_data.msg_recv = "猪咪...被玩坏了..等一个小时后再聊吧..."
+                msg_data.msg_recv = "猪咪...被玩坏了..等明天再聊吧..."
             else:
-                msg_data.msg_recv = str(resp.status) + resp.status_text
+                msg_data.msg_recv = str(resp.status) +" "+ resp.status_text +" "+ await resp.text()
             return msg_data
         except:
             msg_data.msg_recv = "error"
@@ -369,6 +459,7 @@ class chatgpt():
         self.manage["status"][str(context_num)] = True
         return msg_data
     
+
     
     async def show_chat_history(self,msg_data: MsgData) -> list:
         '''show chat history
@@ -423,8 +514,6 @@ class chatgpt():
         初始化人格'''
         msg_data.msg_send = self.personality.get_value_by_name(msg_data.msg_send)
         if msg_data.msg_send:
-            msg_data.conversation_id = ""
-            msg_data.p_msg_id = ""
             msg_data.msg_type = "new_session"
             return await self.continue_chat(msg_data)
         else:
@@ -459,3 +548,12 @@ class chatgpt():
         删除人格根据名字'''
         self.personality.del_data_by_name(name)
         return self.personality.show_name()
+    
+    async def token_status(self):
+        '''查看session token状态和工作状态'''
+        cid_all = json.loads(self.cc_map.read_text("utf8"))
+        return {
+            "token":[True if x else False for x in self.manage["access_token"]],
+            "work":self.manage["status"],
+            "cid_num":[len(cid_all[x]) for x in cid_all]
+        }

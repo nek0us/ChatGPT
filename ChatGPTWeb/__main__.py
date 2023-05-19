@@ -1,15 +1,16 @@
-from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData,Personality
-import asyncio
-import aioconsole
-
-# from ChatGPTWeb import chatgpt
-# from config import MsgData,Personality
+# from ChatGPTWeb.ChatGPTWeb import chatgpt
+# from ChatGPTWeb.config import MsgData,Personality
 # import asyncio
 # import aioconsole
 
-session_token=["sessiton_token_one",
-               "sessiton_token_two",
+from ChatGPTWeb import chatgpt
+from config import MsgData,Personality
+import asyncio
+import aioconsole
+
+session_token=[
+    "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..",
+    "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0.."
 ]
 
 personality_definition = Personality(

@@ -6,6 +6,7 @@ from typing import TypedDict,Optional,Literal,List,Dict
 
 url_session = "https://chat.openai.com/api/auth/session"
 url_chatgpt = "https://chat.openai.com:443/backend-api/conversation"
+url_check = "https://chat.openai.com/api/auth/session"
 
 formator = logging.Formatter(fmt = "%(asctime)s %(filename)s %(levelname)s %(message)s",datefmt="%Y/%m/%d %X")
 
@@ -24,8 +25,8 @@ class Personality:
         return '\n'.join(name)
     
     
-    def get_value_by_name(self, name: str):
-        return next((x.get("value") for x in self.init_list if x.get("name") == name), None)
+    def get_value_by_name(self, name: str) -> str:
+        return next((x.get("value") for x in self.init_list if x.get("name") == name), "")
     
     def add_dict_to_list(self, new_dict: dict):
         self.init_list.append(new_dict)
@@ -104,11 +105,15 @@ class MsgData():
         self.post_data = post_data
         
 class Payload():
+
+
+
     @staticmethod
     def new_payload(prompt: str) -> str:
         return json.dumps({
             "action":
             "next",
+            "history_and_training_disabled":False,
             "messages": [{
                 "id": str(uuid.uuid4()),
                 "author": {
@@ -131,6 +136,7 @@ class Payload():
         return json.dumps({
             "action":
             "next",
+            "history_and_training_disabled":False,
             "messages": [{
                 "id": str(uuid.uuid4()),
                 "author": {
@@ -154,21 +160,21 @@ class Payload():
     def headers(token: str,data: str):
         return {
             "Host": "chat.openai.com",
-            "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0",
             "Accept": "text/event-stream",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
             "Content-Type": "application/json",
             "Content-Length": str(len(str(data))),
-            "Referer": "https://chat.openai.com/chat",
+            "Referer": "https://chat.openai.com/",
             "Authorization": f"Bearer {token}",
             "Origin": "https://chat.openai.com",
             "Connection": "keep-alive",
+            "sec-ch-ua-mobile": "?0",
+            #"sec-ch-ua-platform": "\"Windows\"", 
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "TE": "trailers"
+            "Sec-Fetch-Site": "same-origin"
+            #"TE": "trailers"
         }
         
     @staticmethod        
