@@ -64,7 +64,7 @@ class chatgpt():
         self.manage = {
             "start":False,
             "browser_contexts":[],
-            "access_token":[],
+            "access_token":["" for x in range(0,len(self.cookie))],
             "status":{}
         }
         
@@ -262,7 +262,7 @@ class chatgpt():
             #await page.screenshot(path=f"{str(context_index)}'s have cf checkbox?retry {str(retry)} .png")
             #continue
             
-        self.manage["access_token"].append(access_token)
+        self.manage["access_token"][context_index] = access_token
         if access_token:
             self.manage["status"][str(context_index)] = True
             self.logger.info(f"context {context_index} start!")
