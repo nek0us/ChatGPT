@@ -212,7 +212,7 @@ class chatgpt():
         self.thread.start()
         
     async def load_page(self,context_index:int,page: Page):
-        # await asyncio.sleep(random.randint(1,60))
+        await asyncio.sleep(random.randint(1,60))
         retry = 3
         access_token = None
         while retry:

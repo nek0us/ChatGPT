@@ -7,7 +7,7 @@ requirements = ["playwright","aioconsole"]
 
 setup(
     name="ChatGPTWeb",
-    version="0.0.10",
+    version="0.0.11",
     author="nek0us",
     author_email="nekouss@gmail.com",
     description="a ChatGPT API,no web ui",
