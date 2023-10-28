@@ -186,7 +186,7 @@ class chatgpt():
         #     #headless=False,
         #     slow_mo=50,proxy=self.proxy)
         self.browser = await self.ass.firefox.launch(
-            headless=False,
+            # headless=False,
             slow_mo=50,proxy=self.proxy)
         tasks = []
         for context_index,x in enumerate(self.cookie):
