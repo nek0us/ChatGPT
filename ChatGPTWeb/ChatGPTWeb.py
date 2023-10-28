@@ -20,6 +20,7 @@ import sys
 # import logging
 # import re
 # from pathlib import Path
+# import sys
 
 class chatgpt():
     def __init__(self,
@@ -102,9 +103,14 @@ class chatgpt():
     async def __keep_alive__(self,page: Page,context_index: int):
         await asyncio.sleep(random.randint(1,60))
         try:
+            # async with page.expect_response("https://chat.openai.com/chat",timeout=20000) as a:
+            #     res = await page.goto("https://chat.openai.com/chat", timeout=20000)
+            # res = await a.value
             async with page.expect_response(url_check,timeout=10000) as a:
                 res = await page.goto(url_check, timeout=10000)
             res = await a.value
+            
+            
             if res.status == 403 and res.url == url_check:
                 async with page.expect_response(url_check,timeout=10000) as b:
                     resb = await b.value
@@ -176,8 +182,11 @@ class chatgpt():
         初始化'''
         self.ap = async_playwright()
         self.ass = await self.ap.start()
+        # self.browser = await self.ass.chromium.launch(
+        #     #headless=False,
+        #     slow_mo=50,proxy=self.proxy)
         self.browser = await self.ass.firefox.launch(
-            #headless=False,
+            headless=False,
             slow_mo=50,proxy=self.proxy)
         tasks = []
         for context_index,x in enumerate(self.cookie):
@@ -203,7 +212,7 @@ class chatgpt():
         self.thread.start()
         
     async def load_page(self,context_index:int,page: Page):
-        await asyncio.sleep(random.randint(1,60))
+        # await asyncio.sleep(random.randint(1,60))
         retry = 3
         access_token = None
         while retry:
@@ -279,20 +288,46 @@ class chatgpt():
                 
     def markdown_to_text(self,markdown_string):
         # Remove backslashes from markdown string
-        markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
+       #  markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
         # Remove markdown formatting
-        markdown_string = re.sub(r'([*_~`])', '', markdown_string)
+        # markdown_string = re.sub(r'([*_~`])', '', markdown_string)
+        # markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
         return markdown_string      
       
     async def send_msg(self,msg_data: MsgData,page:Page,token:str,context_num:int):
         '''send message body function
         发送消息处理函数'''
         
+        # 获取arkose
+        
+        async def route_arkose(route: Route, request: Request):
+            userAgent = request.headers["user-agent"]
+            msg_data.arkose_data = Payload.rdm_arkose(userAgent)
+            msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data)
+            msg_data.arkose_header["Cookie"] = request.headers["cookie"]
+            msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
+            await route.continue_(method="POST",headers=msg_data.arkose_header,post_data=msg_data.arkose_data)
+            
+        await page.route("**/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",route_arkose) # type: ignore
+        
+        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",timeout=40000) as arkose_info:
+            try:
+                self.logger.debug("get arkose")
+                await page.goto(url_arkose,timeout=50000)
+            except Exception as e:
+                logging.warning(e)
+            resp_arkose = await arkose_info.value
+            if resp_arkose.status == 200:
+                arkose_json = await resp_arkose.json()
+                msg_data.arkose = arkose_json["token"]
+            else:
+                pass
+        
         if not msg_data.conversation_id and not msg_data.p_msg_id:
-            msg_data.post_data = Payload.new_payload(msg_data.msg_send)
+            msg_data.post_data = Payload.new_payload(msg_data.msg_send,msg_data.arkose)
             #msg_data.post_data = Payload.system_new_payload(msg_data.msg_send)
         else:
-            msg_data.post_data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id)
+            msg_data.post_data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,msg_data.arkose)
             
         header = Payload.headers(token,msg_data.post_data)
         
@@ -303,11 +338,12 @@ class chatgpt():
             
         await page.route("**/backend-api/conversation",route_handle) # type: ignore
         try:
-            async with page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=50000) as response_info:
+            async with page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=40000) as response_info:
                 try:
                     self.logger.debug(f"send:{msg_data.msg_send}")
                     await page.goto(url_chatgpt,timeout=50000)
-                except:
+                except Exception as e:
+                    # logging.warning(e)
                     pass
             resp = await response_info.value
             if resp.status == 200:
@@ -317,7 +353,8 @@ class chatgpt():
                     for x in stream_lines:
                         if "finish_details" in x:
                             msg = json.loads(x[6:])
-                            msg_data.msg_recv = self.markdown_to_text(msg["message"]["content"]["parts"][0]) 
+                            tmp = msg["message"]["content"]["parts"][0]
+                            msg_data.msg_recv = self.markdown_to_text(tmp) 
                             msg_data.conversation_id = msg["conversation_id"]
                             msg_data.next_msg_id = msg["message"]["id"]
                             msg_data.status = True
@@ -333,9 +370,41 @@ class chatgpt():
                 msg_data.msg_recv = str(resp.status) +" "+ resp.status_text +" "+ await resp.text()
             return msg_data
         except:
-            msg_data.msg_recv = "error"
-            self.join = True
-            return msg_data
+            try:
+                async with page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=30000) as response_info:
+                    try:
+                        self.logger.debug(f"send:{msg_data.msg_send}")
+                        await page.goto(url_chatgpt,timeout=50000)
+                    except:
+                        pass
+                resp = await response_info.value
+                if resp.status == 200:
+                    stream_text = await resp.text()
+                    stream_lines = stream_text.splitlines()
+                    for x in stream_lines:
+                        for x in stream_lines:
+                            if "finish_details" in x:
+                                msg = json.loads(x[6:])
+                                msg_data.msg_recv = self.markdown_to_text(msg["message"]["content"]["parts"][0]) 
+                                msg_data.conversation_id = msg["conversation_id"]
+                                msg_data.next_msg_id = msg["message"]["id"]
+                                msg_data.status = True
+                                msg_data.msg_type = "old_session"
+                    if stream_lines:
+                        self.logger.debug(f"recive:{msg_data.msg_recv}")
+                        await self.save_chat(msg_data,context_num)
+                    else:
+                        msg_data.msg_recv = str(resp.status)
+                elif resp.status == 429:
+                    msg_data.msg_recv = "429 error http code ..."
+                else:
+                    msg_data.msg_recv = str(resp.status) +" "+ resp.status_text +" "+ await resp.text()
+                return msg_data
+            except Exception as e:
+        
+                msg_data.msg_recv = f"error:{e}"
+                self.join = True
+                return msg_data
         
 
     async def save_chat(self,msg_data: MsgData,context_num:int):

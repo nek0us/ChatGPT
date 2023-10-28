@@ -3,10 +3,13 @@ import uuid
 import json
 import logging
 from typing import TypedDict,Optional,Literal,List,Dict
+import random
+import urllib.parse
 
 url_session = "https://chat.openai.com/api/auth/session"
 url_chatgpt = "https://chat.openai.com:443/backend-api/conversation"
 url_check = "https://chat.openai.com/api/auth/session"
+url_arkose = "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC"
 
 formator = logging.Formatter(fmt = "%(asctime)s %(filename)s %(levelname)s %(message)s",datefmt="%Y/%m/%d %X")
 
@@ -84,7 +87,10 @@ class MsgData():
                  conversation_id: str = "",
                  p_msg_id: str = "",
                  next_msg_id: str = "",
-                 post_data: str = ""
+                 post_data: str = "",
+                 arkose_data: str = "",
+                 arkose_header: dict[str,str] = {},
+                 arkose: str = ""
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -94,6 +100,9 @@ class MsgData():
         conversation_id ：会话id
         p_msg_id ：待发送上下文id
         next_msg_id ：待接收上下文id
+        arkose_data : arkose http data
+        arkose_header : arkose http header
+        arkose : arkose
         '''
         self.status = status
         self.msg_type = msg_type
@@ -103,17 +112,18 @@ class MsgData():
         self.p_msg_id = p_msg_id
         self.next_msg_id = next_msg_id
         self.post_data = post_data
+        self.arkose_data = arkose_data,
+        self.arkose_header = arkose_header,
+        self.arkose = arkose
         
 class Payload():
 
 
 
     @staticmethod
-    def new_payload(prompt: str) -> str:
+    def new_payload(prompt: str,arkose: str) -> str:
         return json.dumps({
-            "action":
-            "next",
-            "history_and_training_disabled":False,
+            "action":"next",
             "messages": [{
                 "id": str(uuid.uuid4()),
                 "author": {
@@ -122,17 +132,29 @@ class Payload():
                 "content": {
                     "content_type": "text",
                     "parts": [prompt]
-                }
+                },
+                "metadata":{}
             }],
-            "parent_message_id":
-            str(uuid.uuid4()),
-            "model":
-            "text-davinci-002-render-sha",
-            "timezone_offset_min":
-            -480
+            "parent_message_id":str(uuid.uuid4()),
+            "model":"text-davinci-002-render-sha",
+            "timezone_offset_min":-480,
+            # "suggestions": [
+            #     "'Explain what this bash command does: lazy_i18n(\"cat config.yaml | awk NF\"'",
+            #     "What are 5 creative things I could do with my kids' art? I don't want to throw them away, but it's also so much clutter.",
+            #     "Tell me a random fun fact about the Roman Empire",
+            #     "What are five fun and creative activities to do indoors with my dog who has a lot of energy?"
+            # ],
+            "suggestions": [],
+            "history_and_training_disabled":False,
+            "arkose_token": arkose,
+            "conversation_mode": {
+        "kind": "primary_assistant"
+    },
+            "force_paragen": False,
+            "force_rate_limit": False
         })
     @staticmethod
-    def old_payload(prompt: str,conversation_id: str,p_msg_id: str) -> str:
+    def old_payload(prompt: str,conversation_id: str,p_msg_id: str,arkose: str) -> str:
         return json.dumps({
             "action":
             "next",
@@ -145,7 +167,8 @@ class Payload():
                 "content": {
                     "content_type": "text",
                     "parts": [prompt]
-                }
+                },
+                "metadata":{}
             }],
             "conversation_id":
             conversation_id,
@@ -154,7 +177,14 @@ class Payload():
             "model":
             "text-davinci-002-render-sha",
             "timezone_offset_min":
-            -480
+            -480,
+            "suggestions":[],
+            "arkose_token":arkose,
+            "conversation_mode": {
+            "kind": "primary_assistant"
+        },
+        "force_paragen": False,
+        "force_rate_limit": False
         })
     @staticmethod
     def headers(token: str,data: str):
@@ -199,3 +229,35 @@ class Payload():
             "timezone_offset_min":
             -480
         })
+    
+    @staticmethod
+    def rdm_arkose(ua: str) -> str:
+        return urllib.parse.urlencode(
+            {
+                "public_key": "3D86FBBA-9D22-402A-B512-3420086BA6CC",
+                "site": "https://chat.openai.com",
+                "capi_version": "1.5.5",
+                "capi_mode": "inline",
+                "style_theme": "default",
+                "userbrowser": ua,
+                "rnd": f"0.{random.randint(10**15, 10**18 - 1)}",
+            }
+        )
+        
+    @staticmethod
+    def header_arkose(data:str):
+        return {
+            "Host": "tcr9i.chat.openai.com",
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Content-Length": str(len(data)),
+            "Origin": "https://tcr9i.chat.openai.com",
+            "Connection": "keep-alive",
+            "Referer": "https://tcr9i.chat.openai.com/v2/1.5.5/enforcement.fbfc14b0d793c6ef8359e0e4b4a91f67.html",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        
