@@ -10,18 +10,6 @@ import random
 from pathlib import Path
 import sys
 
-# import json
-# import random
-# from playwright.async_api import async_playwright, Route, Request,BrowserContext,Page
-# import asyncio
-# import typing
-# import threading
-# from config import *
-# import logging
-# import re
-# from pathlib import Path
-# import sys
-
 class chatgpt():
     def __init__(self,
                  proxy: typing.Optional[ProxySettings] = None,
@@ -29,7 +17,9 @@ class chatgpt():
                  chat_file: Path = Path()/"data"/"chat_history"/"conversation",
                  personality: Optional[Personality] = Personality([{"name":"cat","value":"you are a cat now."}]),
                  log_status: bool = True,
-                 plugin: bool = False) -> None:
+                 plugin: bool = False,
+                 headless: bool = True,
+                 begin_sleep_time: bool = True) -> None:
         '''
         proxy : your proxy for openai | 你用于访问openai的代理
         session_token : your session_token | 你的session_token
@@ -45,6 +35,8 @@ class chatgpt():
         self.personality = personality
         self.log_status = log_status
         self.plugin = plugin
+        self.headless = headless
+        self.begin_sleep_time = begin_sleep_time
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logging.INFO)
@@ -83,6 +75,9 @@ class chatgpt():
         if not self.plugin:
             self.browser_event_loop = asyncio.get_event_loop()
             asyncio.run_coroutine_threadsafe(self.__start__(self.browser_event_loop),self.browser_event_loop)
+        else:
+            from nonebot.log import logger
+            self.logger = logger
             
         '''
         data : base data type | 内部数据类型
@@ -186,7 +181,7 @@ class chatgpt():
         #     #headless=False,
         #     slow_mo=50,proxy=self.proxy)
         self.browser = await self.ass.firefox.launch(
-            # headless=False,
+            headless=self.headless,
             slow_mo=50,proxy=self.proxy)
         tasks = []
         for context_index,x in enumerate(self.cookie):
@@ -202,9 +197,7 @@ class chatgpt():
             
         self.manage["browser_contexts"] = self.browser.contexts    
         
-        if self.plugin:
-            from nonebot.log import logger
-            self.logger = logger
+
         self.personality.read_data()
         self.manage["start"] = True
         self.logger.info("start!")
@@ -212,7 +205,8 @@ class chatgpt():
         self.thread.start()
         
     async def load_page(self,context_index:int,page: Page):
-        await asyncio.sleep(random.randint(1,60))
+        if self.begin_sleep_time:
+            await asyncio.sleep(random.randint(1,60))
         retry = 3
         access_token = None
         while retry:
@@ -365,7 +359,7 @@ class chatgpt():
                 else:
                     msg_data.msg_recv = str(resp.status)
             elif resp.status == 429:
-                msg_data.msg_recv = "猪咪...被玩坏了..等明天再聊吧..."
+                msg_data.msg_recv = "error http code 429"
             else:
                 msg_data.msg_recv = str(resp.status) +" "+ resp.status_text +" "+ await resp.text()
             return msg_data

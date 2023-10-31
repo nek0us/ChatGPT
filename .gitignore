@@ -2,6 +2,7 @@
 src/test.py
 .vscode/
 data
+test.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
