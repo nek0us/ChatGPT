@@ -98,16 +98,13 @@ class chatgpt():
     async def __keep_alive__(self,page: Page,context_index: int):
         await asyncio.sleep(random.randint(1,60))
         try:
-            # async with page.expect_response("https://chat.openai.com/chat",timeout=20000) as a:
-            #     res = await page.goto("https://chat.openai.com/chat", timeout=20000)
-            # res = await a.value
-            async with page.expect_response(url_check,timeout=10000) as a:
-                res = await page.goto(url_check, timeout=10000)
+            async with page.expect_response(url_check,timeout=20000) as a:
+                res = await page.goto(url_check, timeout=20000)
             res = await a.value
             
             
             if res.status == 403 and res.url == url_check:
-                async with page.expect_response(url_check,timeout=10000) as b:
+                async with page.expect_response(url_check,timeout=20000) as b:
                     resb = await b.value
                     if resb.status == 200 and resb.url == url_check:
                         self.logger.info(f"flush {context_index} cf cookie OK!")
@@ -145,15 +142,15 @@ class chatgpt():
         while self.browser.contexts:
             #browser_context:BrowserContext
             tasks = []
-            for context_index,browser_context in enumerate(self.manage["browser_contexts"]):
+            for context_index,browser_context in enumerate(self.manage["browser_contexts"][:-1]):
                 try:
                     if not self.manage["access_token"][context_index]:
                         continue
                     page:Page = browser_context.pages[0]
                     tasks.append(self.__keep_alive__(page,context_index))
                     
-                except:
-                    self.logger.error(f"add {context_index} flush cf task error!")
+                except Exception as e:
+                    self.logger.error(f"add {context_index} flush cf task error! {e}")
             await asyncio.gather(*tasks)
             self.logger.info("flush over,wait next...")
             await asyncio.sleep(60)
@@ -177,18 +174,21 @@ class chatgpt():
         初始化'''
         self.ap = async_playwright()
         self.ass = await self.ap.start()
-        # self.browser = await self.ass.chromium.launch(
-        #     #headless=False,
-        #     slow_mo=50,proxy=self.proxy)
         self.browser = await self.ass.firefox.launch(
             headless=self.headless,
             slow_mo=50,proxy=self.proxy)
         tasks = []
+        # chatgpt cookie context
         for context_index,x in enumerate(self.cookie):
             context = await self.browser.new_context(service_workers="block")
             await context.add_cookies([x])
             page = await context.new_page()
             tasks.append(self.load_page(context_index,page))
+            
+        # chatgpt arkose context (index 9999)
+        context = await self.browser.new_context(service_workers="block")
+        page = await context.new_page()
+        tasks.append(self.load_page(99999,page))
         
         await asyncio.gather(*tasks)
         #for context_index,browser_context in enumerate(self.browser.contexts):
@@ -209,77 +209,95 @@ class chatgpt():
             await asyncio.sleep(random.randint(1,60))
         retry = 3
         access_token = None
-        while retry:
-            try:
-                
-                async with page.expect_response(url_session,timeout=30000) as a:
-                    
-                    res = await page.goto(url_session, timeout=30000)
-                    #await page.wait_for_load_state('networkidle')
-                    res = await a.value
-                    if res.status == 403 and res.url == url_session:
-                        async with page.expect_response(url_session,timeout=30000) as b:
-                            await page.wait_for_load_state('load')
-                            resb = await b.value
-                            if resb.status == 200 and resb.url == url_session:
-                                await page.wait_for_timeout(1000)
-                                break
-                            else:
-                                retry -= 1
-                                self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
-                                #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
-                                continue
-                    elif res.status == 200 and res.url == url_session:
-                        await page.wait_for_timeout(1000)
-                        break
-                    else:
-                        retry -= 1
-                        self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
-                        #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
-                        continue
-                    
-            except:
-                retry -= 1
-                self.logger.debug(f"{str(context_index)}'s session_token login error!retry {str(retry)} ")
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                #await page.screenshot(path=f"{str(context_index)}'s session_token login error!retry {str(retry)} .png")
-                continue
+        if context_index != 99999:
+            while retry:
+                try:
+                    async with page.expect_response(url_session,timeout=30000) as a:
+                        
+                        res = await page.goto(url_session, timeout=30000)
+                        #await page.wait_for_load_state('networkidle')
+                        res = await a.value
+                        if res.status == 403 and res.url == url_session:
+                            async with page.expect_response(url_session,timeout=30000) as b:
+                                await page.wait_for_load_state('load')
+                                resb = await b.value
+                                if resb.status == 200 and resb.url == url_session:
+                                    await page.wait_for_timeout(1000)
+                                    break
+                                else:
+                                    retry -= 1
+                                    self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
+                                    #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
+                                    continue
+                        elif res.status == 200 and res.url == url_session:
+                            await page.wait_for_timeout(1000)
+                            break
+                        else:
+                            retry -= 1
+                            self.logger.debug(f"{str(context_index)}'s no 200!retry {str(retry)} ")
+                            #await page.screenshot(path=f"{str(context_index)}'s no 200!retry {str(retry)} .png")
+                            continue
+                        
+                except:
+                    retry -= 1
+                    self.logger.debug(f"{str(context_index)}'s session_token login error!retry {str(retry)} ")
+                    exc_type, exc_value, exc_traceback = sys.exc_info()
+                    #await page.screenshot(path=f"{str(context_index)}'s session_token login error!retry {str(retry)} .png")
+                    continue
 
-        try:
-            await asyncio.sleep(3)
-            await page.wait_for_load_state('load')
-            json_data = await page.evaluate(
-                '() => JSON.parse(document.querySelector("body").innerText)')
-            access_token = json_data['accessToken']
-        except:
-            #retry -= 1
             try:
-                await asyncio.sleep(1)
+                await asyncio.sleep(3)
                 await page.wait_for_load_state('load')
                 json_data = await page.evaluate(
                     '() => JSON.parse(document.querySelector("body").innerText)')
                 access_token = json_data['accessToken']
             except:
-                access_token = None
-                self.logger.debug(f"{str(context_index)}'s have cf checkbox?retry {str(retry)} ")
-            #await page.screenshot(path=f"{str(context_index)}'s have cf checkbox?retry {str(retry)} .png")
-            #continue
+                #retry -= 1
+                try:
+                    await asyncio.sleep(1)
+                    await page.wait_for_load_state('load')
+                    json_data = await page.evaluate(
+                        '() => JSON.parse(document.querySelector("body").innerText)')
+                    access_token = json_data['accessToken']
+                except:
+                    access_token = None
+                    self.logger.debug(f"{str(context_index)}'s have cf checkbox?retry {str(retry)} ")
+                #await page.screenshot(path=f"{str(context_index)}'s have cf checkbox?retry {str(retry)} .png")
+                #continue
+            self.manage["access_token"][context_index] = access_token
             
-        self.manage["access_token"][context_index] = access_token
-        if access_token:
-            self.manage["status"][str(context_index)] = True
-            self.logger.info(f"context {context_index} start!")
+            if access_token:
+                self.manage["status"][str(context_index)] = True
+                self.logger.info(f"context {context_index} start!")
+            else:
+                self.manage["status"][str(context_index)] = False
+                await page.screenshot(path=f"context {context_index} faild!.png")
+                self.logger.info(f"context {context_index} faild!")
+            
+        
         else:
+            await page.goto("https://chat.openai.com", timeout=30000)
+            await asyncio.sleep(1)
+            await page.wait_for_load_state('load')
+            await page.evaluate(Payload.get_ajs())
             self.manage["status"][str(context_index)] = False
-            await page.screenshot(path=f"context {context_index} faild!.png")
-            self.logger.info(f"context {context_index} faild!")
+            self.logger.info(f"context {context_index} js!")
+            return 
+        
             
     def tmp(self,loop):
         #task = asyncio.create_task(self.__alive__())
         #await task
         asyncio.run_coroutine_threadsafe(self.__alive__(),loop)
 
-                
+            
+    async def get_bda(self,data: str,key: str):
+        page:Page = self.manage["browser_contexts"][-1].pages[0]
+        js = f"ALFCCJS.encrypt('{data}','{key}')"
+        res = await page.evaluate_handle(js)
+        result:str = await res.json_value()
+        return base64.b64encode(result.encode('utf8')).decode('utf8')     
+           
     def markdown_to_text(self,markdown_string):
         # Remove backslashes from markdown string
        #  markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
@@ -296,7 +314,11 @@ class chatgpt():
         
         async def route_arkose(route: Route, request: Request):
             userAgent = request.headers["user-agent"]
-            msg_data.arkose_data = Payload.rdm_arkose(userAgent)
+            data = Payload.get_data()
+            key = Payload.get_key(userAgent)
+            bda = await self.get_bda(data,key)
+            
+            msg_data.arkose_data = Payload.rdm_arkose(userAgent,bda)
             msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data)
             msg_data.arkose_header["Cookie"] = request.headers["cookie"]
             msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
@@ -304,10 +326,10 @@ class chatgpt():
             
         await page.route("**/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",route_arkose) # type: ignore
         
-        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",timeout=40000) as arkose_info:
+        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",timeout=400000) as arkose_info:
             try:
                 self.logger.debug("get arkose")
-                await page.goto(url_arkose,timeout=50000)
+                await page.goto(url_arkose,timeout=500000)
             except Exception as e:
                 logging.warning(e)
             resp_arkose = await arkose_info.value
@@ -476,22 +498,30 @@ class chatgpt():
                     break
         else:
             keys = list(self.manage["status"].keys())
-            random.shuffle(keys)
-            self.manage["status"] = {key: self.manage["status"][key] for key in keys}
+            # random.shuffle(keys)
+            # self.manage["status"] = {key: self.manage["status"][key] for key in keys}
             # 每次打乱顺序，以避免持续访问第一个
             status = False
             # 是否找到可用环境
             while True:
-                for context_name in self.manage["status"]:
+                true_status = [value for value in self.manage["status"] if self.manage["status"][value]]
+                # 状态元组 (index,value)
                     # context_name 环境名
-                    if self.manage["status"][context_name]:
-                        # 如果该环境好了
-                        self.manage["status"][context_name] = False
-                        page = self.manage["browser_contexts"][int(context_name)].pages[0]
-                        token = self.manage["access_token"][int(context_name)]
-                        context_num = int(context_name)
-                        status = True
-                        break
+                if not true_status:
+                    # 都没准备好，继续等待
+                    await asyncio.sleep(1)
+                    continue
+                select_context = random.choice(true_status)    
+                # if self.manage["status"][context_name]:
+                    # 如果该环境好了
+                    
+                self.manage["status"][select_context[0]] = False
+                
+                page = self.manage["browser_contexts"][int(select_context[0])].pages[0]
+                token = self.manage["access_token"][int(select_context[0])]
+                context_num = int(select_context[0])
+                status = True
+                
                 if status:
                     break
                 await asyncio.sleep(0.5)
@@ -620,3 +650,5 @@ class chatgpt():
             "work":self.manage["status"],
             "cid_num":[len(cid_all[x]) for x in cid_all]
         }
+
+    
