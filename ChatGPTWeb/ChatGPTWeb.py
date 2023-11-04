@@ -300,7 +300,7 @@ class chatgpt():
            
     def markdown_to_text(self,markdown_string):
         # Remove backslashes from markdown string
-       #  markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
+        # markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
         # Remove markdown formatting
         # markdown_string = re.sub(r'([*_~`])', '', markdown_string)
         # markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
@@ -497,7 +497,7 @@ class chatgpt():
                     context_num = int(context_name)
                     break
         else:
-            keys = list(self.manage["status"].keys())
+            # keys = list(self.manage["status"].keys())
             # random.shuffle(keys)
             # self.manage["status"] = {key: self.manage["status"][key] for key in keys}
             # 每次打乱顺序，以避免持续访问第一个
@@ -525,15 +525,7 @@ class chatgpt():
                 if status:
                     break
                 await asyncio.sleep(0.5)
-                    
-        # while not self.join:
-        #     await asyncio.sleep(0.3)
-        # self.join = False
-        # if msg_data.msg_type == "old_session":
-        #     msg_data.p_msg_id = msg_data.next_msg_id
-        # if not msg_data.conversation_id:
-        #     # 未输入会话id，尝试开启新会话
-        #     pass
+                
         
         if msg_data.p_msg_id:
             # 存在输入的p_msg_id
@@ -647,7 +639,7 @@ class chatgpt():
         cid_all = json.loads(self.cc_map.read_text("utf8"))
         return {
             "token":[True if x else False for x in self.manage["access_token"]],
-            "work":self.manage["status"],
+            "work":[self.manage["status"][x] for x in self.manage["status"] if x != "99999"],
             "cid_num":[len(cid_all[x]) for x in cid_all]
         }
 

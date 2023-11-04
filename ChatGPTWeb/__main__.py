@@ -52,6 +52,9 @@ async def main():
         elif data.msg_send == "history":
             print(await chat.show_chat_history(data))
             continue
+        elif data.msg_send == "status":
+            print(await chat.token_status())
+            continue
         data = await chat.continue_chat(data)
         print(f"ChatGPT:{data.msg_recv}")
         

@@ -1,0 +1,19 @@
+[project]
+name = "ChatGPTWeb"
+version = "0.0.15"
+description = "ChatGPT API"
+authors = [
+    {name = "nek0us", email = "nekouss@mail.com"},
+]
+license = {text = "GPL3"}
+dependencies = ["playwright","aioconsole"]
+requires-python = ">=3.9"
+readme = "README.md"
+
+[project.urls]
+Homepage = "https://github.com/nek0us/ChatGPT"
+Repository = "https://github.com/nek0us/ChatGPT"
+
+[build-system]
+requires = ["pdm-pep517>=0.12.0"]
+build-backend = "pdm.pep517.api"
