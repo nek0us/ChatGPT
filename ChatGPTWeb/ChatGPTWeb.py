@@ -205,7 +205,7 @@ class chatgpt():
         self.thread.start()
         
     async def load_page(self,context_index:int,page: Page):
-        if self.begin_sleep_time:
+        if self.begin_sleep_time and context_index != 99999:
             await asyncio.sleep(random.randint(1,60))
         retry = 3
         access_token = None
@@ -276,12 +276,12 @@ class chatgpt():
             
         
         else:
-            await page.goto("https://chat.openai.com", timeout=30000)
-            await asyncio.sleep(1)
-            await page.wait_for_load_state('load')
+            # await page.goto("https://chat.openai.com", timeout=30000)
+            # await asyncio.sleep(1)
+            # await page.wait_for_load_state('load')
             await page.evaluate(Payload.get_ajs())
             self.manage["status"][str(context_index)] = False
-            self.logger.info(f"context {context_index} js!")
+            self.logger.info(f"context {context_index} js start!")
             return 
         
             
@@ -328,10 +328,15 @@ class chatgpt():
         
         async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",timeout=400000) as arkose_info:
             try:
+                
+                await page.wait_for_load_state('load')
                 self.logger.debug("get arkose")
                 await page.goto(url_arkose,timeout=500000)
+                await page.wait_for_load_state('load')
             except Exception as e:
                 logging.warning(e)
+                await page.goto(url_arkose,timeout=300000)
+                await page.wait_for_load_state('load')
             resp_arkose = await arkose_info.value
             if resp_arkose.status == 200:
                 arkose_json = await resp_arkose.json()
