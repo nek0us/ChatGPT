@@ -1,36 +1,37 @@
 from ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData,Personality
+from ChatGPTWeb.config import MsgData, Personality
 import asyncio
 import aioconsole
 
-session_token=[
+session_token = [
     ""
 ]
 
 personality_definition = Personality(
     [
         {
-            "name":"one",
-            'value':'one value'
-            },
+            "name": "one",
+            'value': 'one value'
+        },
         {
-            "name":"two",
-            "value":'two value'
+            "name": "two",
+            "value": 'two value'
         }
-        ])
+    ])
 
 proxy = {
-    "http":"http://127.0.0.1:1090",
-    "https":"https://127.0.0.1:1090"
+    "http": "http://127.0.0.1:1090",
+    "https": "https://127.0.0.1:1090"
 }
 proxy = {"server": "http://127.0.0.1:1090"}
-chat = chatgpt(session_token=session_token,proxy=proxy,headless=False,begin_sleep_time=False)
-#,log_status=False
+chat = chatgpt(session_tokens=session_token, proxy=proxy, headless=False, begin_sleep_time=False)
+
+
+# ,log_status=False
 async def main():
-    
     c_id = await aioconsole.ainput("your conversation_id if you have:")
     p_id = await aioconsole.ainput("your parent_message_id if you have:")
-    data:MsgData = MsgData(conversation_id=c_id,p_msg_id=p_id)
+    data: MsgData = MsgData(conversation_id=c_id, p_msg_id=p_id)
     while 1:
         print("\n------------------------------")
         data.msg_send = await aioconsole.ainput("input：")
@@ -57,8 +58,7 @@ async def main():
             continue
         data = await chat.continue_chat(data)
         print(f"ChatGPT:{data.msg_recv}")
-        
-        
+
+
 loop = asyncio.get_event_loop()
-loop.run_until_complete(main())           
-    
+loop.run_until_complete(main())
