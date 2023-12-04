@@ -92,7 +92,7 @@ class MsgData():
                  post_data: str = "",
                  arkose_data: str = "",
                  arkose_header: dict[str,str] = {},
-                 arkose: str = ""
+                 arkose: str|None = ""
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -123,7 +123,7 @@ class Payload():
 
 
     @staticmethod
-    def new_payload(prompt: str,arkose: str) -> str:
+    def new_payload(prompt: str,arkose: str|None) -> str:
         return json.dumps({
             "action":"next",
             "messages": [{
@@ -156,7 +156,7 @@ class Payload():
             "force_rate_limit": False
         })
     @staticmethod
-    def old_payload(prompt: str,conversation_id: str,p_msg_id: str,arkose: str) -> str:
+    def old_payload(prompt: str,conversation_id: str,p_msg_id: str,arkose: str|None) -> str:
         return json.dumps({
             "action":
             "next",

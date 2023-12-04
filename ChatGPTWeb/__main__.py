@@ -19,13 +19,11 @@ personality_definition = Personality(
         }
         ])
 
-proxy = {
-    "http":"http://127.0.0.1:1090",
-    "https":"https://127.0.0.1:1090"
-}
+
 proxy = {"server": "http://127.0.0.1:1090"}
-chat = chatgpt(session_token=session_token,proxy=proxy,headless=False,begin_sleep_time=False)
-#,log_status=False
+chat = chatgpt(session_token=session_token,proxy=proxy)
+# add ",log_status=False" to turn off log output
+
 async def main():
     
     c_id = await aioconsole.ainput("your conversation_id if you have:")

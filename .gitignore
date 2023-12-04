@@ -4,6 +4,8 @@ src/test.py
 data
 test.py
 setup.py
+ChatGPTWeb/ChatGPTWebTest.py
+ChatGPTWeb/configTest.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

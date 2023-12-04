@@ -44,7 +44,10 @@ class MsgData():
     # p_msg_id : the message's parent_message_id in this conversation id / 这个会话里某条消息的 parent_message_id
     next_msg_id: str = "",
     post_data: str = ""
-
+    arkose_data: str = "",
+    arkose_header: dict[str,str] = {},
+    arkose: str|None = ""
+    
 # 使用/Used
 just simple to use
 
