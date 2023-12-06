@@ -5,6 +5,8 @@ from playwright.async_api import async_playwright, Route, Request, BrowserContex
 import asyncio
 import typing
 import threading
+
+from .OpenAIAuth import AsyncAuth0
 from .config import *
 import logging
 import re
@@ -16,7 +18,7 @@ import sys
 class chatgpt:
     def __init__(self,
                  proxy: typing.Optional[ProxySettings] = None,
-                 session_tokens: list = [],
+                 sessions: list[dict] = [],
                  chat_file: Path = Path("data", "chat_history", "conversation"),
                  personality: Optional[Personality] = Personality([{"name": "cat", "value": "you are a cat now."}]),
                  log_status: bool = True,
@@ -25,12 +27,13 @@ class chatgpt:
                  begin_sleep_time: bool = True) -> None:
         """
         proxy : your proxy for openai | 你用于访问openai的代理
-        session_token : your session_token | 你的session_token
+        session : your session_token | 你的session_token {"session_token": " "}
         chat_file : save the chat history file path | 保存聊天文件的路径，默认 data/chat_history/..
         personality : init personality | 初始化人格 [{"name":"人格名","value":"预设内容"},{"name":"personality name","value":"personality value"},....]
         log_status : start log? | 开启日志输出吗
         plugin : is a Nonebot bot? | 作为Nonebot 插件实现
         """
+        self.Sessions = []
         self.data = MsgData()
         self.join = False
         self.proxy = proxy
@@ -49,19 +52,28 @@ class chatgpt:
         if not self.log_status:
             self.logger.removeHandler(sh)
 
-        if session_tokens:
-            self.cookies: typing.List[SetCookieParam] = [SetCookieParam(
-                url="https://chat.openai.com",
-                name="__Secure-next-auth.session-token",
-                value=x
-            ) for x in session_tokens]
+        if sessions:
+            for session in sessions:
+                s = Session(**session)
+                if s.is_valid:
+                    s.type = "session"
+                    self.Sessions.append(s)
+
+            # self.cookies: typing.List[SetCookieParam] = [SetCookieParam(
+            #     url="https://chat.openai.com",
+            #     name="__Secure-next-auth.session-token",
+            #     value=x
+            # )
+            # ]
         else:
             raise ValueError("session_token is empty!")
+
         self.manage = {
             "start": False,
+            "sessions": self.Sessions,
             "browser_contexts": [],
-            "access_token": ["" for x in range(0, len(self.cookies))],
-            "status": {}
+            # "access_token": ["" for x in range(0, len(self.cookies))],
+            # "status": {}
         }
 
         '''
@@ -97,7 +109,9 @@ class chatgpt:
         if not self.cc_map.stat().st_size:
             self.cc_map.write_text("{}")
 
-    async def __keep_alive__(self, page: Page, context_index: int):
+    async def __keep_alive__(self, session: Session):
+        page = session.page
+        context_index = session.email
         await asyncio.sleep(random.randint(1, 60))
         try:
             async with page.expect_response(url_check, timeout=20000) as a:
@@ -114,8 +128,11 @@ class chatgpt:
                     elif resb.status == 401 and resb.url == url_check:
                         # Token expired and you need to log in again | token过期 需要重新登录
                         self.logger.error(f"flush {context_index} cf cookie has expired!")
-                        self.manage["access_token"][context_index] = ""
-                        self.manage["status"][str(context_index)] = False
+                        # self.manage["access_token"][context_index] = ""
+                        # self.manage["status"][str(context_index)] = False
+                        session.login_state = False
+                        session.access_token = ""
+                        await self.Auth(session)
 
                     else:
                         self.logger.error(f"flush {context_index} cf cookie error!")
@@ -126,8 +143,11 @@ class chatgpt:
             elif res.status == 401 and res.url == url_check:
                 # Token expired and you need to log in again | token过期 需要重新登录
                 self.logger.error(f"flush {context_index} cf cookie has expired!")
-                self.manage["access_token"][context_index] = ""
-                self.manage["status"][str(context_index)] = False
+                # self.manage["access_token"][context_index] = ""
+                # self.manage["status"][str(context_index)] = False
+                session.login_state = False
+                session.access_token = ""
+                await self.Auth(session)
 
             else:
                 self.logger.error(f"flush {context_index} cf cookie error!")
@@ -143,15 +163,24 @@ class chatgpt:
         while self.browser.contexts:
             # browser_context:BrowserContext
             tasks = []
-            for context_index, browser_context in enumerate(self.manage["browser_contexts"][:-1]):
+            for session in filter(lambda s: s.type != "script", self.Sessions):
+                context_index = session.email
                 try:
-                    if not self.manage["access_token"][context_index]:
+                    if session.status == Status.Stop:
                         continue
-                    page: Page = browser_context.pages[0]
-                    tasks.append(self.__keep_alive__(page, context_index))
-
+                    tasks.append(self.__keep_alive__(session))
                 except Exception as e:
                     self.logger.error(f"add {context_index} flush cf task error! {e}")
+
+            # for context_index, browser_context in enumerate(self.manage["browser_contexts"][:-1]):
+            #     try:
+            #         if not self.manage["access_token"][context_index]:
+            #             continue
+            #         page: Page = browser_context.pages[0]
+            #         tasks.append(self.__keep_alive__(page, context_index))
+            #
+            #     except Exception as e:
+            #         self.logger.error(f"add {context_index} flush cf task error! {e}")
             await asyncio.gather(*tasks)
             self.logger.info("flush over,wait next...")
             await asyncio.sleep(60)
@@ -168,6 +197,39 @@ class chatgpt:
         current_thread = threading.current_thread()
         current_thread._stop()
 
+    async def Auth(self, session):
+        if session.email and session.password:
+            auth = AsyncAuth0(email=session.email, password=session.password, page=session.page,
+                              loop=self.browser_event_loop)
+            t = await auth.get_session_token()
+            if t:
+                session.session_token = t
+                session.status = Status.Login
+                session.login_state = True
+        else:
+            self.logger.info("No email or password")
+
+    async def __login(self, session: Session):
+        if not session.browser_contexts:
+            session.browser_contexts = await self.browser.new_context(service_workers="block")
+
+        if session.session_token:
+            token = SetCookieParam(
+                url="https://chat.openai.com",
+                name="__Secure-next-auth.session-token",
+                value=session.session_token
+            )
+            await session.browser_contexts.add_cookies([token])
+            session.page = await session.browser_contexts.new_page()
+            session.status = Status.Login
+
+        elif session.email and session.password:
+            session.page = await session.browser_contexts.new_page()
+            await self.Auth(session)
+        else:
+            # TODO:
+            pass
+
     async def __start__(self, loop):
         """
         init | 初始化
@@ -178,17 +240,24 @@ class chatgpt:
             headless=self.headless,
             slow_mo=50, proxy=self.proxy)
         tasks = []
+        for session in self.Sessions:
+            await self.__login(session)
+            if session.status == Status.Login:
+                tasks.append(self.load_page(session))
+
         # chatgpt cookie context
-        for context_index, x in enumerate(self.cookies):
-            context = await self.browser.new_context(service_workers="block")
-            await context.add_cookies([x])
-            page = await context.new_page()
-            tasks.append(self.load_page(context_index, page))
+        # for context_index, x in enumerate(self.cookies):
+        #     context = await self.browser.new_context(service_workers="block")
+        #     await context.add_cookies([x])
+        #     page = await context.new_page()
+        #     tasks.append(self.load_page(context_index, page))
 
         # chatgpt arkose context (index 9999)
-        context = await self.browser.new_context(service_workers="block")
-        page = await context.new_page()
-        tasks.append(self.load_page(99999, page))
+        s = Session(type="script")
+        s.browser_contexts = await self.browser.new_context(service_workers="block")
+        s.page = await s.browser_contexts.new_page()
+        self.Sessions.append(s)
+        tasks.append(self.load_page(s))
 
         await asyncio.gather(*tasks)
         # for context_index,browser_context in enumerate(self.browser.contexts):
@@ -201,12 +270,14 @@ class chatgpt:
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
         self.thread.start()
 
-    async def load_page(self, context_index: int, page: Page):
-        if self.begin_sleep_time and context_index != 99999:
+    async def load_page(self, session: Session):
+        if self.begin_sleep_time and session.type != "script":
             await asyncio.sleep(random.randint(1, 60))
         retry = 3
         access_token = None
-        if context_index != 99999:
+        page = session.page
+        context_index = session.email
+        if session.type != "script":
             while retry:
                 try:
                     async with page.expect_response(url_session, timeout=30000) as a:
@@ -262,13 +333,16 @@ class chatgpt:
                     self.logger.debug(f"{str(context_index)}'s have cf checkbox?retry {str(retry)} ")
                 # await page.screenshot(path=f"{str(context_index)}'s have cf checkbox?retry {str(retry)} .png")
                 # continue
-            self.manage["access_token"][context_index] = access_token
+            # self.manage["access_token"][context_index] = access_token
+            session.access_token = access_token
 
             if access_token:
-                self.manage["status"][str(context_index)] = True
+                # self.manage["status"][str(context_index)] = True
+                session.login_state = True
                 self.logger.info(f"context {context_index} start!")
             else:
-                self.manage["status"][str(context_index)] = False
+                session.login_state = False
+                # self.manage["status"][str(context_index)] = False
                 await page.screenshot(path=f"context {context_index} faild!.png")
                 self.logger.info(f"context {context_index} faild!")
 
@@ -278,7 +352,8 @@ class chatgpt:
             # await asyncio.sleep(1)
             # await page.wait_for_load_state('load')
             await page.evaluate(Payload.get_ajs())
-            self.manage["status"][str(context_index)] = False
+            session.login_state = False
+            # self.manage["status"][str(context_index)] = False
             self.logger.info(f"context {context_index} js start!")
             return
 
@@ -288,7 +363,9 @@ class chatgpt:
         asyncio.run_coroutine_threadsafe(self.__alive__(), loop)
 
     async def get_bda(self, data: str, key: str):
-        page: Page = self.manage["browser_contexts"][-1].pages[0]
+        session: Session = next(filter(lambda s: s.type == "script", self.Sessions))
+        # page: Page = self.manage["browser_contexts"][-1].pages[0]
+        page: Page = session.page
         js = f"ALFCCJS.encrypt('{data}','{key}')"
         res = await page.evaluate_handle(js)
         result: str = await res.json_value()
@@ -302,9 +379,12 @@ class chatgpt:
         # markdown_string = re.sub(r'\\(.)', r'\1', markdown_string)
         return markdown_string
 
-    async def send_msg(self, msg_data: MsgData, page: Page, token: str, context_num: int):
+    async def send_msg(self, msg_data: MsgData, session: Session):
         """send message body function
         发送消息处理函数"""
+        page = session.page
+        token = session.access_token
+        context_num = self.Sessions.index(session)
 
         # Get arkose | 获取arkose
 
@@ -429,8 +509,8 @@ class chatgpt:
                 return msg_data
 
     async def save_chat(self, msg_data: MsgData, context_num: int):
-        '''save chat file
-        保存聊天文件'''
+        """save chat file
+        保存聊天文件"""
         path = self.chat_file / msg_data.conversation_id
         path.touch()
         if not path.stat().st_size:
@@ -478,6 +558,26 @@ class chatgpt:
         else:
             return json.loads(path.read_text("utf8"))
 
+    def sleep(self, sc: float | int):
+        self.browser_event_loop.run_until_complete(asyncio.sleep(sc))
+
+    def ask(self, msg_data: MsgData) -> MsgData:
+        while not self.manage["start"]:
+            self.sleep(0.5)
+        sessions = filter(
+            lambda s: s.type != "script" and s.login_state is True,
+            sorted(self.Sessions, key=lambda s: s.last_active)
+        )
+        session: Session = next(sessions, None)
+
+        if not session:
+            raise Exception("Not Found Page")
+        msg_data = self.browser_event_loop.run_until_complete(self.send_msg(msg_data, session))
+        # self.join = True
+        # self.manage["status"][str(context_num)] = True
+
+        return msg_data
+
     async def continue_chat(self, msg_data: MsgData) -> MsgData:
         """
         Message processing entry, please use this
@@ -485,51 +585,58 @@ class chatgpt:
         """
         while not self.manage["start"]:
             await asyncio.sleep(0.5)
-        page = None
-        token = None
-        context_num: int = 0
-        if msg_data.conversation_id:
-            map_tmp = json.loads(self.cc_map.read_text("utf8"))
-            for context_name in map_tmp:
-                # Traverse the cid of the environment | 遍历环境的cid
-                if msg_data.conversation_id in map_tmp[context_name]:
-                    # If cid is in this environment | 如果cid在这个环境里
-                    while not self.manage["status"][context_name]:
-                        # Check whether the environment is ready | 检查这个环境有没有准备好
-                        await asyncio.sleep(0.5)
-                    self.manage["status"][context_name] = False
-                    page = self.manage["browser_contexts"][int(context_name)].pages[0]
-                    token = self.manage["access_token"][int(context_name)]
-                    context_num = int(context_name)
-                    break
-        if not page:
+        session = None
+        # token = None
+        # context_num: int = 0
+        # if msg_data.conversation_id:
+        #     map_tmp = json.loads(self.cc_map.read_text("utf8"))
+        #     for context_name in map_tmp:
+        #         # Traverse the cid of the environment | 遍历环境的cid
+        #         if msg_data.conversation_id in map_tmp[context_name]:
+        #             # If cid is in this environment | 如果cid在这个环境里
+        #             while not self.manage["status"][context_name]:
+        #                 # Check whether the environment is ready | 检查这个环境有没有准备好
+        #                 await asyncio.sleep(0.5)
+        #             self.manage["status"][context_name] = False
+        #             page = self.manage["browser_contexts"][int(context_name)].pages[0]
+        #             token = self.manage["access_token"][int(context_name)]
+        #             context_num = int(context_name)
+        #             break
+        if not session:
             # keys = list(self.manage["status"].keys())
             # random.shuffle(keys)
             # self.manage["status"] = {key: self.manage["status"][key] for key in keys}
             # Shuffle the order each time to avoid continuously accessing the first one | 每次打乱顺序，以避免持续访问第一个
             status = False
             # Whether an available environment was found | 是否找到可用环境
-            while True:
-                true_status = [value for value in self.manage["status"] if self.manage["status"][value]]
-                # Status tuple | 状态元组 (index,value)
-                # context_name environment name | 环境名
-                if not true_status:
-                    # Not ready yet, keep waiting | 都没准备好，继续等待
-                    await asyncio.sleep(1)
-                    continue
-                select_context = random.choice(true_status)
-                # if self.manage["status"][context_name]:
-                # 如果该环境好了
+            # while True:
+            #     true_status = [value for value in self.manage["status"] if self.manage["status"][value]]
+            #     # Status tuple | 状态元组 (index,value)
+            #     # context_name environment name | 环境名
+            #     if not true_status:
+            #         # Not ready yet, keep waiting | 都没准备好，继续等待
+            #         await asyncio.sleep(1)
+            #         continue
+            #     select_context = random.choice(true_status)
+            #     # if self.manage["status"][context_name]:
+            #     # 如果该环境好了
+            #
+            #     self.manage["status"][select_context[0]] = False
+            #
+            #     page = self.manage["browser_contexts"][int(select_context[0])].pages[0]
+            #     token = self.manage["access_token"][int(select_context[0])]
+            #     context_num = int(select_context[0])
+            #     status = True
+            #     if status:
+            #         break
+            #     await asyncio.sleep(0.5)
 
-                self.manage["status"][select_context[0]] = False
-
-                page = self.manage["browser_contexts"][int(select_context[0])].pages[0]
-                token = self.manage["access_token"][int(select_context[0])]
-                context_num = int(select_context[0])
-                status = True
-                if status:
-                    break
-                await asyncio.sleep(0.5)
+            # Sorted by Last activity and filter only Login
+            sessions = filter(
+                lambda s: s.type != "script" and s.login_state is True,
+                sorted(self.Sessions, key=lambda s: s.last_active)
+            )
+            session: Session = next(sessions, None)
 
         if msg_data.p_msg_id:
             # The input p_msg_id exists | 存在输入的p_msg_id
@@ -542,11 +649,12 @@ class chatgpt:
             except:
                 # Recovery failed | 恢复失败
                 pass
-        if not page:
+        if not session:
             raise Exception("Not Found Page")
-        msg_data = await self.send_msg(msg_data, page, token, context_num)
+        msg_data = await self.send_msg(msg_data, session)
         # self.join = True
-        self.manage["status"][str(context_num)] = True
+        # self.manage["status"][str(context_num)] = True
+
         return msg_data
 
     async def show_chat_history(self, msg_data: MsgData) -> list:
@@ -640,8 +748,14 @@ class chatgpt:
     async def token_status(self):
         """查看session token状态和工作状态"""
         cid_all = json.loads(self.cc_map.read_text("utf8"))
+
+        # return {
+        #     "token": [True if x else False for x in self.manage["access_token"]],
+        #     "work": [self.manage["status"][x] for x in self.manage["status"] if x != "99999"],
+        #     "cid_num": [len(cid_all[x]) for x in cid_all]
+        # }
         return {
-            "token": [True if x else False for x in self.manage["access_token"]],
-            "work": [self.manage["status"][x] for x in self.manage["status"] if x != "99999"],
+            "token": [True if session.access_token else False for session in self.Sessions],
+            "work": [session.status for session in self.Sessions if session.type != "script"],
             "cid_num": [len(cid_all[x]) for x in cid_all]
         }

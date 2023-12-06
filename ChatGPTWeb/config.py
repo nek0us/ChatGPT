@@ -1,13 +1,18 @@
+import datetime
 import typing
 import uuid
 import json
 import logging
+from enum import Enum
 from typing import TypedDict, Optional, Literal, List, Dict
 import random
 import urllib.parse
 import time
 import base64
 from dataclasses import dataclass
+
+from playwright.async_api import BrowserContext
+from playwright.async_api import Page
 
 url_session = "https://chat.openai.com/api/auth/session"
 url_chatgpt = "https://chat.openai.com:443/backend-api/conversation"
@@ -81,7 +86,6 @@ class ProxySettings(TypedDict, total=False):
     password: Optional[str]
 
 
-@dataclass
 class MsgData:
 
     def __init__(self,
@@ -120,6 +124,29 @@ class MsgData:
         self.arkose_data = arkose_data,
         self.arkose_header = arkose_header,
         self.arkose = arkose
+
+
+class Status(Enum):
+    Login = "Login"
+    Stop = "Stop"
+
+
+@dataclass
+class Session:
+    email: str = ""
+    password: str = ""
+    access_token: str = ""
+    session_token: str = ""
+    status: str = ""
+    login_state: str = ""
+    browser_contexts: "BrowserContext" = None
+    page: "Page" = None
+    type: str = ""
+    last_active: 'datetime.datetime' = datetime.datetime.now()
+
+    @property
+    def is_valid(self):
+        return True
 
 
 class Payload:
