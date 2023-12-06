@@ -24,14 +24,31 @@ class chatgpt:
                  log_status: bool = True,
                  plugin: bool = False,
                  headless: bool = True,
-                 begin_sleep_time: bool = True) -> None:
+                 begin_sleep_time: bool = True,
+                 arkose_status: bool = False
+
+                 ) -> None:
         """
-        proxy : your proxy for openai | 你用于访问openai的代理
-        session : your session_token | 你的session_token {"session_token": " "}
-        chat_file : save the chat history file path | 保存聊天文件的路径，默认 data/chat_history/..
-        personality : init personality | 初始化人格 [{"name":"人格名","value":"预设内容"},{"name":"personality name","value":"personality value"},....]
-        log_status : start log? | 开启日志输出吗
-        plugin : is a Nonebot bot? | 作为Nonebot 插件实现
+        ### proxy : {"server": "http://ip:port"}
+        your proxy for openai | 你用于访问openai的代理
+        ### sessions : list[dict]
+        your session_token | 你的 {"session_token":""}
+        ### chat_file : Path
+        save the chat history file path | 保存聊天文件的路径，默认 data/chat_history/..
+        ### personality : list[dict]
+        init personality | 初始化人格 [{"name":"人格名","value":"预设内容"},{"name":"personality name","value":"personality value"},....]
+        ### log_status : bool = True
+        start log? | 开启日志输出吗
+        ### plugin : bool = False
+        is a Nonebot bot plugin? | 作为 Nonebot 插件实现吗？
+        ### headless : bool = True
+        headless mode | 无头浏览器模式
+        ### begin_sleep_time : bool = False
+        cancel random time sleep when it start (When the number of accounts exceeds 5, they may be banned)
+
+        取消启动时账号随机等待时间（账号数量大于5时可能会被临时封禁）
+        ### arkose_status : bool = False
+        arkose status | arokse验证状态
         """
         self.Sessions = []
         self.data = MsgData()
@@ -43,6 +60,7 @@ class chatgpt:
         self.plugin = plugin
         self.headless = headless
         self.begin_sleep_time = begin_sleep_time
+        self.arkose_status = arkose_status
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logging.INFO)
@@ -346,12 +364,10 @@ class chatgpt:
                 await page.screenshot(path=f"context {context_index} faild!.png")
                 self.logger.info(f"context {context_index} faild!")
 
-
         else:
-            # await page.goto("https://chat.openai.com", timeout=30000)
-            # await asyncio.sleep(1)
-            # await page.wait_for_load_state('load')
-            await page.evaluate(Payload.get_ajs())
+
+            if self.arkose_status:
+                await page.evaluate(Payload.get_ajs())
             session.login_state = False
             # self.manage["status"][str(context_index)] = False
             self.logger.info(f"context {context_index} js start!")
@@ -387,40 +403,42 @@ class chatgpt:
         context_num = self.Sessions.index(session)
 
         # Get arkose | 获取arkose
+        if self.arkose_status:
+            async def route_arkose(route: Route, request: Request):
+                userAgent = request.headers["user-agent"]
+                data = Payload.get_data()
+                key = Payload.get_key(userAgent)
+                bda = await self.get_bda(data, key)
 
-        async def route_arkose(route: Route, request: Request):
-            userAgent = request.headers["user-agent"]
-            data = Payload.get_data()
-            key = Payload.get_key(userAgent)
-            bda = await self.get_bda(data, key)
+                msg_data.arkose_data = Payload.rdm_arkose(userAgent, bda)
+                msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data)
+                msg_data.arkose_header["Cookie"] = request.headers["cookie"]
+                msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
+                await route.continue_(method="POST", headers=msg_data.arkose_header, post_data=msg_data.arkose_data)
 
-            msg_data.arkose_data = Payload.rdm_arkose(userAgent, bda)
-            msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data)
-            msg_data.arkose_header["Cookie"] = request.headers["cookie"]
-            msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
-            await route.continue_(method="POST", headers=msg_data.arkose_header, post_data=msg_data.arkose_data)
+            await page.route("**/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC", route_arkose)  # type: ignore
 
-        await page.route("**/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC", route_arkose)  # type: ignore
+            async with page.expect_response(
+                    "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",
+                    timeout=400000) as arkose_info:
+                try:
 
-        async with page.expect_response(
-                "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC",
-                timeout=400000) as arkose_info:
-            try:
-
-                await page.wait_for_load_state('load')
-                self.logger.debug("get arkose")
-                await page.goto(url_arkose, timeout=500000)
-                await page.wait_for_load_state('load')
-            except Exception as e:
-                logging.warning(e)
-                await page.goto(url_arkose, timeout=300000)
-                await page.wait_for_load_state('load')
-            resp_arkose = await arkose_info.value
-            if resp_arkose.status == 200:
-                arkose_json = await resp_arkose.json()
-                msg_data.arkose = arkose_json["token"]
-            else:
-                pass
+                    await page.wait_for_load_state('load')
+                    self.logger.debug("get arkose")
+                    await page.goto(url_arkose, timeout=500000)
+                    await page.wait_for_load_state('load')
+                except Exception as e:
+                    logging.warning(e)
+                    await page.goto(url_arkose, timeout=300000)
+                    await page.wait_for_load_state('load')
+                resp_arkose = await arkose_info.value
+                if resp_arkose.status == 200:
+                    arkose_json = await resp_arkose.json()
+                    msg_data.arkose = arkose_json["token"]
+                else:
+                    pass
+        else:
+            msg_data.arkose = None
 
         if not msg_data.conversation_id and not msg_data.p_msg_id:
             msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose)
@@ -586,57 +604,61 @@ class chatgpt:
         while not self.manage["start"]:
             await asyncio.sleep(0.5)
         session = None
-        # token = None
-        # context_num: int = 0
+        context_num: int = 0
+        iscid = False
+        # 判断cid是否可用
         # if msg_data.conversation_id:
         #     map_tmp = json.loads(self.cc_map.read_text("utf8"))
         #     for context_name in map_tmp:
-        #         # Traverse the cid of the environment | 遍历环境的cid
+        #         # 遍历环境的cid
         #         if msg_data.conversation_id in map_tmp[context_name]:
-        #             # If cid is in this environment | 如果cid在这个环境里
+        #             # 如果cid在这个环境里
         #             while not self.manage["status"][context_name]:
-        #                 # Check whether the environment is ready | 检查这个环境有没有准备好
+        #                 # 检查这个环境有没有准备好
         #                 await asyncio.sleep(0.5)
         #             self.manage["status"][context_name] = False
         #             page = self.manage["browser_contexts"][int(context_name)].pages[0]
         #             token = self.manage["access_token"][int(context_name)]
         #             context_num = int(context_name)
+        #             iscid = True
         #             break
-        if not session:
-            # keys = list(self.manage["status"].keys())
-            # random.shuffle(keys)
-            # self.manage["status"] = {key: self.manage["status"][key] for key in keys}
-            # Shuffle the order each time to avoid continuously accessing the first one | 每次打乱顺序，以避免持续访问第一个
-            status = False
-            # Whether an available environment was found | 是否找到可用环境
-            # while True:
-            #     true_status = [value for value in self.manage["status"] if self.manage["status"][value]]
-            #     # Status tuple | 状态元组 (index,value)
-            #     # context_name environment name | 环境名
-            #     if not true_status:
-            #         # Not ready yet, keep waiting | 都没准备好，继续等待
-            #         await asyncio.sleep(1)
-            #         continue
-            #     select_context = random.choice(true_status)
-            #     # if self.manage["status"][context_name]:
-            #     # 如果该环境好了
-            #
-            #     self.manage["status"][select_context[0]] = False
-            #
-            #     page = self.manage["browser_contexts"][int(select_context[0])].pages[0]
-            #     token = self.manage["access_token"][int(select_context[0])]
-            #     context_num = int(select_context[0])
-            #     status = True
-            #     if status:
-            #         break
-            #     await asyncio.sleep(0.5)
-
-            # Sorted by Last activity and filter only Login
-            sessions = filter(
-                lambda s: s.type != "script" and s.login_state is True,
-                sorted(self.Sessions, key=lambda s: s.last_active)
-            )
-            session: Session = next(sessions, None)
+        #
+        # if not iscid:
+        #     # keys = list(self.manage["status"].keys())
+        #     # random.shuffle(keys)
+        #     # self.manage["status"] = {key: self.manage["status"][key] for key in keys}
+        #     # 每次打乱顺序，以避免持续访问第一个
+        #     status = False
+        #     # 是否找到可用环境
+        #     while True:
+        #         true_status = [value for value in self.manage["status"] if self.manage["status"][value]]
+        #         # 状态元组 (index,value)
+        #         # context_name 环境名
+        #         if not true_status:
+        #             # 都没准备好，继续等待
+        #             await asyncio.sleep(1)
+        #             continue
+        #         select_context = random.choice(true_status)
+        #         # if self.manage["status"][context_name]:
+        #         # 如果该环境好了
+        #
+        #         self.manage["status"][select_context[0]] = False
+        #
+        #         page = self.manage["browser_contexts"][int(select_context[0])].pages[0]
+        #         token = self.manage["access_token"][int(select_context[0])]
+        #         context_num = int(select_context[0])
+        #         status = True
+        #
+        #         if status:
+        #             break
+        #         await asyncio.sleep(0.5)
+        #
+        # Sorted by Last activity and filter only Login
+        sessions = filter(
+            lambda s: s.type != "script" and s.login_state is True,
+            sorted(self.Sessions, key=lambda s: s.last_active)
+        )
+        session: Session = next(sessions, None)
 
         if msg_data.p_msg_id:
             # The input p_msg_id exists | 存在输入的p_msg_id
