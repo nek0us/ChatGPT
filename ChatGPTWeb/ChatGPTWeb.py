@@ -71,13 +71,6 @@ class chatgpt:
         self.logger.addHandler(sh)
         if not self.log_status:
             self.logger.removeHandler(sh)
-
-        if not self.is_firefox_installed():
-            self.logger.info("Firefox browser is not installed, installing...")
-            self.install_firefox()
-            self.logger.info("Firefox browser has been successfully installed.")
-        else:
-            self.logger.info("Firefox browser is already installed.")
         
         if not sessions:
             raise ValueError("session_token is empty!")
@@ -204,6 +197,13 @@ class chatgpt:
         """
         init | 初始化
         """
+        if not await self.is_firefox_installed():
+            self.logger.info("Firefox browser is not installed, installing...")
+            self.install_firefox()
+            self.logger.info("Firefox browser has been successfully installed.")
+        else:
+            self.logger.info("Firefox browser is already installed.")
+            
         self.playwright_manager = async_playwright()
         self.playwright = await self.playwright_manager.start()
         self.browser = await self.playwright.firefox.launch(
@@ -247,7 +247,8 @@ class chatgpt:
                 json_data = await page.evaluate(
                     '() => JSON.parse(document.querySelector("body").innerText)')
                 access_token = json_data['accessToken']
-                session.email = json_data["user"]["name"]
+                if not session.email:
+                    session.email = json_data["user"]["name"]
             except Exception as e:
                 access_token = ""
                 self.logger.debug(f"{session.email}'s have cf checkbox?")
