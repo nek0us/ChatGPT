@@ -1,33 +1,49 @@
-from ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData,Personality
 import asyncio
+from ChatGPTWeb import chatgpt
+from ChatGPTWeb.config import Personality, MsgData
 import aioconsole
 
-session_token=[
-    ""
+sessions = [
+    {
+        "session_token": ""
+
+    },
+    {
+        "email": "xxx@hotmail.com",
+        "password": "",
+        # "mode":"openai" 
+    },
+        {
+        "email": "xxx@outlook.com",
+        "password": "",
+        "mode":"microsoft"
+    },
+    {
+        "email": "xxx@gmail.com",
+        "password": "",
+        "mode":"google"
+    }
 ]
+# please remove account if u don't have 
 
 personality_definition = Personality(
     [
         {
-            "name":"one",
-            'value':'one value'
-            },
-        {
-            "name":"two",
-            "value":'two value'
-        }
-        ])
+            "name": "Programmer",
+            'value': 'You are python Programmer'
+        },
+    ])
 
-
-proxy = {"server": "http://127.0.0.1:1090"}
-chat = chatgpt(session_token=session_token,proxy=proxy)
-# add ",log_status=False" to turn off log output
+chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True,log_status=False)
+# if u need,u can "log_status=True"
+# "begin_sleep_time=False" for testing only
+# Make sure "headless=True" when using
 
 async def main():
-    
     c_id = await aioconsole.ainput("your conversation_id if you have:")
+    # if u don't have,pleases enter empty
     p_id = await aioconsole.ainput("your parent_message_id if you have:")
+    # if u don't have,pleases enter empty
     data:MsgData = MsgData(conversation_id=c_id,p_msg_id=p_id)
     while 1:
         print("\n------------------------------")

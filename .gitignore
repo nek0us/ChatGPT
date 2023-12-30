@@ -6,6 +6,7 @@ test.py
 setup.py
 ChatGPTWeb/ChatGPTWebTest.py
 ChatGPTWeb/configTest.py
+ChatGPTWeb/Auth0_bak.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

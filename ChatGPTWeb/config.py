@@ -11,18 +11,21 @@ import urllib.parse
 import time
 import base64
 
+from playwright._impl._api_structures import Cookie
 from playwright.async_api import Page, BrowserContext
 
 url_session = "https://chat.openai.com/api/auth/session"
-url_chatgpt = "https://chat.openai.com:443/backend-api/conversation"
+url_chatgpt = "https://chat.openai.com/backend-api/conversation"
 url_check = "https://chat.openai.com/api/auth/session"
 url_arkose = "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC"
+url_arkose_gpt4 = "https://tcr9i.chat.openai.com/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147"
 
 formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(message)s", datefmt="%Y/%m/%d %X")
 
 
 class Status(Enum):
     Login = "Login"
+    Working = "Working"
     Stop = "Stop"
 
 
@@ -31,12 +34,13 @@ class Session:
     email: str = ""
     password: str = ""
     access_token: str = ""
-    session_token: str = ""
+    session_token: Cookie|None = None
     status: str = ""
-    login_state: str = ""
-    browser_contexts: "BrowserContext" = None
-    page: "Page" = None
+    login_state: bool = False
+    browser_contexts: BrowserContext|None = None
+    page: Page|None = None
     type: str = ""
+    mode:Optional[Literal["openai", "google", "microsoft"]] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
 
     @property
@@ -71,6 +75,7 @@ class Personality:
         except:
             pass
 
+    @classmethod
     def read_data(self):
         try:
             with open("data/chat_history/personality", "r") as f:
