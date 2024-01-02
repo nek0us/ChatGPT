@@ -1,4 +1,5 @@
 # Credits to github.com/rawandahmad698/PyChatGPT
+from logging import Logger
 import re
 from typing import Literal, Optional
 import urllib.parse
@@ -34,12 +35,14 @@ class AsyncAuth0:
             email: str,
             password: str,
             page: "APage",
+            logger: Logger,
             mode:Optional[Literal["openai", "google", "microsoft"]] = "openai",
             loop=None
     ):
         self.email_address = email
         self.password = password
         self.page = page
+        self.logger = logger
         self.mode = mode
 
         self.access_token = None
@@ -155,37 +158,26 @@ class AsyncAuth0:
         """
         url = f"https://auth0.openai.com/u/login/identifier?state={state}"
 
-        header={
-            'content-type': "application/x-www-form-urlencoded",
-            "Accept": "*/*",
-            "Sec-Gpc": "1",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Origin": "https://chat.openai.com",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-User": "?1",
-            "Referer": f"https://auth0.openai.com/u/login/identifier?state={state}",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Upgrade-Insecure-Requests": "1",
-        }
-        data = {
-            "state": state,
-            "connection": {"google": "google-oauth2", "microsoft": "windowslive", "openai":"", None:None}.get(self.mode, ""),
-        }
-        payload = self.json_text(data)
-        async def route_handle(route: ARoute, request: ARequest):
-            header["Cookie"] = request.headers["cookie"]
-            header["User-Agent"] = request.headers["user-agent"]
-            await route.continue_(method="POST", headers=header, post_data=payload)
-        if self.mode != "openai":
-            await self.page.route(url, route_handle)  # type: ignore
-        
-        response = await self.page.goto(url)
-        if not response or response.status != 200:
-            raise await self.auth_error(response)
+        if self.mode == "openai":
+            response = await self.page.goto(url)
+            if not response or response.status != 200:
+                raise await self.auth_error(response)
+        elif self.mode == "google":
+            try:
+                await self.page.click('xpath=/html/body/div/main/section/div/div/div/div[4]/form[2]/button/span[2]')
+            except Exception as e:
+                self.logger.warning(f"google point error:{e}")
+                raise e
+            await self.page.wait_for_load_state()
+            
+        elif self.mode == "microsoft":
+            try:
+                await self.page.click('xpath=/html/body/div/main/section/div/div/div/div[4]/form[1]/button/span[2]')
+            except Exception as e:
+                self.logger.warning(f"microsoft point error:{e}")
+                raise e
+            await self.page.wait_for_load_state()
+                
         await self.__part_four(state=state)
         
 

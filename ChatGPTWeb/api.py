@@ -44,7 +44,7 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         break
     return msg_data
 
-async def recive_handle(resp: Response,msg_data: MsgData,logger):
+async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger):
     '''recive handle stream to msgdata'''
     if resp.status == 200:
         stream_text = await resp.text()
@@ -52,6 +52,13 @@ async def recive_handle(resp: Response,msg_data: MsgData,logger):
         msg_data = stream2msgdata(stream_lines,msg_data)
         if not msg_data.status:
             msg_data.msg_recv = str(resp.status) + "or maybe stream not end"
+    elif resp.status == 401:
+        # Token expired and you need to log in again | token过期 需要重新登录
+        logger.error(f"{session.email} 401,relogin now")
+        session.login_state = False
+        session.access_token = ""
+        await Auth(session,logger)
+        msg_data.msg_recv = f"{session.email} 401,relogin last,pleases try send again."
     else:
         msg_data.msg_recv = str(resp.status) + "\n" + resp.status_text + "\n" + await resp.text()
     return msg_data
@@ -107,6 +114,7 @@ async def Auth(session: Session,logger):
     if session.email and session.password:
         auth = AsyncAuth0(email=session.email, password=session.password, page=session.page, # type: ignore
                             mode=session.mode,
+                            logger=logger,
                             # loop=self.browser_event_loop
                             )
         t = await auth.get_session_token()

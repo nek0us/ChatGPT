@@ -262,3 +262,10 @@ status: dict = await chat.token_status()
 # cid_num may not match the number of sessions, because it only records sessions with successful sessions, which will be automatically resolved after a period of time. 
 # cid_num 可能和session数量对不上，因为它只记录会话成功的session，这在允许一段时间后会自动解决
 ```
+
+## 在协程中使用 | use in Coroutine
+```bash
+async def any_async_method():
+    loop = asyncio.get_event_loop()
+    asyncio.run_coroutine_threadsafe(chatbot.__start__(loop),loop)
+```

@@ -13,7 +13,7 @@ sessions = [
         "password": "",
         # "mode":"openai" 
     },
-        {
+    {
         "email": "xxx@outlook.com",
         "password": "",
         "mode":"microsoft"

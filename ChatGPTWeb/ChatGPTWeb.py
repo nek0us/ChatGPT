@@ -348,14 +348,14 @@ class chatgpt:
 
         await page.route("**/backend-api/conversation", route_handle)  # type: ignore
         if page:
-            msg_data = await self.resend(page,msg_data,context_num)
+            msg_data = await self.resend(session,page,msg_data,context_num)
         else:
             msg_data.msg_recv = f"error! session {session.email} no page!"
         
         self.logger.info(f"recv:{msg_data.msg_recv}")    
         return msg_data
         
-    async def resend(self,page: Page,msg_data: MsgData,context_num: str,retry: int = 3):
+    async def resend(self,session: Session,page: Page,msg_data: MsgData,context_num: str,retry: int = 3):
         '''Multiple attempts to send message | 多次尝试发送消息'''
         if retry != 3:
             self.logger.info(f"resend {retry}")
@@ -366,10 +366,10 @@ class chatgpt:
         
         try:
             resp = await async_send_msg(page,msg_data,url_chatgpt,self.logger)
-            msg_data = await recive_handle(resp,msg_data,self.logger)
+            msg_data = await recive_handle(session,resp,msg_data,self.logger)
         except Exception as e:
             self.logger.warning(e)
-            msg_data = await self.resend(page,msg_data,context_num,retry)
+            msg_data = await self.resend(session,page,msg_data,context_num,retry)
             
         if msg_data.status:
             await self.save_chat(msg_data, context_num)
