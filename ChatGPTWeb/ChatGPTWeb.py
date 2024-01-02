@@ -220,6 +220,7 @@ class chatgpt:
         # gpt cookie contexts
         for session in self.Sessions:
             await self.__login(session)
+            await asyncio.sleep(random.randint(1,15))
             if session.status == Status.Login.value:
                 tasks.append(self.load_page(session))
 
