@@ -14,10 +14,10 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
             await page.goto(url, timeout=50000)
         except Exception as e:
             if e.args[0] != "Download is starting":
-                raise e
+                pass
             await page.wait_for_load_state("load")
             if response_info.is_done():
-                response_info._cancel()
+                return await response_info.value
     return await response_info.value
 
 def markdown_to_text(markdown_string):

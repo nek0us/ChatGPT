@@ -1,4 +1,5 @@
 # Credits to github.com/rawandahmad698/PyChatGPT
+import asyncio
 from logging import Logger
 import re
 from typing import Literal, Optional
@@ -190,17 +191,22 @@ class AsyncAuth0:
         if self.mode == "microsoft":
             # enter email_address
             await self.page.fill('//*[@id="i0116"]', self.email_address)
+            await asyncio.sleep(1)
             await self.page.click('//*[@id="idSIButton9"]')
             await self.page.wait_for_load_state()
             # enter passwd
             await self.page.fill('//*[@id="i0118"]', self.password)
+            await asyncio.sleep(1)
             await self.page.click('//*[@id="idSIButton9"]')
             await self.page.wait_for_load_state()
             # don't stay
             await self.page.click('//*[@id="idBtn_Back"]')
             await self.page.wait_for_load_state()
             # go chatgpt
-            await self.page.wait_for_url("https://chat.openai.com/")
+            try:
+                await self.page.wait_for_url("https://chat.openai.com/")
+            except Exception as e :
+                self.logger.warning(e)
         elif self.mode == "google":
             # enter google email
             EnterKey = "Enter"
@@ -209,11 +215,16 @@ class AsyncAuth0:
             await self.page.wait_for_load_state()
             # enter passwd
             await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(self.password)
-            await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
+            
+            # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
+            await asyncio.sleep(1)
             await self.page.keyboard.press(EnterKey)
             await self.page.wait_for_load_state()
             # go chatgpt
-            await self.page.wait_for_url("https://chat.openai.com/")
+            try:
+                await self.page.wait_for_url("https://chat.openai.com/")
+            except Exception as e:
+                self.logger.warning(e)
         else:
             url = f"https://auth0.openai.com/u/login/identifier?state={state}"
             email_url_encoded = self.url_encode(self.email_address)
