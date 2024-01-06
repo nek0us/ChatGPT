@@ -1,6 +1,7 @@
 import json
 import os
 from playwright.async_api import async_playwright, Route, Request, BrowserContext, Page
+from playwright_stealth import stealth_async
 import asyncio
 import typing
 import threading
@@ -188,10 +189,12 @@ class chatgpt:
             token = session.session_token
             await session.browser_contexts.add_cookies([token]) # type: ignore
             session.page = await session.browser_contexts.new_page()
+            await stealth_async(session.page)
             session.status = Status.Login.value 
 
         elif session.email and session.password:
             session.page = await session.browser_contexts.new_page()
+            await stealth_async(session.page)
             await Auth(session,self.logger)
         else:
             # TODO:
@@ -219,6 +222,7 @@ class chatgpt:
         s = Session(type="script")
         s.browser_contexts = await self.browser.new_context(service_workers="block")
         s.page = await s.browser_contexts.new_page()
+        await stealth_async(s.page)
         self.Sessions.append(s)
         tasks.append(self.load_page(s))
         # gpt cookie contexts

@@ -6,7 +6,7 @@ authors = [
     {name = "nek0us", email = "nekouss@mail.com"},
 ]
 license = {text = "GPL3"}
-dependencies = ["playwright","aioconsole"]
+dependencies = ["playwright","aioconsole","playwright_stealth"]
 requires-python = ">=3.10"
 readme = "README.md"
 
