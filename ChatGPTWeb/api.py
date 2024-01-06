@@ -16,10 +16,9 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
             await page.goto(url, timeout=50000)
         
         except Exception as e:
-            if "not end" not in e.args[0]:
-                if "Download is starting" not in e.args[0]:
-                    logger.warning(f"send msg error:{e}")
-                    raise e
+            if "Download is starting" not in e.args[0]:
+                logger.warning(f"send msg error:{e}")
+                raise e
             await page.wait_for_load_state("load")
             if response_info.is_done():
                 return await response_info.value
