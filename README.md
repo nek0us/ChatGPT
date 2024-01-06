@@ -66,7 +66,8 @@ sessions = [
     {
         "email": "xxx@hotmail.com",
         "password": "",
-        # "mode":"openai" 
+        # "mode":"openai" ,
+        "session_token": "",
     },
         {
         "email": "xxx@outlook.com",
@@ -79,7 +80,12 @@ sessions = [
         "mode":"google"
     }
 ]
-# please remove account if u don't have 
+# please remove account if u don't have | 请删除你不需要的登录方式 
+# if you only use session_token, automatic login after expiration is not supported | 仅使用session_token登录的话，不支持过期后的自动登录
+# if you use an openai account to log in, 
+# pleases manually obtain the session_token in advance and add it together to reduce the possibility of openai verification
+# 使用openai账号登录的话，请提前手动获取 session_token并一同添加，降低 openai 验证的可能性
+
 
 personality_definition = Personality(
     [
@@ -269,3 +275,10 @@ async def any_async_method():
     loop = asyncio.get_event_loop()
     asyncio.run_coroutine_threadsafe(chatbot.__start__(loop),loop)
 ```
+
+## 手动获取 session_token 的方法 | How to manually obtain session_token
+After opening chat.openai.com and logging in, press F12 on the browser to open the developer tools and find the following cookies
+
+打开chat.openai.com登录后，按下浏览器的F12以打开开发者工具，找到以下Cookie
+
+[![pizimDg.png](https://s11.ax1x.com/2024/01/06/pizimDg.png)](https://imgse.com/i/pizimDg)

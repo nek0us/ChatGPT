@@ -6,8 +6,6 @@ from typing import Literal, Optional
 import urllib.parse
 from playwright.async_api import Route as ARoute, Request as ARequest
 from playwright.async_api import Page as APage
-from playwright.sync_api import Route, Request
-from playwright.sync_api import Page
 from playwright.async_api import Response
 
 class Error(Exception):
@@ -263,10 +261,16 @@ class AsyncAuth0:
             
 
     async def __part_five(self, state: str) -> None:
-        await self.page.locator('[name="password"]').first.fill(self.password)
-        await self.page.evaluate("()=>arkose.run()")
-        await self.page.wait_for_url("https://chat.openai.com/")
-
+        try:
+            await self.page.locator('[name="password"]').first.fill(self.password)
+            await self.page.evaluate("()=>arkose.run()")
+            await self.page.wait_for_url("https://chat.openai.com/")
+        except Exception as e:
+            cookies = await self.page.context.cookies()
+            cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+            if not cookie:
+                # self.logger.warning(f"login part five error:{e}")
+                raise e
     async def get_access_token(self):
         """
         Gets access token
@@ -284,7 +288,16 @@ class AsyncAuth0:
         
 
     async def get_session_token(self):
-        await self.begin()
-        cookies = await self.page.context.cookies()
-        return next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+        
+        try:
+            await self.begin()
+        except Exception as e:
+            await self.page.screenshot(path=f"{self.email_address}_login_error.png")
+            self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
+        try:
+            cookies = await self.page.context.cookies()
+            return next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+        except Exception as e:
+            self.logger.warning(f"get cookie error:{e}")
+        return None
 

@@ -16,6 +16,7 @@ from .api import (
     create_session,
     retry_keep_alive,
     Auth,
+    get_session_token,
 )
 
 class chatgpt:
@@ -80,6 +81,7 @@ class chatgpt:
             s = create_session(**session)
             if s.is_valid:
                 s.type = "session"
+                s = get_session_token(s,self.chat_file,self.logger)
                 self.Sessions.append(s)
 
         self.manage = {
@@ -132,6 +134,8 @@ class chatgpt:
         创建聊天文件目录
         """
         self.chat_file.mkdir(parents=True, exist_ok=True)
+        session_file_dir = self.chat_file / "sessions"
+        session_file_dir.mkdir(parents=True, exist_ok=True)
         self.cc_map = self.chat_file.joinpath("map.json")
         self.cc_map.touch()
         if not self.cc_map.stat().st_size:
@@ -140,7 +144,7 @@ class chatgpt:
     async def __keep_alive__(self, session: Session):
         url = url_check
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
-        session = await retry_keep_alive(session,url,self.logger)
+        session = await retry_keep_alive(session,url,self.chat_file,self.logger)
 
     async def __alive__(self):
         """keep cf cookie alive
@@ -218,9 +222,10 @@ class chatgpt:
         self.Sessions.append(s)
         tasks.append(self.load_page(s))
         # gpt cookie contexts
-        for session in self.Sessions:
+        for index, session in enumerate(self.Sessions):
             await self.__login(session)
-            await asyncio.sleep(random.randint(1,15))
+            if index != len(self.Sessions) - 1:
+                await asyncio.sleep(random.randint(1,15))
             if session.status == Status.Login.value:
                 tasks.append(self.load_page(session))
 
@@ -241,7 +246,7 @@ class chatgpt:
         access_token = None
         page = session.page
         if session.type != "script" and page:
-            session = await retry_keep_alive(session,url_check,self.logger)
+            session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
             try:
                 await asyncio.sleep(3)
                 await page.wait_for_load_state('load')

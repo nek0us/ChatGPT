@@ -11,7 +11,8 @@ sessions = [
     {
         "email": "xxx@hotmail.com",
         "password": "",
-        # "mode":"openai" 
+        # "mode":"openai" ,
+        "session_token": "",
     },
     {
         "email": "xxx@outlook.com",

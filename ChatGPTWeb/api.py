@@ -1,6 +1,8 @@
+import copy
+from pathlib import Path
 from playwright.async_api import Page
 from playwright.async_api import Response
-
+import pickle
 import json
 
 from .config import MsgData,Session,SetCookieParam,Status
@@ -12,9 +14,12 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
         try:
             logger.info(f"send:{msg_data.msg_send}")
             await page.goto(url, timeout=50000)
+        
         except Exception as e:
-            if e.args[0] != "Download is starting":
-                pass
+            if "not end" not in e.args[0]:
+                if "Download is starting" not in e.args[0]:
+                    logger.warning(f"send msg error:{e}")
+                    raise e
             await page.wait_for_load_state("load")
             if response_info.is_done():
                 return await response_info.value
@@ -50,8 +55,11 @@ async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger
         stream_text = await resp.text()
         stream_lines = stream_text.splitlines()
         msg_data = stream2msgdata(stream_lines,msg_data)
+        if msg_data.msg_recv == "":
+            logger.warning("This content may violate openai's content policy")
+            msg_data.msg_recv = "This content may violate openai's content policy"
         if not msg_data.status:
-            msg_data.msg_recv = str(resp.status) + "or maybe stream not end"
+            msg_data.msg_recv = str(resp.status) + " or maybe stream not end"
     elif resp.status == 401:
         # Token expired and you need to log in again | token过期 需要重新登录
         logger.error(f"{session.email} 401,relogin now")
@@ -75,7 +83,7 @@ def create_session(**kwargs) -> Session:
         )
     return Session(**kwargs)
 
-async def retry_keep_alive(session: Session,url: str,logger,retry:int = 2) -> Session:
+async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retry:int = 2) -> Session:
     if retry != 2:
         logger.info(f"{session.email} flush retry {retry}")
     if retry == 0:
@@ -92,6 +100,16 @@ async def retry_keep_alive(session: Session,url: str,logger,retry:int = 2) -> Se
         elif res.status == 200 and res.url == url:
             logger.info(f"flush {session.email} cf cookie OK!")
             await page.wait_for_timeout(1000)
+            cookies = await session.page.context.cookies()
+            cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+
+            if cookie:
+                session.session_token = SetCookieParam(
+                    url="https://chat.openai.com",
+                    name="__Secure-next-auth.session-token",
+                    value=cookie["value"] # type: ignore
+                ) # type: ignore
+                update_session_token(session,chat_file,logger)
 
         elif res.status == 401 and res.url == url:
             # Token expired and you need to log in again | token过期 需要重新登录
@@ -124,3 +142,36 @@ async def Auth(session: Session,logger):
             session.login_state = True
     else:
         logger.info("No email or password")
+        
+                
+def update_session_token(session: Session,chat_file: Path,logger):
+    session_file = chat_file / "sessions" / session.email
+    try:
+        tmp = copy.copy(session)
+        tmp.browser_contexts = None
+        tmp.page = None
+        with open(session_file,"wb") as file:
+            pickle.dump(tmp, file)
+        del tmp
+    except Exception as e:
+        logger.warning(f"save session_token error：{e}")
+
+def get_session_token(session: Session,chat_file: Path,logger):
+    session_file = chat_file / "sessions" / session.email
+    try:
+        with open(session_file, 'rb') as file:
+            load_session: Session = pickle.load(file)
+            session.session_token = load_session.session_token
+            return session
+    except FileNotFoundError:
+        return session
+    except Exception as e:
+        logger.warning(f"get session_token from file error : {e}")
+        return session
+            
+        
+        
+
+
+
+    
