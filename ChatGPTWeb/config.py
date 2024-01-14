@@ -42,6 +42,11 @@ class Session:
     type: str = ""
     mode:Optional[Literal["openai", "google", "microsoft"]] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
+    input_session_token = session_token
+
+    def __post_init__(self):
+        if self.input_session_token is None:
+            self.input_session_token = self.session_token
 
     @property
     def is_valid(self):

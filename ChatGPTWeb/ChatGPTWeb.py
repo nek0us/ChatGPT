@@ -469,11 +469,22 @@ class chatgpt:
             # new chat
             while not session or session.status == Status.Working.value:
                 # Sorted by Last activity and filter only Login
-                sessions = filter(
-                    lambda s: s.type != "script" and s.login_state is True and s.status != Status.Working.value,
-                    sorted(self.Sessions, key=lambda s: s.last_active)
-                )
-                session: Session = next(sessions, None) # type: ignore
+                # sessions = filter(
+                #     lambda s: s.type != "script" and s.login_state is True and s.status != Status.Working.value,
+                #     sorted(self.Sessions, key=lambda s: s.last_active)
+                # )
+                # session: Session = next(sessions, None) # type: ignore
+                # 原先的代码有些问题，不够随机，总是使用前面的， 容易造成429以及资源浪费 
+                # There are some problems with the original code. It is not random enough. 
+                # It always uses the previous one, which can easily cause 429 and waste of resources.
+                filtered_sessions = [
+                    s for s in self.Sessions 
+                    if s.type != "script" and s.login_state is True and s.status != Status.Working.value
+                ]
+                
+                if filtered_sessions:
+                    session = random.choice(filtered_sessions)
+                    
                 await asyncio.sleep(0.5)
             session.status = Status.Working.value
             self.logger.info(f"session {session.email} begin work")

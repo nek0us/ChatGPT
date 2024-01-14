@@ -10,12 +10,13 @@ from .OpenAIAuth import AsyncAuth0
 
 async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
     '''msg send handle func'''
-    async with page.expect_response(url,timeout=40000) as response_info:
+    async with page.expect_response(url,timeout=60000) as response_info:
         try:
             logger.info(f"send:{msg_data.msg_send}")
-            await page.goto(url, timeout=50000)
+            await page.goto(url, timeout=60000)
         
         except Exception as e:
+            
             if "Download is starting" not in e.args[0]:
                 logger.warning(f"send msg error:{e}")
                 raise e
@@ -146,7 +147,15 @@ async def Auth(session: Session,logger):
 def update_session_token(session: Session,chat_file: Path,logger):
     session_file = chat_file / "sessions" / session.email
     try:
-        tmp = copy.copy(session)
+        # tmp = copy.copy(session)
+        tmp = Session()
+        tmp.access_token = session.access_token
+        tmp.email = session.email
+        tmp.input_session_token = session.input_session_token
+        tmp.last_active = session.last_active
+        tmp.mode = session.mode
+        tmp.password = session.password
+        tmp.session_token = session.session_token
         tmp.browser_contexts = None
         tmp.page = None
         with open(session_file,"wb") as file:
@@ -168,9 +177,3 @@ def get_session_token(session: Session,chat_file: Path,logger):
         logger.warning(f"get session_token from file error : {e}")
         return session
             
-        
-        
-
-
-
-    

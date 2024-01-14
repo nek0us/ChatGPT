@@ -19,7 +19,7 @@ ChatGPT playwright api,not openai api
 
 
 # 安装/Install
-Ubuntu & Windows
+linux & Windows
 
 ```bash
 pip install ChatGPTWeb
@@ -95,7 +95,7 @@ personality_definition = Personality(
         },
     ])
 
-chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True,log_status=False)
+chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True, log_status=False)
 # if u need,u can "log_status=True"
 # "begin_sleep_time=False" for testing only
 # Make sure "headless=True" when using
@@ -271,9 +271,11 @@ status: dict = await chat.token_status()
 
 ## 在协程中使用 | use in Coroutine
 ```bash
+chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True, log_status=False, plugin=True)
+
 async def any_async_method():
     loop = asyncio.get_event_loop()
-    asyncio.run_coroutine_threadsafe(chatbot.__start__(loop),loop)
+    asyncio.run_coroutine_threadsafe(chat.__start__(loop),loop)
 ```
 
 ## 手动获取 session_token 的方法 | How to manually obtain session_token
