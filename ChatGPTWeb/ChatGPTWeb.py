@@ -65,6 +65,9 @@ class chatgpt:
         self.headless = headless
         self.begin_sleep_time = begin_sleep_time
         self.arkose_status = arkose_status
+        self.stop_flush = False
+        # stop flush when it need relogin
+        
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logging.INFO)
@@ -145,7 +148,9 @@ class chatgpt:
     async def __keep_alive__(self, session: Session):
         url = url_check
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
-        session = await retry_keep_alive(session,url,self.chat_file,self.logger)
+        session.flush_status = True
+        session = await retry_keep_alive(session,url,self.chat_file,self,self.logger)
+        session.flush_status = False
 
     async def __alive__(self):
         """keep cf cookie alive
@@ -153,6 +158,8 @@ class chatgpt:
         """
         while self.browser.contexts:
             # browser_context:BrowserContext
+            while self.stop_flush:
+                await asyncio.sleep(1)
             tasks = []
             for session in filter(lambda s: s.type != "script", self.Sessions):
                 context_index = session.email
@@ -165,9 +172,10 @@ class chatgpt:
 
             await asyncio.gather(*tasks)
             self.logger.info("flush over,wait next...")
+
             await asyncio.sleep(60 if len(self.Sessions) < 10 else 6 * len(self.Sessions))
 
-        # for task in tasks:
+        # for task in tasks: 
         #     task.cancel()
         # await asyncio.gather(*tasks,return_exceptions=True)    
 
@@ -195,7 +203,7 @@ class chatgpt:
         elif session.email and session.password:
             session.page = await session.browser_contexts.new_page()
             await stealth_async(session.page)
-            await Auth(session,self.logger)
+            await Auth(session,self.logger,self)
         else:
             # TODO:
             pass
@@ -250,7 +258,7 @@ class chatgpt:
         access_token = None
         page = session.page
         if session.type != "script" and page:
-            session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
+            session = await retry_keep_alive(session,url_check,self.chat_file,self,self.logger)
             try:
                 await asyncio.sleep(3)
                 await page.wait_for_load_state('load')
@@ -376,7 +384,7 @@ class chatgpt:
         
         try:
             resp = await async_send_msg(page,msg_data,url_chatgpt,self.logger)
-            msg_data = await recive_handle(session,resp,msg_data,self.logger)
+            msg_data = await recive_handle(session,resp,msg_data,self.logger,self)
         except Exception as e:
             self.logger.warning(e)
             msg_data = await self.resend(session,page,msg_data,context_num,retry)
