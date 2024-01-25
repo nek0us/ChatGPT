@@ -50,7 +50,7 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         break
     return msg_data
 
-async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger,instance):
+async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger):
     '''recive handle stream to msgdata'''
     if resp.status == 200:
         stream_text = await resp.text()
@@ -63,10 +63,10 @@ async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger
             msg_data.msg_recv = str(resp.status) + " or maybe stream not end"
     elif resp.status == 401:
         # Token expired and you need to log in again | token过期 需要重新登录
-        logger.error(f"{session.email} 401,relogin now")
+        logger.warning(f"{session.email} 401,relogin now")
         session.login_state = False
         session.access_token = ""
-        await Auth(session,logger,instance)
+        await Auth(session,logger)
         msg_data.msg_recv = f"{session.email} 401,relogin last,pleases try send again."
     else:
         msg_data.msg_recv = str(resp.status) + "\n" + resp.status_text + "\n" + await resp.text()
@@ -84,7 +84,7 @@ def create_session(**kwargs) -> Session:
         )
     return Session(**kwargs)
 
-async def retry_keep_alive(session: Session,url: str,chat_file: Path,instance,logger,retry:int = 2) -> Session:
+async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retry:int = 2) -> Session:
     if retry != 2:
         logger.info(f"{session.email} flush retry {retry}")
     if retry == 0:
@@ -93,15 +93,11 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,instance,lo
     retry -= 1
     if page := session.page:
         async with page.expect_response(url, timeout=20000) as a:
-            if instance.stop_flush:
-                # when this session relogin now
-                session.flush_status = False
-                return session
             res = await page.goto(url, timeout=20000)
         res = await a.value
 
         if res.status == 403 and res.url == url:
-            session = await retry_keep_alive(session,url,chat_file,instance,logger,retry)
+            session = await retry_keep_alive(session,url,chat_file,logger,retry)
         elif res.status == 200 and res.url == url:
             logger.info(f"flush {session.email} cf cookie OK!")
             await page.wait_for_timeout(1000)
@@ -115,15 +111,9 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,instance,lo
                     value=cookie["value"] # type: ignore
                 ) # type: ignore
                 update_session_token(session,chat_file,logger)
-
-        elif res.status == 401 and res.url == url:
-            # Token expired and you need to log in again | token过期 需要重新登录
-            logger.error(f"flush {session.email} cf cookie has expired! waiting relogin.")
-            # self.manage["access_token"][context_index] = ""
-            # self.manage["status"][str(context_index)] = False
-            session.login_state = False
-            session.access_token = ""
-            await Auth(session,logger,instance)
+            token = await res.json()
+            if "error" in token and session.status != Status.Logingin.value:
+                session.status = Status.Update.value
 
         else:
             logger.error(f"flush {session.email} cf cookie error!")
@@ -132,28 +122,26 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,instance,lo
     return session
 
 
-async def Auth(session: Session,logger,instance):
+async def Auth(session: Session,logger):
     '''Auth account login func'''
     if session.email and session.password:
         auth = AsyncAuth0(email=session.email, password=session.password, page=session.page, # type: ignore
                             mode=session.mode,
+                            browser_contexts=session.browser_contexts,
                             logger=logger,
                             # loop=self.browser_event_loop
                             )
-        instance.stop_flush = True
-        # stop browser flush
-        if session.flush_status:
-            logger.info(f"{session.email} flushing,waiting over to relogin")
-        while session.flush_status:
-            # waiting last flush over
-            await asyncio.sleep(1)
-        
+        session.status = Status.Logingin.value
         t = await auth.get_session_token()
         if t:
             session.session_token = t
             session.status = Status.Login.value
             session.login_state = True
-        instance.stop_flush = False
+            logger.info(f"{session.email} login success")
+        else:
+            logger.warning(f"{session.email} login error,waiting for next try")
+            session.status = Status.Update.value
+
     else:
         logger.info("No email or password")
         
