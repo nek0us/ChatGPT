@@ -2,7 +2,7 @@
 import asyncio
 from logging import Logger
 import re
-from typing import Literal, Optional
+from typing import Literal
 import urllib.parse
 from playwright.async_api import Route as ARoute, Request as ARequest
 from playwright.async_api import Page as APage
@@ -10,6 +10,7 @@ from playwright.async_api import BrowserContext
 from playwright.async_api import Response
 from playwright_stealth import stealth_async
 
+from .config import url_check
 
 class Error(Exception):
     """
@@ -38,7 +39,7 @@ class AsyncAuth0:
             page: "APage",
             logger: Logger,
             browser_contexts,
-            mode: Optional[Literal["openai", "google", "microsoft"]] = "openai",
+            mode: Literal["openai", "google", "microsoft"] = "openai",
             loop=None
     ):
         self.email_address = email
@@ -158,14 +159,26 @@ class AsyncAuth0:
             # Try Again
             await self.login_page.wait_for_url("https://chat.openai.com/")
 
+        async with self.login_page.expect_response(url_check, timeout=20000) as a:
+            res = await self.login_page.goto(url_check, timeout=20000)
+        res = await a.value
+        if res.status == 200 and res.url == url_check:
+            await asyncio.sleep(3)
+            await self.login_page.wait_for_load_state('load')
+            json_data = await self.login_page.evaluate(
+                '() => JSON.parse(document.querySelector("body").innerText)')
+            access_token = json_data['accessToken']
+            return access_token
+        return None
     
 
 
     async def get_session_token(self):
         self.login_page = await self.browser_contexts.new_page()
         await stealth_async(self.login_page)
+        access_token = None
         try:
-            await self.normal_begin()
+            access_token = await self.normal_begin()
         except Exception as e:
             self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
             await self.login_page.screenshot(path=f"{self.email_address}_login_error.png")
@@ -174,8 +187,8 @@ class AsyncAuth0:
             await self.login_page.close()
             
         try:
-            return next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+            return next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None),access_token
         except Exception as e:
             self.logger.warning(f"get cookie error:{e}")
         
-        return None
+        return None,None

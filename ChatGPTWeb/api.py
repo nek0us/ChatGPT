@@ -111,6 +111,9 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                     value=cookie["value"] # type: ignore
                 ) # type: ignore
                 update_session_token(session,chat_file,logger)
+            else:
+                # no session-token,re login
+                session.status = Status.Update.value
             token = await res.json()
             if "error" in token and session.status != Status.Logingin.value:
                 session.status = Status.Update.value
@@ -132,9 +135,10 @@ async def Auth(session: Session,logger):
                             # loop=self.browser_event_loop
                             )
         session.status = Status.Logingin.value
-        t = await auth.get_session_token()
-        if t:
-            session.session_token = t
+        cookie, access_token = await auth.get_session_token()
+        if cookie and access_token:
+            session.session_token = cookie
+            session.access_token = access_token
             session.status = Status.Login.value
             session.login_state = True
             logger.info(f"{session.email} login success")

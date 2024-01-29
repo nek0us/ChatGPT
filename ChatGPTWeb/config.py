@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import datetime
 from enum import Enum
 from typing import TypedDict, Optional, Literal, List, Dict
+from pathlib import Path
 import random
 import urllib.parse
 import time
@@ -43,7 +44,7 @@ class Session:
     browser_contexts: BrowserContext|None = None
     page: Page|None = None
     type: str = ""
-    mode:Optional[Literal["openai", "google", "microsoft"]] = "openai"
+    mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
     input_session_token = session_token
     
@@ -58,8 +59,11 @@ class Session:
 
 
 class Personality:
-    def __init__(self, init_list: List[Dict[str, str]]):
-        self.init_list = []
+    def __init__(self, 
+                 init_list: List[Dict[str, str]] = [],
+                 path = Path() / "data" / "chat_history" / "personality"):
+        self.init_list = init_list
+        self.path = path
         init_list += self.read_data()
         for item in init_list:
             if str(item) not in [str(x) for x in self.init_list]:
@@ -69,7 +73,7 @@ class Personality:
         name = [f"{index + 1}. {x.get('name')}" for index, x in enumerate(self.init_list)]
         return '\n'.join(name)
 
-    def get_value_by_name(self, name: str) -> str:
+    def get_value_by_name(self, name: str) -> str|None:
         return next((x.get("value") for x in self.init_list if x.get("name") == name), "")
 
     def add_dict_to_list(self, new_dict: dict):
@@ -78,23 +82,23 @@ class Personality:
     def save_data(self):
         tmp = '\n'.join([json.dumps(x) for x in self.init_list])
         try:
-            with open("data/chat_history/personality", "w") as f:
+            with open(self.path, "w") as f:
                 f.write(tmp)
         except:
             pass
 
     @classmethod
-    def read_data(self):
+    def read_data(cls,path:str|Path="data/chat_history/personality"):
         try:
-            with open("data/chat_history/personality", "r") as f:
+            with open(path, "r") as f:
                 init_list = [json.loads(x) for x in f.read().split("\n")]
         except:
             init_list = []
         return init_list
 
-    def flush_data(self):
+    def flush_data(self,path: Path):
         self.save_data()
-        self.read_data()
+        self.read_data(path)
 
     def del_data_by_name(self, name: str):
         for item in self.init_list:

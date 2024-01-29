@@ -25,7 +25,7 @@ class chatgpt:
                  sessions: list[dict] = [],
                  proxy: typing.Optional[ProxySettings] = None,
                  chat_file: Path = Path("data", "chat_history", "conversation"),
-                 personality: Optional[Personality] = Personality([{"name": "cat", "value": "you are a cat now."}]),
+                 personality: Personality = Personality([{"name": "cat", "value": "you are a cat now."}]),
                  log_status: bool = True,
                  plugin: bool = False,
                  headless: bool = True,
@@ -137,6 +137,13 @@ class chatgpt:
         self.chat_file.mkdir(parents=True, exist_ok=True)
         session_file_dir = self.chat_file / "sessions"
         session_file_dir.mkdir(parents=True, exist_ok=True)
+        if self.chat_file == Path("data", "chat_history", "conversation"):
+            # 兼容性更新
+            self.conversation_dir = self.chat_file
+        else:
+            # 规范性更新
+            self.conversation_dir = self.chat_file / "conversation"
+            self.conversation_dir.mkdir(parents=True, exist_ok=True)
         self.cc_map = self.chat_file.joinpath("map.json")
         self.cc_map.touch()
         if not self.cc_map.stat().st_size:
@@ -249,7 +256,7 @@ class chatgpt:
 
         self.manage["browser_contexts"] = self.browser.contexts
 
-        self.personality.read_data() # type: ignore
+        self.personality.read_data(self.chat_file) # type: ignore
         self.manage["start"] = True
         self.logger.info("start!")
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
@@ -400,7 +407,7 @@ class chatgpt:
     async def save_chat(self, msg_data: MsgData, context_num: str):
         """save chat file
         保存聊天文件"""
-        path = self.chat_file / msg_data.conversation_id
+        path = self.conversation_dir / msg_data.conversation_id
         path.touch()
         if not path.stat().st_size:
             tmp = {
@@ -436,7 +443,7 @@ class chatgpt:
     async def load_chat(self, msg_data: MsgData):
         """load chat file
         读取聊天文件"""
-        path = self.chat_file.joinpath(msg_data.conversation_id)
+        path = self.conversation_dir.joinpath(msg_data.conversation_id)
         path.touch()
         if not path.stat().st_size:
             # self.logger.warning(f"不存在{msg_data.conversation_id}历史记录文件")
@@ -618,7 +625,7 @@ class chatgpt:
         添加人格 ,请传像这样的json数据
         """
         self.personality.add_dict_to_list(personality) # type: ignore
-        self.personality.flush_data() # type: ignore
+        self.personality.flush_data(self.chat_file) # type: ignore
 
     async def show_personality_list(self):
         """show_personality_list
