@@ -25,7 +25,7 @@ class chatgpt:
                  sessions: list[dict] = [],
                  proxy: typing.Optional[ProxySettings] = None,
                  chat_file: Path = Path("data", "chat_history", "conversation"),
-                 personality: Personality = Personality([{"name": "cat", "value": "you are a cat now."}]),
+                 personality: Personality = None,
                  log_status: bool = True,
                  plugin: bool = False,
                  headless: bool = True,
@@ -59,7 +59,7 @@ class chatgpt:
         self.data = MsgData()
         self.proxy = proxy
         self.chat_file = chat_file
-        self.personality = personality
+        self.personality =  Personality([{"name": "cat", "value": "you are a cat now."}], chat_file) if personality is None else personality
         self.log_status = log_status
         self.plugin = plugin
         self.headless = headless
@@ -271,6 +271,7 @@ class chatgpt:
         if session.type != "script" and page:
             session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
             try:
+                await page.goto(url_check,timeout=30000)
                 await asyncio.sleep(3)
                 await page.wait_for_load_state('load')
                 json_data = await page.evaluate(

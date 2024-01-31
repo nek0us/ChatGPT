@@ -61,10 +61,10 @@ class Session:
 class Personality:
     def __init__(self, 
                  init_list: List[Dict[str, str]] = [],
-                 path = Path() / "data" / "chat_history" / "personality"):
+                 path: Path = None):
         self.init_list = init_list
-        self.path = path
-        init_list += self.read_data()
+        self.path =  path / "personality" if path else Path() / "data" / "chat_history" / "personality"
+        init_list += self.read_data(self.path)
         for item in init_list:
             if str(item) not in [str(x) for x in self.init_list]:
                 self.init_list.append(item)
@@ -88,7 +88,7 @@ class Personality:
             pass
 
     @classmethod
-    def read_data(cls,path:str|Path="data/chat_history/personality"):
+    def read_data(cls,path:str|Path):
         try:
             with open(path, "r") as f:
                 init_list = [json.loads(x) for x in f.read().split("\n")]

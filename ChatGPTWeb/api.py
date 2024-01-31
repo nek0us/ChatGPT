@@ -1,8 +1,7 @@
-import asyncio
-import copy
 from pathlib import Path
 from playwright.async_api import Page
 from playwright.async_api import Response
+from playwright_stealth import stealth_async
 import pickle
 import json
 
@@ -91,35 +90,43 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
         logger.info(f"{session.email} stop flush")
         return session
     retry -= 1
-    if page := session.page:
-        async with page.expect_response(url, timeout=20000) as a:
-            res = await page.goto(url, timeout=20000)
-        res = await a.value
+    
+    if session.page:
+        page = await session.browser_contexts.new_page()
+        await stealth_async(page)
+        try:
+            async with page.expect_response(url, timeout=20000) as a:
+                res = await page.goto(url, timeout=20000)
+            res = await a.value
 
-        if res.status == 403 and res.url == url:
-            session = await retry_keep_alive(session,url,chat_file,logger,retry)
-        elif res.status == 200 and res.url == url:
-            logger.info(f"flush {session.email} cf cookie OK!")
-            await page.wait_for_timeout(1000)
-            cookies = await session.page.context.cookies()
-            cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+            if res.status == 403 and res.url == url:
+                session = await retry_keep_alive(session,url,chat_file,logger,retry)
+            elif res.status == 200 and res.url == url:
+                logger.info(f"flush {session.email} cf cookie OK!")
+                await page.wait_for_timeout(1000)
+                cookies = await session.page.context.cookies()
+                cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
 
-            if cookie:
-                session.session_token = SetCookieParam(
-                    url="https://chat.openai.com",
-                    name="__Secure-next-auth.session-token",
-                    value=cookie["value"] # type: ignore
-                ) # type: ignore
-                update_session_token(session,chat_file,logger)
+                if cookie:
+                    session.session_token = SetCookieParam(
+                        url="https://chat.openai.com",
+                        name="__Secure-next-auth.session-token",
+                        value=cookie["value"] # type: ignore
+                    ) # type: ignore
+                    update_session_token(session,chat_file,logger)
+                else:
+                    # no session-token,re login
+                    session.status = Status.Update.value
+                token = await res.json()
+                if "error" in token and session.status != Status.Logingin.value:
+                    session.status = Status.Update.value
+
             else:
-                # no session-token,re login
-                session.status = Status.Update.value
-            token = await res.json()
-            if "error" in token and session.status != Status.Logingin.value:
-                session.status = Status.Update.value
-
-        else:
-            logger.error(f"flush {session.email} cf cookie error!")
+                logger.error(f"flush {session.email} cf cookie error!")
+        except Exception as e:
+            logger.warning(f"retry_keep_alive {retry},error:{e}")
+        finally:
+            await page.close()
     else:
         logger.error(f"error! session {session.email} no page!")
     return session
