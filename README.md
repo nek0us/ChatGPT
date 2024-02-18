@@ -72,12 +72,13 @@ sessions = [
         {
         "email": "xxx@outlook.com",
         "password": "",
-        "mode":"microsoft"
+        "mode": "microsoft",
+        "help": "xxxx@xx.com"
     },
     {
         "email": "xxx@gmail.com",
         "password": "",
-        "mode":"google"
+        "mode": "google"
     }
 ]
 # please remove account if u don't have | 请删除你不需要的登录方式 

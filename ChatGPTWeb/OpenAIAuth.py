@@ -126,26 +126,29 @@ class AsyncAuth0:
             await self.login_page.wait_for_url("https://account.live.com/identity/**")
             locator = self.login_page.locator('//*[@id="iProof0"]')
             if await locator.count() > 0:
-                await self.login_page.click('//*[@id="iProof0"]')
-                await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
-                await self.login_page.keyboard.press(EnterKey)
-                await self.login_page.wait_for_load_state()
-                await self.login_page.wait_for_timeout(1000)
-                logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
-                with open(f"{self.email_address}_code.txt","w") as code_file:
-                    code_file.write("")
-                with open(f"{self.email_address}_code.txt","r") as code_file:
-                    while 1:
-                        await asyncio.sleep(1)
-                        code = code_file.read()
-                        if code != "":
-                            logger.info(f"get {self.email_address} verify code {code}")
-                            await self.login_page.fill('//*[@id="iOttText"]', code)
-                            await self.login_page.keyboard.press(EnterKey)
-                            await self.login_page.wait_for_load_state()
-                            await self.login_page.wait_for_timeout(1000)
-                            break
-                os.unlink(f"{self.email_address}_code.txt")
+                if self.help_email != "":
+                    await self.login_page.click('//*[@id="iProof0"]')
+                    await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
+                    await self.login_page.wait_for_timeout(1000)
+                    logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
+                    with open(f"{self.email_address}_code.txt","w") as code_file:
+                        code_file.write("")
+                    with open(f"{self.email_address}_code.txt","r") as code_file:
+                        while 1:
+                            await asyncio.sleep(1)
+                            code = code_file.read()
+                            if code != "":
+                                logger.info(f"get {self.email_address} verify code {code}")
+                                await self.login_page.fill('//*[@id="iOttText"]', code)
+                                await self.login_page.keyboard.press(EnterKey)
+                                await self.login_page.wait_for_load_state()
+                                await self.login_page.wait_for_timeout(1000)
+                                break
+                    os.unlink(f"{self.email_address}_code.txt")
+                else:
+                    logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
             # don't stay
             await self.login_page.wait_for_timeout(1000)
             # await self.page.click('//*[@id="idBtn_Back"]')
