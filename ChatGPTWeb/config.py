@@ -62,11 +62,7 @@ class Session:
 class Personality:
     def __init__(self, 
                  init_list: List[Dict[str, str]] = [],
-<<<<<<< HEAD
                  path: Path = None): # type: ignore
-=======
-                 path: Path = None):
->>>>>>> c891b5216c8f1eca1c338763eea82977ee0cbf71
         self.init_list = init_list
         self.path =  path / "personality" if path else Path() / "data" / "chat_history" / "personality"
         init_list += self.read_data(self.path)

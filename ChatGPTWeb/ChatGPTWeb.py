@@ -25,11 +25,7 @@ class chatgpt:
                  sessions: list[dict] = [],
                  proxy: typing.Optional[ProxySettings] = None,
                  chat_file: Path = Path("data", "chat_history", "conversation"),
-<<<<<<< HEAD
                  personality: Personality = None, # type: ignore
-=======
-                 personality: Personality = None,
->>>>>>> c891b5216c8f1eca1c338763eea82977ee0cbf71
                  log_status: bool = True,
                  plugin: bool = False,
                  headless: bool = True,
