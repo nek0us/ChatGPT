@@ -25,7 +25,7 @@ class chatgpt:
                  sessions: list[dict] = [],
                  proxy: typing.Optional[ProxySettings] = None,
                  chat_file: Path = Path("data", "chat_history", "conversation"),
-                 personality: Personality = Personality([{"name": "cat", "value": "you are a cat now."}]),
+                 personality: Personality = None, # type: ignore
                  log_status: bool = True,
                  plugin: bool = False,
                  headless: bool = True,
@@ -59,7 +59,7 @@ class chatgpt:
         self.data = MsgData()
         self.proxy = proxy
         self.chat_file = chat_file
-        self.personality = personality
+        self.personality =  Personality([{"name": "cat", "value": "you are a cat now."}], chat_file) if personality is None else personality
         self.log_status = log_status
         self.plugin = plugin
         self.headless = headless
@@ -271,6 +271,7 @@ class chatgpt:
         if session.type != "script" and page:
             session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
             try:
+                await page.goto(url_check,timeout=30000)
                 await asyncio.sleep(3)
                 await page.wait_for_load_state('load')
                 json_data = await page.evaluate(
@@ -369,13 +370,29 @@ class chatgpt:
                                                      msg_data.arkose)
 
         header = Payload.headers(token, msg_data.post_data)
-
+        msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
+        
+        async def route_handle_get(route: Route, request: Request):
+            header["Cookie"] = request.headers["cookie"]
+            header["User-Agent"] = request.headers["user-agent"]
+            header["Accept"] = "*/*"
+            header["Accept-Language"] = "en-US"
+            header["Referer"] = f"https://chat.openai.com/c/{msg_data.conversation_id}"
+            header["DNT"] = "1"
+            header["Sec-GPC"] = "1"
+            del header["Content-Type"]
+            del header["Content-Length"]
+            await route.continue_(method="GET", headers=header)
+            
+        await page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_get)  # type: ignore
+        
         async def route_handle(route: Route, request: Request):
             header["Cookie"] = request.headers["cookie"]
             header["User-Agent"] = request.headers["user-agent"]
             await route.continue_(method="POST", headers=header, post_data=msg_data.post_data)
 
         await page.route("**/backend-api/conversation", route_handle)  # type: ignore
+
         if page:
             msg_data = await self.resend(session,page,msg_data,context_num)
         else:
@@ -395,7 +412,7 @@ class chatgpt:
         
         try:
             resp = await async_send_msg(page,msg_data,url_chatgpt,self.logger)
-            msg_data = await recive_handle(session,resp,msg_data,self.logger)
+            msg_data = await recive_handle(session,resp,msg_data,self.logger) # type: ignore
         except Exception as e:
             self.logger.warning(e)
             msg_data = await self.resend(session,page,msg_data,context_num,retry)

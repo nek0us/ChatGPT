@@ -1,16 +1,16 @@
 # Credits to github.com/rawandahmad698/PyChatGPT
-import asyncio
 from logging import Logger
-import re
 from typing import Literal
-import urllib.parse
-from playwright.async_api import Route as ARoute, Request as ARequest
 from playwright.async_api import Page as APage
-from playwright.async_api import BrowserContext
 from playwright.async_api import Response
 from playwright_stealth import stealth_async
 
 from .config import url_check
+
+import asyncio
+import urllib.parse
+import os
+import re
 
 class Error(Exception):
     """
@@ -40,6 +40,7 @@ class AsyncAuth0:
             logger: Logger,
             browser_contexts,
             mode: Literal["openai", "google", "microsoft"] = "openai",
+            help_email: str = "",
             loop=None
     ):
         self.email_address = email
@@ -48,6 +49,7 @@ class AsyncAuth0:
         self.logger = logger
         self.browser_contexts = browser_contexts
         self.mode = mode
+        self.help_email = help_email
 
         self.access_token = None
 
@@ -77,7 +79,7 @@ class AsyncAuth0:
         return f"{sp}".join(li)
     
 
-    async def normal_begin(self):
+    async def normal_begin(self,logger):
         EnterKey = "Enter"
         await self.browser_contexts.clear_cookies()
         await self.login_page.goto(
@@ -119,6 +121,31 @@ class AsyncAuth0:
             await asyncio.sleep(1)
             await self.login_page.click('//*[@id="idSIButton9"]')
             await self.login_page.wait_for_load_state()
+            # verify code 
+            await self.login_page.wait_for_timeout(1000)
+            await self.login_page.wait_for_url("https://account.live.com/identity/**")
+            locator = self.login_page.locator('//*[@id="iProof0"]')
+            if await locator.count() > 0:
+                await self.login_page.click('//*[@id="iProof0"]')
+                await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
+                await self.login_page.keyboard.press(EnterKey)
+                await self.login_page.wait_for_load_state()
+                await self.login_page.wait_for_timeout(1000)
+                logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
+                with open(f"{self.email_address}_code.txt","w") as code_file:
+                    code_file.write("")
+                with open(f"{self.email_address}_code.txt","r") as code_file:
+                    while 1:
+                        await asyncio.sleep(1)
+                        code = code_file.read()
+                        if code != "":
+                            logger.info(f"get {self.email_address} verify code {code}")
+                            await self.login_page.fill('//*[@id="iOttText"]', code)
+                            await self.login_page.keyboard.press(EnterKey)
+                            await self.login_page.wait_for_load_state()
+                            await self.login_page.wait_for_timeout(1000)
+                            break
+                os.unlink(f"{self.email_address}_code.txt")
             # don't stay
             await self.login_page.wait_for_timeout(1000)
             # await self.page.click('//*[@id="idBtn_Back"]')
@@ -173,12 +200,12 @@ class AsyncAuth0:
     
 
 
-    async def get_session_token(self):
+    async def get_session_token(self,logger):
         self.login_page = await self.browser_contexts.new_page()
         await stealth_async(self.login_page)
         access_token = None
         try:
-            access_token = await self.normal_begin()
+            access_token = await self.normal_begin(logger)
         except Exception as e:
             self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
             await self.login_page.screenshot(path=f"{self.email_address}_login_error.png")

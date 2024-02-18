@@ -284,3 +284,9 @@ After opening chat.openai.com and logging in, press F12 on the browser to open t
 打开chat.openai.com登录后，按下浏览器的F12以打开开发者工具，找到以下Cookie
 
 [![pizimDg.png](https://s11.ax1x.com/2024/01/06/pizimDg.png)](https://imgse.com/i/pizimDg)
+
+## 可能遇到的问题 | possible problems
+### 微软登录辅助邮箱验证 | microsoft email verify code
+A file will be generated in the startup directory. Please put the verification code into it and save it. Pay attention to the log prompts.
+
+启动目录下会生成文件，请将验证码放入其中并保存，注意日志提示

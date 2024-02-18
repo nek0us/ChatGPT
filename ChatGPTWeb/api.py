@@ -1,13 +1,23 @@
-import asyncio
-import copy
 from pathlib import Path
 from playwright.async_api import Page
 from playwright.async_api import Response
+from playwright_stealth import stealth_async
 import pickle
 import json
+import websockets
+import base64
+import asyncio
 
 from .config import MsgData,Session,SetCookieParam,Status
 from .OpenAIAuth import AsyncAuth0
+
+class MockResponse:
+    def __init__(self, data, status=200):
+        self.data = data
+        self.status = status
+    
+    async def text(self):
+        return self.data
 
 async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
     '''msg send handle func'''
@@ -24,8 +34,46 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
             await page.wait_for_load_state("load")
             if response_info.is_done():
                 return await response_info.value
-    return await response_info.value
+        else:
+            tmp = await response_info.value
+            wss = json.loads(await tmp.text())
+            wss_url = wss["wss_url"]
+            async with websockets.connect(wss_url) as websocket:
+                data_list = []
+                while 1:
+                    recv = await websocket.recv()
+                    if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+                        break
+                    data_list.append(recv)
+                    
+                if data_list == []:
+                    msg = await get_msg_from_history(page,msg_data,url,logger)
+                    return MockResponse(msg)
+                body = json.loads(data_list[-1])
+                data = base64.b64decode(body["body"]).decode('utf-8')
+                return MockResponse(data)
 
+async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
+    url_cid = url + '/' + msg_data.conversation_id
+    async with page.expect_response(url_cid,timeout=60000) as response_info:
+        try:
+            # logger.info(f"send:{msg_data.msg_send}")
+            await page.goto(url_cid, timeout=60000)
+            tmp = await response_info.value
+            text = await tmp.json()
+            if msg_data.last_id in text["mapping"]:
+                # msg = text["mapping"][msg_data.last_id]
+                # return "data: " + json.dumps(msg)
+                msg = list(text["mapping"].items())[-1][-1]
+                if msg_data.last_id == msg["parent"]:
+                    return "data: " + json.dumps(msg)
+
+            return "error"
+        except Exception as e:
+            raise e
+                    
+
+            
 def markdown_to_text(markdown_string):
     '''it's not work now'''
     # Remove backslashes from markdown string
@@ -43,7 +91,12 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         msg = json.loads(x[6:])
         tmp = msg["message"]["content"]["parts"][0]
         msg_data.msg_recv = markdown_to_text(tmp)
-        msg_data.conversation_id = msg["conversation_id"]
+        try:
+            msg_data.conversation_id = msg["conversation_id"]
+        except KeyError as e:
+            pass
+        except Exception as e:
+            raise e
         msg_data.next_msg_id = msg["message"]["id"]
         msg_data.status = True
         msg_data.msg_type = "old_session"
@@ -91,35 +144,43 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
         logger.info(f"{session.email} stop flush")
         return session
     retry -= 1
-    if page := session.page:
-        async with page.expect_response(url, timeout=20000) as a:
-            res = await page.goto(url, timeout=20000)
-        res = await a.value
+    
+    if session.page:
+        page = await session.browser_contexts.new_page() # type: ignore
+        await stealth_async(page)
+        try:
+            async with page.expect_response(url, timeout=20000) as a:
+                res = await page.goto(url, timeout=20000)
+            res = await a.value
 
-        if res.status == 403 and res.url == url:
-            session = await retry_keep_alive(session,url,chat_file,logger,retry)
-        elif res.status == 200 and res.url == url:
-            logger.info(f"flush {session.email} cf cookie OK!")
-            await page.wait_for_timeout(1000)
-            cookies = await session.page.context.cookies()
-            cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+            if res.status == 403 and res.url == url:
+                session = await retry_keep_alive(session,url,chat_file,logger,retry)
+            elif res.status == 200 and res.url == url:
+                logger.info(f"flush {session.email} cf cookie OK!")
+                await page.wait_for_timeout(1000)
+                cookies = await session.page.context.cookies()
+                cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
 
-            if cookie:
-                session.session_token = SetCookieParam(
-                    url="https://chat.openai.com",
-                    name="__Secure-next-auth.session-token",
-                    value=cookie["value"] # type: ignore
-                ) # type: ignore
-                update_session_token(session,chat_file,logger)
+                if cookie:
+                    session.session_token = SetCookieParam(
+                        url="https://chat.openai.com",
+                        name="__Secure-next-auth.session-token",
+                        value=cookie["value"] # type: ignore
+                    ) # type: ignore
+                    update_session_token(session,chat_file,logger)
+                else:
+                    # no session-token,re login
+                    session.status = Status.Update.value
+                token = await res.json()
+                if "error" in token and session.status != Status.Logingin.value:
+                    session.status = Status.Update.value
+
             else:
-                # no session-token,re login
-                session.status = Status.Update.value
-            token = await res.json()
-            if "error" in token and session.status != Status.Logingin.value:
-                session.status = Status.Update.value
-
-        else:
-            logger.error(f"flush {session.email} cf cookie error!")
+                logger.error(f"flush {session.email} cf cookie error!")
+        except Exception as e:
+            logger.warning(f"retry_keep_alive {retry},error:{e}")
+        finally:
+            await page.close()
     else:
         logger.error(f"error! session {session.email} no page!")
     return session
@@ -132,10 +193,11 @@ async def Auth(session: Session,logger):
                             mode=session.mode,
                             browser_contexts=session.browser_contexts,
                             logger=logger,
+                            help_email=session.help_email
                             # loop=self.browser_event_loop
                             )
         session.status = Status.Logingin.value
-        cookie, access_token = await auth.get_session_token()
+        cookie, access_token = await auth.get_session_token(logger)
         if cookie and access_token:
             session.session_token = cookie
             session.access_token = access_token

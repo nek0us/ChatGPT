@@ -44,6 +44,7 @@ class Session:
     browser_contexts: BrowserContext|None = None
     page: Page|None = None
     type: str = ""
+    help_email: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
     input_session_token = session_token
@@ -61,10 +62,10 @@ class Session:
 class Personality:
     def __init__(self, 
                  init_list: List[Dict[str, str]] = [],
-                 path = Path() / "data" / "chat_history" / "personality"):
+                 path: Path = None): # type: ignore
         self.init_list = init_list
-        self.path = path
-        init_list += self.read_data()
+        self.path =  path / "personality" if path else Path() / "data" / "chat_history" / "personality"
+        init_list += self.read_data(self.path)
         for item in init_list:
             if str(item) not in [str(x) for x in self.init_list]:
                 self.init_list.append(item)
@@ -88,7 +89,7 @@ class Personality:
             pass
 
     @classmethod
-    def read_data(cls,path:str|Path="data/chat_history/personality"):
+    def read_data(cls,path:str|Path):
         try:
             with open(path, "r") as f:
                 init_list = [json.loads(x) for x in f.read().split("\n")]
@@ -135,6 +136,7 @@ class MsgData():
                  conversation_id: str = "",
                  p_msg_id: str = "",
                  next_msg_id: str = "",
+                 last_id:str = "",
                  post_data: str = "",
                  arkose_data: str = "",
                  arkose_header: dict[str, str] = {},
@@ -159,6 +161,7 @@ class MsgData():
         self.conversation_id = conversation_id
         self.p_msg_id = p_msg_id
         self.next_msg_id = next_msg_id
+        self.last_id = last_id
         self.post_data = post_data
         self.arkose_data = arkose_data,
         self.arkose_header = arkose_header,
