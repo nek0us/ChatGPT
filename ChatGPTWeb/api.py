@@ -146,7 +146,11 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
     retry -= 1
     
     if session.page:
+<<<<<<< HEAD
         page = await session.browser_contexts.new_page() # type: ignore
+=======
+        page = await session.browser_contexts.new_page()
+>>>>>>> c891b5216c8f1eca1c338763eea82977ee0cbf71
         await stealth_async(page)
         try:
             async with page.expect_response(url, timeout=20000) as a:
