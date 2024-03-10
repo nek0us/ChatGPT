@@ -45,6 +45,7 @@ class Session:
     page: Page|None = None
     type: str = ""
     help_email: str = ""
+    last_wss: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
     input_session_token = session_token
@@ -136,7 +137,8 @@ class MsgData():
                  conversation_id: str = "",
                  p_msg_id: str = "",
                  next_msg_id: str = "",
-                 last_id:str = "",
+                 last_id: str = "",
+                 last_wss: str = "",
                  post_data: str = "",
                  arkose_data: str = "",
                  arkose_header: dict[str, str] = {},
@@ -162,6 +164,7 @@ class MsgData():
         self.p_msg_id = p_msg_id
         self.next_msg_id = next_msg_id
         self.last_id = last_id
+        self.last_wss = last_wss
         self.post_data = post_data
         self.arkose_data = arkose_data,
         self.arkose_header = arkose_header,

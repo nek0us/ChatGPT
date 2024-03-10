@@ -411,11 +411,14 @@ class chatgpt:
             return msg_data
         
         try:
+            msg_data.last_wss = session.last_wss
             resp = await async_send_msg(page,msg_data,url_chatgpt,self.logger)
             msg_data = await recive_handle(session,resp,msg_data,self.logger) # type: ignore
         except Exception as e:
             self.logger.warning(e)
             msg_data = await self.resend(session,page,msg_data,context_num,retry)
+        finally:
+            session.last_wss = msg_data.last_wss
             
         if msg_data.status:
             await self.save_chat(msg_data, context_num)

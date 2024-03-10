@@ -7,6 +7,7 @@ import json
 import websockets
 import base64
 import asyncio
+import time
 
 from .config import MsgData,Session,SetCookieParam,Status
 from .OpenAIAuth import AsyncAuth0
@@ -21,6 +22,19 @@ class MockResponse:
 
 async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
     '''msg send handle func'''
+    ws = None
+    if msg_data.last_wss != "":
+        split_jwt = msg_data.last_wss.split('access_token=')[1].split('.')
+        payload = split_jwt[1]
+        padding = '=' * (4 - len(payload) % 4)
+        decoded_payload = base64.urlsafe_b64decode(payload + padding)
+        payload_data = json.loads(decoded_payload)
+        now_time = int(time.time())
+        if now_time < payload_data["exp"]:
+            try:
+                ws = await websockets.connect(msg_data.last_wss,user_agent_header=None)
+            except Exception as e:
+                logger.warning(f"open last wss error:{e}")
     async with page.expect_response(url,timeout=60000) as response_info:
         try:
             logger.info(f"send:{msg_data.msg_send}")
@@ -38,20 +52,40 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
             tmp = await response_info.value
             wss = json.loads(await tmp.text())
             wss_url = wss["wss_url"]
-            async with websockets.connect(wss_url) as websocket:
-                data_list = []
-                while 1:
-                    recv = await websocket.recv()
-                    if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
-                        break
-                    data_list.append(recv)
+            msg_data.last_wss = wss_url
+            data_list = []
+            if ws:
+                try:
+                    while 1:
+                        recv = await asyncio.wait_for(ws.recv(),timeout=20)
+                        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+                            break
+                        data_list.append(recv)
+                except Exception as e:
+                    logger(f"error: {e}")
+                    async with websockets.connect(wss_url,user_agent_header=None) as websocket:
+                        while 1:
+                            recv = await asyncio.wait_for(websocket.recv(),timeout=20)
+                            if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+                                break
+                            data_list.append(recv)
+                finally:
+                    await ws.close()
+            else:
+                async with websockets.connect(wss_url,user_agent_header=None) as websocket:
                     
-                if data_list == []:
-                    msg = await get_msg_from_history(page,msg_data,url,logger)
-                    return MockResponse(msg)
-                body = json.loads(data_list[-1])
-                data = base64.b64decode(body["body"]).decode('utf-8')
-                return MockResponse(data)
+                    while 1:
+                        recv = await asyncio.wait_for(websocket.recv(),timeout=20)
+                        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+                            break
+                        data_list.append(recv)
+                    
+            if data_list == []:
+                msg = await get_msg_from_history(page,msg_data,url,logger)
+                return MockResponse(msg)
+            body = json.loads([newdata for newdata in data_list if "message_id" in newdata][-1])
+            data = base64.b64decode(body["body"]).decode('utf-8')
+            return MockResponse(data)
 
 async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
     url_cid = url + '/' + msg_data.conversation_id
@@ -221,6 +255,7 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.email = session.email
         tmp.input_session_token = session.input_session_token
         tmp.last_active = session.last_active
+        tmp.last_wss = session.last_wss
         tmp.mode = session.mode
         tmp.password = session.password
         tmp.session_token = session.session_token
@@ -238,6 +273,7 @@ def get_session_token(session: Session,chat_file: Path,logger):
         with open(session_file, 'rb') as file:
             load_session: Session = pickle.load(file)
             session.session_token = load_session.session_token
+            session.last_wss = load_session.last_wss
             return session
     except FileNotFoundError:
         return session
