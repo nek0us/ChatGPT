@@ -20,6 +20,7 @@ url_chatgpt = "https://chat.openai.com/backend-api/conversation"
 url_check = "https://chat.openai.com/api/auth/session"
 url_arkose = "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC"
 url_arkose_gpt4 = "https://tcr9i.chat.openai.com/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147"
+url_requirements = "https://chat.openai.com/backend-api/sentinel/chat-requirements"
 
 formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(message)s", datefmt="%Y/%m/%d %X")
 
@@ -38,14 +39,19 @@ class Session:
     email: str = ""
     password: str = ""
     access_token: str = ""
+    gpt4: bool = False
     session_token: Cookie|None = None
     status: str = ""
     login_state: bool = False
-    browser_contexts: BrowserContext|None = None
-    page: Page|None = None
+    browser_contexts: Optional[BrowserContext] = None
+    page: Optional[Page] = None
+    user_agent: str = ""
+    cookies: str = ""
+    login_cookies: Optional[list] = None
     type: str = ""
     help_email: str = ""
     last_wss: str = ""
+    device_id: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
     input_session_token = session_token
@@ -142,7 +148,11 @@ class MsgData():
                  post_data: str = "",
                  arkose_data: str = "",
                  arkose_header: dict[str, str] = {},
-                 arkose: str | None = ""
+                 arkose: Optional[str] = "",
+                 header: dict = {},
+                 sentinel: str = "",
+                 error_info: str = "",
+                 gpt4: bool = False,
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -155,6 +165,8 @@ class MsgData():
         arkose_data : arkose http data
         arkose_header : arkose http header
         arkose : arkose
+        error_info : error info
+        gpt4: this msg used gpt4
         '''
         self.status = status
         self.msg_type = msg_type
@@ -169,12 +181,16 @@ class MsgData():
         self.arkose_data = arkose_data,
         self.arkose_header = arkose_header,
         self.arkose = arkose
+        self.header = header
+        self.sentinel = sentinel
+        self.error_info = error_info
+        self.gpt4 = gpt4
 
 
 class Payload():
 
     @staticmethod
-    def new_payload(prompt: str, arkose: str | None) -> str:
+    def new_payload(prompt: str, arkose: Optional[str], gpt4: bool = False) -> str:
         return json.dumps({
             "action": "next",
             "messages": [{
@@ -189,7 +205,7 @@ class Payload():
                 "metadata": {}
             }],
             "parent_message_id": str(uuid.uuid4()),
-            "model": "text-davinci-002-render-sha",
+            "model": "gpt-4" if gpt4 else "text-davinci-002-render-sha",
             "timezone_offset_min": -480,
             # "suggestions": [
             #     "'Explain what this bash command does: lazy_i18n(\"cat config.yaml | awk NF\"'",
@@ -199,16 +215,17 @@ class Payload():
             # ],
             "suggestions": [],
             "history_and_training_disabled": False,
-            "arkose_token": arkose,
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
             "force_paragen": False,
-            "force_rate_limit": False
+            "force_rate_limit": False,
+            "websocket_request_id": str(uuid.uuid4())
+            
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: str | None) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt4: bool = False) -> str:
         return json.dumps({
             "action":
                 "next",
@@ -229,29 +246,31 @@ class Payload():
             "parent_message_id":
                 p_msg_id,
             "model":
-                "text-davinci-002-render-sha",
+                "gpt-4" if gpt4 else "text-davinci-002-render-sha",
             "timezone_offset_min":
                 -480,
             "suggestions": [],
-            "arkose_token": arkose,
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
             "force_paragen": False,
-            "force_rate_limit": False
+            "force_rate_limit": False,
+            "websocket_request_id": str(uuid.uuid4())
         })
 
     @staticmethod
-    def headers(token: str, data: str):
+    def headers(token: str, data: str,device_id: str):
         return {
             "Host": "chat.openai.com",
-            "Accept": "text/event-stream",
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
             "Accept-Encoding": "gzip, deflate",
             "Content-Type": "application/json",
             "Content-Length": str(len(str(data))),
             "Referer": "https://chat.openai.com/",
             "Authorization": f"Bearer {token}",
+            "OAI-Device-Id": device_id,
+            "OAI-Language": "en-US",
             "Origin": "https://chat.openai.com",
             "Connection": "keep-alive",
             "sec-ch-ua-mobile": "?0",
@@ -261,29 +280,6 @@ class Payload():
             "Sec-Fetch-Site": "same-origin"
             # "TE": "trailers"
         }
-
-    @staticmethod
-    def system_new_payload(prompt: str) -> str:
-        return json.dumps({
-            "action":
-                "next",
-            "messages": [{
-                "id": str(uuid.uuid4()),
-                "author": {
-                    "role": "system"
-                },
-                "content": {
-                    "content_type": "text",
-                    "parts": [prompt]
-                }
-            }],
-            "parent_message_id":
-                str(uuid.uuid4()),
-            "model":
-                "text-davinci-002-render-sha",
-            "timezone_offset_min":
-                -480
-        })
 
     @staticmethod
     def rdm_arkose(ua: str, bda: str) -> str:
@@ -299,19 +295,34 @@ class Payload():
                 "rnd": f"0.{random.randint(10 ** 15, 10 ** 18 - 1)}",
             }
         )
-
+    @staticmethod
+    def rdm_arkose_new(ua: str, bda: str, paid) -> str:
+        return urllib.parse.urlencode(
+            {
+                "bda": bda,
+                "public_key": "35536E1E-65B4-4D96-9D97-6ADB7EFF8147",
+                "site": "https://chat.openai.com",
+                "userbrowser": ua,
+                "capi_version": "2.4.3",
+                "capi_mode": "inline",
+                "style_theme": "default",
+                "rnd": f"0.{random.randint(10 ** 15, 10 ** 18 - 1)}",
+                "data[blob]":paid
+            }
+        )
+        
     @staticmethod
     def header_arkose(data: str):
         return {
             "Host": "tcr9i.chat.openai.com",
             "Accept": "*/*",
             "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Content-Length": str(len(data)),
             "Origin": "https://tcr9i.chat.openai.com",
             "Connection": "keep-alive",
-            "Referer": "https://tcr9i.chat.openai.com/v2/1.5.5/enforcement.fbfc14b0d793c6ef8359e0e4b4a91f67.html",
+            "Referer": "https://tcr9i.chat.openai.com/v2/2.4.3/enforcement.f6478716f67eb008b598024953b7143d.html",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -323,7 +334,15 @@ class Payload():
         old_bda2: str = r'"},{"key":"wh","value":"1eeb1284b181b4d4b6814e7ed617dcf7|5ab5738955e0611421b686bc95655ad0"},{"key":"enhanced_fp","value":[{"key":"webgl_extensions","value":"ANGLE_instanced_arrays;EXT_blend_minmax;EXT_color_buffer_half_float;EXT_float_blend;EXT_frag_depth;EXT_shader_texture_lod;EXT_sRGB;EXT_texture_compression_bptc;EXT_texture_compression_rgtc;EXT_texture_filter_anisotropic;OES_element_index_uint;OES_fbo_render_mipmap;OES_standard_derivatives;OES_texture_float;OES_texture_float_linear;OES_texture_half_float;OES_texture_half_float_linear;OES_vertex_array_object;WEBGL_color_buffer_float;WEBGL_compressed_texture_s3tc;WEBGL_compressed_texture_s3tc_srgb;WEBGL_debug_renderer_info;WEBGL_debug_shaders;WEBGL_depth_texture;WEBGL_draw_buffers;WEBGL_lose_context;WEBGL_provoking_vertex"},{"key":"webgl_extensions_hash","value":"c602e4d0f2e623f401e51e32cb465ed7"},{"key":"webgl_renderer","value":"ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0)"},{"key":"webgl_vendor","value":"Mozilla"},{"key":"webgl_version","value":"WebGL 1.0"},{"key":"webgl_shading_language_version","value":"WebGL GLSL ES 1.0"},{"key":"webgl_aliased_line_width_range","value":"[1, 1]"},{"key":"webgl_aliased_point_size_range","value":"[1, 1024]"},{"key":"webgl_antialiasing","value":"yes"},{"key":"webgl_bits","value":"8,8,24,8,8,0"},{"key":"webgl_max_params","value":"16,32,16384,1024,16384,16,16384,30,16,16,4095"},{"key":"webgl_max_viewport_dims","value":"[32767, 32767]"},{"key":"webgl_unmasked_vendor","value":"Google Inc. (NVIDIA)"},{"key":"webgl_unmasked_renderer","value":"ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0)"},{"key":"webgl_vsf_params","value":"23,127,127,23,127,127,23,127,127"},{"key":"webgl_vsi_params","value":"0,31,30,0,31,30,0,31,30"},{"key":"webgl_fsf_params","value":"23,127,127,23,127,127,23,127,127"},{"key":"webgl_fsi_params","value":"0,31,30,0,31,30,0,31,30"},{"key":"webgl_hash_webgl","value":"269baaa8291a5a86d34ab298bb929207"},{"key":"user_agent_data_brands","value":null},{"key":"user_agent_data_mobile","value":null},{"key":"navigator_connection_downlink","value":null},{"key":"navigator_connection_downlink_max","value":null},{"key":"network_info_rtt","value":null},{"key":"network_info_save_data","value":null},{"key":"network_info_rtt_type","value":null},{"key":"screen_pixel_depth","value":24},{"key":"navigator_device_memory","value":null},{"key":"navigator_languages","value":"en-US,en"},{"key":"window_inner_width","value":0},{"key":"window_inner_height","value":0},{"key":"window_outer_width","value":1280},{"key":"window_outer_height","value":720},{"key":"browser_detection_firefox","value":true},{"key":"browser_detection_brave","value":false},{"key":"audio_codecs","value":"{\\"ogg\\":\\"probably\\",\\"mp3\\":\\"maybe\\",\\"wav\\":\\"probably\\",\\"m4a\\":\\"maybe\\",\\"aac\\":\\"maybe\\"}"},{"key":"video_codecs","value":"{\\"ogg\\":\\"probably\\",\\"h264\\":\\"probably\\",\\"webm\\":\\"probably\\",\\"mpeg4v\\":\\"\\",\\"mpeg4a\\":\\"\\",\\"theora\\":\\"\\"}"},{"key":"media_query_dark_mode","value":false},{"key":"headless_browser_phantom","value":false},{"key":"headless_browser_selenium","value":false},{"key":"headless_browser_nightmare_js","value":false},{"key":"document__referrer","value":""},{"key":"window__ancestor_origins","value":null},{"key":"window__tree_index","value":[1]},{"key":"window__tree_structure","value":"[[],[]]"},{"key":"window__location_href","value":"https://tcr9i.chat.openai.com/v2/1.5.5/enforcement.fbfc14b0d793c6ef8359e0e4b4a91f67.html#3D86FBBA-9D22-402A-B512-3420086BA6CC"},{"key":"client_config__sitedata_location_href","value":"https://chat.openai.com/"},{"key":"client_config__surl","value":"https://tcr9i.chat.openai.com"},{"key":"mobile_sdk__is_sdk"},{"key":"client_config__language","value":null},{"key":"audio_fingerprint","value":"35.749968223273754"}]},{"key":"fe","value":["DNT:unspecified","L:en-US","D:24","PR:2","S:1280,720","AS:1280,720","TO:-480","SS:true","LS:true","IDB:true","B:false","ODB:false","CPUC:unknown","PK:Win32","CFP:27143903","FR:false","FOS:false","FB:false","JSF:","P:","T:0,false,false","H:16","SWF:false"]},{"key":"ife_hash","value":"9c34512d1ba12162c163aff6d835f71a"},{"key":"cs","value":1},{"key":"jsbd","value":"{\\"HL\\":2,\\"NCE\\":true,\\"DT\\":\\"\\",\\"NWD\\":\\"false\\",\\"DOTO\\":1,\\"DMTO\\":1}"}]'
         tim = base64.b64encode(str(int(time.time())).encode('utf8')).decode('utf8')
         return old_bda1 + tim + old_bda2
-
+    
+    @staticmethod
+    def get_data_new():
+        old_bda1: str = r'[{"key":"api_type","value":"js"},{"key":"f","value":"b953e380a38fe996957473ccf642a63a"},{"key":"n","value":"'
+        old_bda2: str = r'"},{"key":"wh","value":"02aaa7309775645028aecc8590cd13da|72627afbfd19a741c7da1732218301ac"},{"key":"enhanced_fp","value":[{"key":"webgl_extensions","value":"ANGLE_instanced_arrays;EXT_blend_minmax;EXT_clip_control;EXT_color_buffer_half_float;EXT_depth_clamp;EXT_disjoint_timer_query;EXT_float_blend;EXT_frag_depth;EXT_polygon_offset_clamp;EXT_shader_texture_lod;EXT_texture_compression_bptc;EXT_texture_compression_rgtc;EXT_texture_filter_anisotropic;EXT_sRGB;KHR_parallel_shader_compile;OES_element_index_uint;OES_fbo_render_mipmap;OES_standard_derivatives;OES_texture_float;OES_texture_float_linear;OES_texture_half_float;OES_texture_half_float_linear;OES_vertex_array_object;WEBGL_blend_func_extended;WEBGL_color_buffer_float;WEBGL_compressed_texture_s3tc;WEBGL_compressed_texture_s3tc_srgb;WEBGL_debug_renderer_info;WEBGL_debug_shaders;WEBGL_depth_texture;WEBGL_draw_buffers;WEBGL_lose_context;WEBGL_multi_draw;WEBGL_polygon_mode"},{"key":"webgl_extensions_hash","value":"a7a3e349689be1d59e501cd4e7043578"},{"key":"webgl_renderer","value":"WebKitWebGL"},{"key":"webgl_vendor","value":"WebKit"},{"key":"webgl_version","value":"WebGL1.0(OpenGLES2.0Chromium)"},{"key":"webgl_shading_language_version","value":"WebGLGLSLES1.0(OpenGLESGLSLES1.0Chromium)"},{"key":"webgl_aliased_line_width_range","value":"[1,1]"},{"key":"webgl_aliased_point_size_range","value":"[1,1024]"},{"key":"webgl_antialiasing","value":"yes"},{"key":"webgl_bits","value":"8,8,24,8,8,0"},{"key":"webgl_max_params","value":"16,32,16384,1024,16384,16,16384,30,16,16,4095"},{"key":"webgl_max_viewport_dims","value":"[32767,32767]"},{"key":"webgl_unmasked_vendor","value":"GoogleInc.(NVIDIA)"},{"key":"webgl_unmasked_renderer","value":"ANGLE(NVIDIA,NVIDIAGeForceRTX4090(0x00002684)Direct3D11vs_5_0ps_5_0,D3D11)"},{"key":"webgl_vsf_params","value":"23,127,127,23,127,127,23,127,127"},{"key":"webgl_vsi_params","value":"0,31,30,0,31,30,0,31,30"},{"key":"webgl_fsf_params","value":"23,127,127,23,127,127,23,127,127"},{"key":"webgl_fsi_params","value":"0,31,30,0,31,30,0,31,30"},{"key":"webgl_hash_webgl","value":"02031c2d1b986c59452de7c127d567cf"},{"key":"user_agent_data_brands","value":"Chromium,Not(A:Brand,GoogleChrome"},{"key":"user_agent_data_mobile","value":false},{"key":"navigator_connection_downlink","value":1.45},{"key":"navigator_connection_downlink_max","value":null},{"key":"network_info_rtt","value":400},{"key":"network_info_save_data","value":false},{"key":"network_info_rtt_type","value":null},{"key":"screen_pixel_depth","value":24},{"key":"navigator_device_memory","value":8},{"key":"navigator_pdf_viewer_enabled","value":true},{"key":"navigator_languages","value":"zh-CN,zh"},{"key":"window_inner_width","value":0},{"key":"window_inner_height","value":0},{"key":"window_outer_width","value":1920},{"key":"window_outer_height","value":1032},{"key":"browser_detection_firefox","value":false},{"key":"browser_detection_brave","value":false},{"key":"browser_api_checks","value":["permission_status:true","eye_dropper:true","audio_data:true","writable_stream:true","css_style_rule:true","navigator_ua:true","barcode_detector:false","display_names:true","contacts_manager:false","svg_discard_element:false","usb:defined","media_device:defined","playback_quality:true"]},{"key":"browser_object_checks","value":"554838a8451ac36cb977e719e9d6623c"},{"key":"audio_codecs","value":"{\"ogg\":\"probably\",\"mp3\":\"probably\",\"wav\":\"probably\",\"m4a\":\"maybe\",\"aac\":\"probably\"}"},{"key":"audio_codecs_extended","value":"{\"audio/mp4;codecs=\\\"mp4a.40\\\"\":{\"canPlay\":\"maybe\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.1\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.2\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"audio/mp4;codecs=\\\"mp4a.40.3\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.4\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.5\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"audio/mp4;codecs=\\\"mp4a.40.6\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.7\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.8\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.9\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.12\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.13\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.14\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.15\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.16\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.17\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.19\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.20\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.21\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.22\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.23\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.24\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.25\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.26\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.27\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.28\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.29\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"audio/mp4;codecs=\\\"mp4a.40.32\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.33\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.34\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.35\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.40.36\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.66\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.67\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"audio/mp4;codecs=\\\"mp4a.68\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.69\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp4a.6B\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"mp3\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"flac\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"audio/mp4;codecs=\\\"bogus\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"aac\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"ac3\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mp4;codecs=\\\"A52\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/mpeg;codecs=\\\"mp3\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/wav;codecs=\\\"0\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/wav;codecs=\\\"2\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/wave;codecs=\\\"0\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/wave;codecs=\\\"1\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/wave;codecs=\\\"2\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/x-wav;codecs=\\\"0\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/x-wav;codecs=\\\"1\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"audio/x-wav;codecs=\\\"2\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/x-pn-wav;codecs=\\\"0\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/x-pn-wav;codecs=\\\"1\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"audio/x-pn-wav;codecs=\\\"2\\\"\":{\"canPlay\":\"\",\"mediaSource\":false}}"},{"key":"audio_codecs_extended_hash","value":"805036349642e2569ec299baed02315b"},{"key":"video_codecs","value":"{\"ogg\":\"\",\"h264\":\"probably\",\"webm\":\"probably\",\"mpeg4v\":\"\",\"mpeg4a\":\"\",\"theora\":\"\"}"},{"key":"video_codecs_extended","value":"{\"video/mp4;codecs=\\\"hev1.1.6.L93.90\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"hvc1.1.6.L93.90\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"hev1.1.6.L93.B0\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"hvc1.1.6.L93.B0\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"vp09.00.10.08\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"vp09.00.50.08\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"vp09.01.20.08.01\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"vp09.01.20.08.01.01.01.01.00\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"vp09.02.10.10.01.09.16.09.01\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/mp4;codecs=\\\"av01.0.08M.08\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vorbis\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vp8\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vp8.0\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"video/webm;codecs=\\\"vp8.0,vorbis\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"video/webm;codecs=\\\"vp8,opus\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vp9\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vp9,vorbis\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/webm;codecs=\\\"vp9,opus\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":true},\"video/x-matroska;codecs=\\\"theora\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"application/x-mpegURL;codecs=\\\"avc1.42E01E\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"dirac,vorbis\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"theora,speex\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"theora,vorbis\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"theora,flac\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"dirac,flac\\\"\":{\"canPlay\":\"\",\"mediaSource\":false},\"video/ogg;codecs=\\\"flac\\\"\":{\"canPlay\":\"probably\",\"mediaSource\":false},\"video/3gpp;codecs=\\\"mp4v.20.8,samr\\\"\":{\"canPlay\":\"\",\"mediaSource\":false}}"},{"key":"video_codecs_extended_hash","value":"67b509547efe3423d32a3a70a2553c16"},{"key":"media_query_dark_mode","value":false},{"key":"css_media_queries","value":0},{"key":"css_color_gamut","value":"srgb"},{"key":"css_contrast","value":"no-preference"},{"key":"css_monochrome","value":false},{"key":"css_pointer","value":"fine"},{"key":"css_grid_support","value":false},{"key":"headless_browser_phantom","value":false},{"key":"headless_browser_selenium","value":false},{"key":"headless_browser_nightmare_js","value":false},{"key":"headless_browser_generic","value":4},{"key":"document__referrer","value":"https://chat.openai.com/"},{"key":"window__ancestor_origins","value":["https://chat.openai.com"]},{"key":"window__tree_index","value":[2]},{"key":"window__tree_structure","value":"[[],[],[]]"},{"key":"window__location_href","value":"https://tcr9i.chat.openai.com/v2/2.4.3/enforcement.f6478716f67eb008b598024953b7143d.html"},{"key":"client_config__sitedata_location_href","value":"https://chat.openai.com/"},{"key":"client_config__language","value":null},{"key":"client_config__surl","value":"https://tcr9i.chat.openai.com"},{"key":"client_config__triggered_inline","value":false},{"key":"mobile_sdk__is_sdk","value":false},{"key":"audio_fingerprint","value":"124.04347527516074"},{"key":"navigator_battery_charging","value":true},{"key":"media_device_kinds","value":["audioinput","videoinput","audiooutput"]},{"key":"media_devices_hash","value":"199eba60310b53c200cc783906883c67"},{"key":"navigator_permissions_hash","value":"67419471976a14a1430378465782c62d"},{"key":"math_fingerprint","value":"3b2ff195f341257a6a2abbc122f4ae67"},{"key":"supported_math_functions","value":"e9dd4fafb44ee489f48f7c93d0f48163"},{"key":"screen_orientation","value":"landscape-primary"},{"key":"rtc_peer_connection","value":5},{"key":"4b4b269e68","value":"9766499a-673a-40c3-94c6-8d757fb4e85b"},{"key":"6a62b2a558","value":"f6478716f67eb008b598024953b7143d"},{"key":"speech_default_voice","value":"MicrosoftHuihui-Chinese(Simplified,PRC)||zh-CN"},{"key":"speech_voices_hash","value":"73ad71db4552328df27e3d2c113ddeb2"}]},{"key":"fe","value":["DNT:unknown","L:zh-CN","D:24","PR:2","S:1920,1080","AS:1920,1032","TO:-480","SS:true","LS:true","IDB:true","B:false","ODB:false","CPUC:unknown","PK:Win32","CFP:-73690784","FR:false","FOS:false","FB:false","JSF:","P:ChromePDFViewer,ChromiumPDFViewer,MicrosoftEdgePDFViewer,PDFViewer,WebKitbuilt-inPDF","T:0,false,false","H:16","SWF:false"]},{"key":"ife_hash","value":"20bf4621e1913538ae627cd43398a2bf"},{"key":"jsbd","value":"{\"HL\":5,\"NCE\":true,\"DT\":\"\",\"NWD\":\"false\",\"DMTO\":1,\"DOTO\":1}"}]'
+        tim = base64.b64encode(str(int(time.time())).encode('utf8')).decode('utf8')
+        return old_bda1 + tim + old_bda2
+        
+        
     @staticmethod
     def get_key(ua: str):
         t = time.time()  # 获取当前时间的秒数

@@ -3,6 +3,8 @@ ChatGPT playwright api,not openai api
 
 一个不怎么使用网页的ChatGPT playwright api
 
+## gpt plus account is not currently supported, waiting for repair
+## 暂不支持gpt plus账户，等待修复中 
 
 
 # 待填坑 feature
@@ -96,10 +98,9 @@ personality_definition = Personality(
         },
     ])
 
-chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True, log_status=False)
-# if u need,u can "log_status=True"
+chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True, stdout_flush=True)
 # "begin_sleep_time=False" for testing only
-# Make sure "headless=True" when using
+# Make sure "headless=True" when using 
 
 async def main():
     c_id = await aioconsole.ainput("your conversation_id if you have:")
@@ -147,8 +148,8 @@ sessions: list[dict] = [],
 # Refer to Simple practice. Apple accounts are not supported for the time being. 
 # If you do not write "mode", the default is openai account.
 
-proxy: typing.Optional[ProxySettings] = None,
-# proxy = {"server": "http://127.0.0.1:1090"}
+proxy: typing.Optional[str] = None,
+# proxy = "http://127.0.0.1:1090"
 # chatgpt(proxy=proxy)
 # 要用代理的话就像这样 | proxy like it if u need use
 
@@ -178,6 +179,19 @@ begin_sleep_time: bool = True,
 arkose_status: bool = False
 # chatgpt3.5是否启用了arkose验证
 # Does chatgpt3.5 enable arkose verification?
+
+httpx_status: bool = True
+# 使用httpx减少内存使用、
+# use httpx to chat
+
+logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+# 日志等级，默认INFO
+# logger_level
+
+stdout_flush: bool = False
+# shell流式传输
+# command shell refresh output
+
 ```
 
 ## chatgpt 类方法 / class chatgpt method

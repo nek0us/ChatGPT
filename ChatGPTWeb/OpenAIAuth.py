@@ -1,7 +1,7 @@
 # Credits to github.com/rawandahmad698/PyChatGPT
 from logging import Logger
 from typing import Literal
-from playwright.async_api import Page as APage
+from playwright.async_api import Page
 from playwright.async_api import Response
 from playwright_stealth import stealth_async
 
@@ -36,7 +36,7 @@ class AsyncAuth0:
             self,
             email: str,
             password: str,
-            page: "APage",
+            page: "Page",
             logger: Logger,
             browser_contexts,
             mode: Literal["openai", "google", "microsoft"] = "openai",
@@ -86,9 +86,20 @@ class AsyncAuth0:
             url="https://chat.openai.com/auth/login",
             wait_until="networkidle"
         )
-        await asyncio.sleep(3)
+        cf_locator = self.login_page.locator('//*[@id="cf-chl-widget-lpiae"]')
+        if await cf_locator.count() > 0:
+            logger.warning(f"cf checkbox in {self.email_address}")
+            
+        await asyncio.sleep(5)
+        # await self.login_page.wait_for_url("https://auth0.openai.com/**")
         await self.login_page.click('[data-testid="login-button"]')
         await self.login_page.wait_for_load_state(state="networkidle")
+        await self.login_page.wait_for_load_state("domcontentloaded")
+        current_url = self.login_page.url
+        if "auth0" in current_url:
+            await self.login_page.wait_for_url("https://auth0.openai.com/**")
+        else:
+            await self.login_page.wait_for_url("https://auth.openai.com/**")
 
         # Select Mode
         if self.mode == "google":
@@ -100,7 +111,11 @@ class AsyncAuth0:
 
         elif self.mode == "microsoft":
             try:
-                await self.login_page.click('[data-provider="windowslive"] button')
+                if "auth0" in current_url:
+                    await self.login_page.click('//html/body/div/main/section/div/div/div/div[4]/form[1]/button')
+                else:
+                    
+                    await self.login_page.click('//html/body/div/div/main/section/div[2]/div[3]/button[2]')
             except Exception as e:
                 self.logger.warning(f"microsoft point error:{e}")
                 raise e
@@ -124,7 +139,8 @@ class AsyncAuth0:
             # verify code 
             await self.login_page.wait_for_timeout(1000)
             try:
-                await self.login_page.wait_for_url("https://account.live.com/identity/**")
+                await self.login_page.wait_for_url("https://login.live.com/**")
+                # await self.login_page.wait_for_url("https://account.live.com/identity/**")
                 locator = self.login_page.locator('//*[@id="iProof0"]')
                 if await locator.count() > 0:
                     if self.help_email != "":
@@ -210,7 +226,7 @@ class AsyncAuth0:
 
 
     async def get_session_token(self,logger):
-        self.login_page = await self.browser_contexts.new_page()
+        self.login_page: Page = await self.browser_contexts.new_page()
         await stealth_async(self.login_page)
         access_token = None
         try:

@@ -1,12 +1,12 @@
 [project]
 name = "ChatGPTWeb"
-version = "0.2.13"
+version = "0.2.14"
 description = "ChatGPT PlayWright API"
 authors = [
     {name = "nek0us", email = "nekouss@mail.com"},
 ]
 license = {text = "GPL3"}
-dependencies = ["playwright","aioconsole","playwright_stealth","websockets"]
+dependencies = ["playwright","aioconsole","playwright_stealth","websockets","httpx"]
 requires-python = ">=3.10"
 readme = "README.md"
 

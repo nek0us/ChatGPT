@@ -1,15 +1,18 @@
 from pathlib import Path
 from playwright.async_api import Page
-from playwright.async_api import Response
+from playwright.async_api import Response,Route, Request
 from playwright_stealth import stealth_async
+from typing import Optional
 import pickle
 import json
 import websockets
 import base64
 import asyncio
 import time
-
-from .config import MsgData,Session,SetCookieParam,Status
+import uuid
+import sys
+from httpx import AsyncClient
+from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload
 from .OpenAIAuth import AsyncAuth0
 
 class MockResponse:
@@ -20,7 +23,7 @@ class MockResponse:
     async def text(self):
         return self.data
 
-async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
+async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,httpx_status: bool = False,httpx_proxy: Optional[str]=None,stdout_flush:bool = False):
     '''msg send handle func'''
     ws = None
     if msg_data.last_wss != "":
@@ -35,57 +38,66 @@ async def async_send_msg(page: Page,msg_data: MsgData,url: str,logger):
                 ws = await websockets.connect(msg_data.last_wss,user_agent_header=None)
             except Exception as e:
                 logger.warning(f"open last wss error:{e}")
-    async with page.expect_response(url,timeout=60000) as response_info:
-        try:
-            logger.info(f"send:{msg_data.msg_send}")
-            await page.goto(url, timeout=60000)
-        
-        except Exception as e:
-            
-            if "Download is starting" not in e.args[0]:
-                logger.warning(f"send msg error:{e}")
-                raise e
-            await page.wait_for_load_state("load")
-            if response_info.is_done():
-                return await response_info.value
-        else:
-            tmp = await response_info.value
-            wss = json.loads(await tmp.text())
-            wss_url = wss["wss_url"]
-            msg_data.last_wss = wss_url
-            data_list = []
-            if ws:
-                try:
-                    while 1:
-                        recv = await asyncio.wait_for(ws.recv(),timeout=20)
-                        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
-                            break
-                        data_list.append(recv)
-                except Exception as e:
-                    logger(f"error: {e}")
-                    async with websockets.connect(wss_url,user_agent_header=None) as websocket:
-                        while 1:
-                            recv = await asyncio.wait_for(websocket.recv(),timeout=20)
-                            if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
-                                break
-                            data_list.append(recv)
-                finally:
-                    await ws.close()
+    if httpx_status:
+        async with AsyncClient(proxies=httpx_proxy) as client:
+            # header["Content-Length"] = str(len(str()))
+            res = await client.post(url=url,json=json.loads(msg_data.post_data),headers=msg_data.header)
+            wss = res.json()
+    else:            
+        async with session.page.expect_response(url,timeout=60000) as response_info: # type: ignore
+            try:
+                logger.debug(f"send:{msg_data.msg_send}")
+                await session.page.goto(url, timeout=60000) # type: ignore
+            except Exception as e:
+                if "Download is starting" not in e.args[0]:
+                    logger.warning(f"send msg error:{e}")
+                    msg_data.error_info = str(e)
+                    raise e
+                await session.page.wait_for_load_state("load") # type: ignore
+                if response_info.is_done():
+                    return await response_info.value
             else:
-                async with websockets.connect(wss_url,user_agent_header=None) as websocket:
-                    
-                    while 1:
-                        recv = await asyncio.wait_for(websocket.recv(),timeout=20)
-                        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
-                            break
-                        data_list.append(recv)
-                    
-            if data_list == []:
-                msg = await get_msg_from_history(page,msg_data,url,logger)
-                return MockResponse(msg)
-            body = json.loads([newdata for newdata in data_list if "message_id" in newdata][-1])
-            data = base64.b64decode(body["body"]).decode('utf-8')
-            return MockResponse(data)
+                tmp = await response_info.value
+                wss = await tmp.json()
+                
+    wss_url = wss["wss_url"]
+    msg_data.last_wss = wss_url
+    try:
+        if ws:
+            data = await recv_ws(session,ws,stdout_flush)
+        else:
+            async with websockets.connect(wss_url,user_agent_header=None) as websocket:
+                data = await recv_ws(session,websocket,stdout_flush) 
+    except Exception as e:
+        logger.error(f"get recv wss msg error:{e}")
+        msg_data.error_info = str(e)
+    return data
+
+async def recv_ws(session: Session,ws,stdout_flush: bool = False):
+    body = ""
+    while 1:
+        recv = await asyncio.wait_for(ws.recv(),timeout=20)
+        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+            sys.stdout.write("\r" + " " * 40 + "\r")
+            sys.stdout.flush()
+            return MockResponse(body)
+        ws_tmp = json.loads(recv)
+        ws_tmp_body = base64.b64decode(ws_tmp['body']).decode('utf-8')
+        msg_body = json.loads(ws_tmp_body[5:])
+        if 'message' in msg_body:
+            if msg_body['message']:
+                if msg_body['message']['author']['role'] == 'assistant':
+                    if stdout_flush and "parts" in msg_body['message']["content"]:
+                        text = msg_body['message']["content"]["parts"][0]
+                        # yield text
+                        #TODO
+                        sys.stdout.write(f"\rChatGPT:{text}")
+                        sys.stdout.flush()
+                        body = ws_tmp_body
+                    elif not stdout_flush and "parts" in msg_body['message']['content']:
+                        body = ws_tmp_body
+                    if "is_complete" in msg_body['message']:
+                        return MockResponse(ws_tmp_body)
 
 async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
     url_cid = url + '/' + msg_data.conversation_id
@@ -105,8 +117,6 @@ async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
             return "error"
         except Exception as e:
             raise e
-                    
-
             
 def markdown_to_text(markdown_string):
     '''it's not work now'''
@@ -120,10 +130,11 @@ def markdown_to_text(markdown_string):
 def stream2msgdata(stream_lines:list,msg_data:MsgData):
     for x in stream_lines[::-1]:
         # for x in stream_lines:
-        if '"end_turn": true' not in x:
+        if ('"end_turn": true' not in x) and ("finished_successfully" not in x):
             continue
         msg = json.loads(x[6:])
-        tmp = msg["message"]["content"]["parts"][0]
+        if "parts" in msg["message"]["content"]:
+            tmp = msg["message"]["content"]["parts"][0]
         msg_data.msg_recv = markdown_to_text(tmp)
         try:
             msg_data.conversation_id = msg["conversation_id"]
@@ -139,27 +150,16 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
 
 async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger):
     '''recive handle stream to msgdata'''
-    if resp.status == 200:
-        stream_text = await resp.text()
-        stream_lines = stream_text.splitlines()
-        msg_data = stream2msgdata(stream_lines,msg_data)
-        if msg_data.msg_recv == "":
-            logger.warning("This content may violate openai's content policy")
-            msg_data.msg_recv = "This content may violate openai's content policy"
-        if not msg_data.status:
-            msg_data.msg_recv = str(resp.status) + " or maybe stream not end"
-    elif resp.status == 401:
-        # Token expired and you need to log in again | token过期 需要重新登录
-        logger.warning(f"{session.email} 401,relogin now")
-        session.login_state = False
-        session.access_token = ""
-        await Auth(session,logger)
-        msg_data.msg_recv = f"{session.email} 401,relogin last,pleases try send again."
-    else:
-        msg_data.msg_recv = str(resp.status) + "\n" + resp.status_text + "\n" + await resp.text()
+    stream_text = await resp.text()
+    stream_lines = stream_text.splitlines()
+    msg_data = stream2msgdata(stream_lines,msg_data)
+    if msg_data.msg_recv == "":
+        logger.warning(f"This content may violate openai's content policy,error:{msg_data.error_info}")
+        msg_data.msg_recv = f"This content may violate openai's content policy,error:{msg_data.error_info}"
+    if not msg_data.status:
+        logger.warning(f"error:{msg_data.error_info}")
+        msg_data.msg_recv = f"error:{msg_data.error_info}"
     return msg_data
-
-
 
 def create_session(**kwargs) -> Session:
     session_token = kwargs.get("session_token")
@@ -173,9 +173,9 @@ def create_session(**kwargs) -> Session:
 
 async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retry:int = 2) -> Session:
     if retry != 2:
-        logger.info(f"{session.email} flush retry {retry}")
+        logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
-        logger.info(f"{session.email} stop flush")
+        logger.debug(f"{session.email} stop flush")
         return session
     retry -= 1
     
@@ -190,7 +190,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
             if res.status == 403 and res.url == url:
                 session = await retry_keep_alive(session,url,chat_file,logger,retry)
             elif res.status == 200 and res.url == url:
-                logger.info(f"flush {session.email} cf cookie OK!")
+                logger.debug(f"flush {session.email} cf cookie OK!")
                 await page.wait_for_timeout(1000)
                 cookies = await session.page.context.cookies()
                 cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
@@ -201,6 +201,11 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                         name="__Secure-next-auth.session-token",
                         value=cookie["value"] # type: ignore
                     ) # type: ignore
+                    cookie_str = ''
+                    for cookie in cookies:
+                        cookie_str += f"{cookie['name']}={cookie['value']}; "
+                    session.cookies = cookie_str.strip()
+                    
                     update_session_token(session,chat_file,logger)
                 else:
                     # no session-token,re login
@@ -237,13 +242,13 @@ async def Auth(session: Session,logger):
             session.access_token = access_token
             session.status = Status.Login.value
             session.login_state = True
-            logger.info(f"{session.email} login success")
+            logger.debug(f"{session.email} login success")
         else:
             logger.warning(f"{session.email} login error,waiting for next try")
             session.status = Status.Update.value
 
     else:
-        logger.info("No email or password")
+        logger.warning("No email or password")
         
                 
 def update_session_token(session: Session,chat_file: Path,logger):
@@ -254,6 +259,7 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.access_token = session.access_token
         tmp.email = session.email
         tmp.input_session_token = session.input_session_token
+        tmp.cookies = session.cookies
         tmp.last_active = session.last_active
         tmp.last_wss = session.last_wss
         tmp.mode = session.mode
@@ -274,10 +280,63 @@ def get_session_token(session: Session,chat_file: Path,logger):
             load_session: Session = pickle.load(file)
             session.session_token = load_session.session_token
             session.last_wss = load_session.last_wss
+            session.device_id = load_session.device_id
             return session
     except FileNotFoundError:
+        session.device_id = str(uuid.uuid4())
         return session
     except Exception as e:
         logger.warning(f"get session_token from file error : {e}")
         return session
             
+async def get_paid(page: Page,token: str,device_id: str,logger):
+    
+    async def route_handle_paid(route: Route, request: Request):
+        data = {"conversation_mode_kind":"primary_assistant"}
+        header = Payload.headers(token,json.dumps(data),device_id)
+        header['Cookie'] = request.headers['cookie']
+        header["User-Agent"] = request.headers["user-agent"]
+        header['Accept'] = "*/*"
+        header['Accept-Encoding'] = "gzip, deflate, br"
+        header['Content-Type'] = "application/json"
+        header['OAI-Device-Id'] = device_id
+        header['OAI-Language'] = 'zh-Hans'
+        header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
+        header['Cache-Control'] = 'no-cache'
+        header['Connection'] = 'keep-alive'
+        header['Pragma'] = 'no-cache'
+        await route.continue_(method="POST",headers=header,post_data=data)
+            
+    await page.route("**/backend-api/sentinel/chat-requirements", route_handle_paid)  # type: ignore
+    async with page.expect_response(url_requirements) as ares:
+        
+        try:
+            res = await page.goto(url=url_requirements)
+            res = await ares.value
+            return await res.json()
+        except Exception as e:
+            logger.error(f"get chat-requirements exception:{e}")
+            raise e
+    
+async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy: Optional[str],logger):
+    data = {"conversation_mode_kind":"primary_assistant"}
+    header = Payload.headers(token,json.dumps(data),device_id)
+    header['Cookie'] = cookies
+    header["User-Agent"] = ua
+    header['Accept'] = "*/*"
+    header['Accept-Encoding'] = "gzip, deflate"
+    header['Content-Type'] = "application/json"
+    header['OAI-Device-Id'] = device_id
+    header['OAI-Language'] = 'zh-Hans'
+    header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
+    header['Cache-Control'] = 'no-cache'
+    header['Connection'] = 'keep-alive'
+    header['Pragma'] = 'no-cache'
+    try:
+        async with AsyncClient(proxy=proxy) as client:
+            res = await client.post(url_requirements,headers=header,json=data)
+            return res.json()
+    except Exception as e:
+        logger.error(f"get chat-requirements exception:{e}")
+        raise e
+        
