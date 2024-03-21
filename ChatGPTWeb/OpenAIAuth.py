@@ -120,7 +120,7 @@ class AsyncAuth0:
                 self.logger.warning(f"microsoft point error:{e}")
                 raise e
 
-        await self.login_page.wait_for_load_state(state="networkidle")
+        await self.login_page.wait_for_load_state(state="domcontentloaded")
 
         # Start Fill
         # TODO: SPlit Parts from select mode
@@ -193,10 +193,18 @@ class AsyncAuth0:
             await self.login_page.wait_for_load_state()
 
         else:
-            await self.login_page.fill('[name="username"]', self.email_address)
-            await asyncio.sleep(1)
-            await self.login_page.click('button[type="submit"]._button-login-id')
-            await self.login_page.wait_for_load_state(state="networkidle")
+            if "auth0" in current_url:
+                await self.login_page.fill('[name="username"]', self.email_address)
+                await asyncio.sleep(1)
+                await self.login_page.click('button[type="submit"]._button-login-id')
+            
+            else:
+                await self.login_page.fill('//*[@id="email-input"]', self.email_address)
+                await asyncio.sleep(1)
+                await self.login_page.click('//html/body/div/div/main/section/div[2]/button')
+            
+            
+            await self.login_page.wait_for_load_state(state="domcontentloaded")
             await self.login_page.locator('[name="password"]').first.fill(self.password)
             await asyncio.sleep(1)
             await self.login_page.click('button[type="submit"]._button-login-password')
