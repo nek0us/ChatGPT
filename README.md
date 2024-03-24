@@ -134,7 +134,10 @@ async def main():
             print(await chat.token_status())
             continue
         data = await chat.continue_chat(data)
-        print(f"ChatGPT:{data.msg_recv}")
+        if data.error_info:
+            print(f"ChatGPT error:{data.error_info}")
+        else:
+            print(f"ChatGPT:{data.msg_recv}")
         
         
 loop = asyncio.get_event_loop()

@@ -639,7 +639,13 @@ class chatgpt:
                 # 遍历环境的cid
                 if msg_data.conversation_id in map_tmp[context_name]:
                     # find c_id from all session如果cid在这个环境里
-                    session = [session for session in self.Sessions if session.email == context_name][0]
+                    sessions = [session for session in self.Sessions if session.email == context_name]
+                    if sessions:
+                        session = sessions[0]
+                    else:
+                        msg_data.msg_recv = msg_data.error_info = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
+                        self.logger.error(msg_data.error_info)
+                        return msg_data
                     if not session:
                         self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
                         msg_data.msg_recv = msg_data.error_info = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
