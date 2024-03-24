@@ -140,6 +140,7 @@ class chatgpt:
             await browser.close()
             return True
         except Exception as e:
+            self.logger.warning(f"check firefox:{e}")
             return False
 
     # 安装Firefox
@@ -176,7 +177,7 @@ class chatgpt:
             self.logger.debug(f"{session.email} begin relogin")
             await Auth(session,self.logger)
             self.logger.debug(f"{session.email} relogin over")
-        elif session.status == Status.Logingin.value:
+        elif session.status == Status.Login.value:
             self.logger.debug(f"{session.email} loging in")
         
 
@@ -226,7 +227,7 @@ class chatgpt:
             await session.browser_contexts.add_cookies([token]) # type: ignore
             session.page = await session.browser_contexts.new_page()
             await stealth_async(session.page)
-            session.status = Status.Login.value 
+            session.status = Status.Login.value
 
         elif session.email and session.password:
             session.page = await session.browser_contexts.new_page()
@@ -235,6 +236,9 @@ class chatgpt:
         else:
             # TODO:
             pass
+        if session.login_cookies:
+            await session.browser_contexts.add_cookies(session.login_cookies)
+        
 
     async def __start__(self, loop):
         """
@@ -305,6 +309,7 @@ class chatgpt:
 
             if access_token:
                 session.login_state = True
+                session.status = Status.Ready.value
                 self.logger.debug(f"context {session.email} start!")
             else:
                 session.login_state = False
@@ -618,7 +623,7 @@ class chatgpt:
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
                     s for s in session_list 
-                    if s.type != "script" and s.login_state is True and s.status == Status.Login.value 
+                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value 
                 ]
                 
                 if filtered_sessions:
@@ -637,13 +642,13 @@ class chatgpt:
                     session = [session for session in self.Sessions if session.email == context_name][0]
                     if not session:
                         self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
-                        msg_data.msg_recv = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
+                        msg_data.msg_recv = msg_data.error_info = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
                         return msg_data
                     if session.status == Status.Stop.value:
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
-                        msg_data.msg_recv = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
+                        msg_data.msg_recv = msg_data.error_info = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
                         return msg_data
-                    while session.status != Status.Login.value:
+                    while session.status != Status.Ready.value:
                         # if this session is working or updating,waitting | 如果它还没准备好，那就等
                         await asyncio.sleep(0.5)
                     session.status = Status.Working.value
@@ -658,16 +663,26 @@ class chatgpt:
                 except Exception as e:
                     # Recovery failed | 恢复失败
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.")
-                    msg_data.msg_recv = f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found."
+                    msg_data.msg_recv = msg_data.error_info = f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found."
                     return msg_data
-        if not session:
-            raise Exception("Not Found Page")
-        msg_data = await self.send_msg(msg_data, session)
-        session.status = Status.Login.value
+        if not session.email:
+            msg_data.msg_recv = msg_data.error_info = ("Not session found,please check your conversation_id input")
+            self.logger.error(msg_data.error_info)
+            return msg_data
+        try:
+            msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=100) 
+        except TimeoutError:
+            msg_data.msg_recv = msg_data.error_info = f"send msg {msg_data.msg_send} time out,session:{session.email}"
+            self.logger.warning(msg_data.error_info)
+        except Exception as e:
+            msg_data.msg_recv = msg_data.error_info = f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}"
+            self.logger.error(msg_data.error_info)
+        else:
+            if not msg_data.error_info:
+                self.logger.info(f"receive message: {msg_data.msg_recv}")
+        finally:
+            session.status = Status.Ready.value
         self.logger.debug(f"session {session.email} finish work")
-        # self.join = True
-        # self.manage["status"][str(context_num)] = True
-        
         return msg_data
 
     async def show_chat_history(self, msg_data: MsgData) -> list:

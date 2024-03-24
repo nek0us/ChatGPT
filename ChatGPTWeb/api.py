@@ -203,15 +203,17 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                     ) # type: ignore
                     cookie_str = ''
                     for cookie in cookies:
-                        cookie_str += f"{cookie['name']}={cookie['value']}; "
+                        if "chat.openai.com" in cookie["domain"]:
+                            cookie_str += f"{cookie['name']}={cookie['value']}; "
                     session.cookies = cookie_str.strip()
+                    session.login_cookies = cookies
                     
                     update_session_token(session,chat_file,logger)
                 else:
                     # no session-token,re login
                     session.status = Status.Update.value
                 token = await res.json()
-                if "error" in token and session.status != Status.Logingin.value:
+                if "error" in token and session.status != Status.Login.value:
                     session.status = Status.Update.value
 
             else:
@@ -235,12 +237,12 @@ async def Auth(session: Session,logger):
                             help_email=session.help_email
                             # loop=self.browser_event_loop
                             )
-        session.status = Status.Logingin.value
+        session.status = Status.Login.value
         cookie, access_token = await auth.get_session_token(logger)
         if cookie and access_token:
             session.session_token = cookie
             session.access_token = access_token
-            session.status = Status.Login.value
+            session.status = Status.Ready.value
             session.login_state = True
             logger.debug(f"{session.email} login success")
         else:
@@ -260,6 +262,7 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.email = session.email
         tmp.input_session_token = session.input_session_token
         tmp.cookies = session.cookies
+        tmp.login_cookies = session.login_cookies
         tmp.last_active = session.last_active
         tmp.last_wss = session.last_wss
         tmp.mode = session.mode
@@ -279,6 +282,7 @@ def get_session_token(session: Session,chat_file: Path,logger):
         with open(session_file, 'rb') as file:
             load_session: Session = pickle.load(file)
             session.session_token = load_session.session_token
+            session.login_cookies = load_session.login_cookies
             session.last_wss = load_session.last_wss
             session.device_id = load_session.device_id
             return session

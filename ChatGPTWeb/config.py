@@ -30,7 +30,6 @@ class Status(Enum):
     Working = "Working"
     Stop = "Stop"
     Update = "Update"
-    Logingin = "Logingin"
     Ready = "Ready"
 
 
