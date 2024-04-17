@@ -10,6 +10,7 @@ import random
 from pathlib import Path
 from httpx import AsyncClient
 import sys
+import base64
 
 from .config import *
 from .api import (
@@ -21,6 +22,7 @@ from .api import (
     get_session_token,
     get_paid,
     get_paid_by_httpx,
+    get_wss,
 )
 
 class chatgpt:
@@ -266,6 +268,7 @@ class chatgpt:
         await stealth_async(s.page)
         self.Sessions.append(s)
         load_tasks.append(self.load_page(s))
+        self.manage["start"] = True # wait remove
         # gpt cookie contexts
         for session in self.Sessions:
             auth_tasks.append(self.__login(session))
@@ -278,7 +281,6 @@ class chatgpt:
         self.manage["browser_contexts"] = self.browser.contexts
 
         self.personality.read_data(self.chat_file) # type: ignore
-        self.manage["start"] = True
         self.logger.debug("start!")
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
         self.thread.start()
@@ -340,198 +342,174 @@ class chatgpt:
 
 
 
-    async def send_msg(self, msg_data: MsgData, session: Session):
+    async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3):
         """send message body function
         发送消息处理函数"""
-        page = session.page
-        token = session.access_token
-        # context_num = self.Sessions.index(session)
-        context_num = session.email
-
-        # get arkose | 获取arkose
-        if page and not self.httpx_status:
-            # get arkose_token when chatgpt3.5 begin arkose verity or used gpt4
-            paid_info = await get_paid(page,token,session.device_id,self.logger)
-            msg_data.sentinel = paid_info['token']
-            if self.arkose_status or (page and session.gpt4): 
-                async def route_arkose(route: Route, request: Request):
-                    
-                    userAgent = request.headers["user-agent"]
-                    data = Payload.get_data_new()
-                    key = Payload.get_key(userAgent)
-                    bda = await self.get_bda(data, key)
-                    msg_data.arkose_data = Payload.rdm_arkose_new(userAgent, bda, paid_info['arkose']['dx']) # type: ignore
-                    msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
-                    msg_data.arkose_header["Cookie"] = request.headers["cookie"]
-                    msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
-                    await route.continue_(method="POST",headers=msg_data.arkose_header, post_data=msg_data.arkose_data)
-                await page.route("**/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147", route_arkose)  # type: ignore
-                async with page.expect_response(
-                        url_or_predicate=url_arkose_gpt4,
-                        timeout=400000) as arkose_info:
-                    try:
-                        await page.wait_for_load_state('load')
-                        self.logger.debug("get arkose")
-                        await page.goto(url_arkose_gpt4, timeout=500000)
-                        await page.wait_for_load_state('load')
-                    except Exception as e:
-                        self.logger.warning(e)
-                        await page.goto(url_arkose_gpt4, timeout=300000)
-                        await page.wait_for_load_state('load')
-                    resp_arkose = await arkose_info.value
-                    if resp_arkose.status == 200:
-                        arkose_json = await resp_arkose.json()
-                        msg_data.arkose = arkose_json["token"]
-                    else:
-                        self.logger.warning(f"get arkose token httpcode {resp_arkose.status} {resp_arkose.status_text}")
-        elif page and not self.httpx_status:
-            msg_data.arkose = None
-
-        elif self.arkose_status and self.httpx_status or (self.httpx_status and session.gpt4):
-            paid_info = await get_paid_by_httpx(session.cookies,token,session.device_id,session.user_agent,self.httpx_proxy,self.logger)
-            msg_data.sentinel = paid_info['token']
-            data = Payload.get_data_new()
-            key = Payload.get_key(session.user_agent)
-            bda = await self.get_bda(data, key)
-            msg_data.arkose_data = Payload.rdm_arkose_new(session.user_agent, bda, paid_info['arkose']['dx']) # type: ignore
-            msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
-            msg_data.arkose_header["Cookie"] = session.cookies
-            msg_data.arkose_header["User-Agent"] = session.user_agent
-            try:
-                async with AsyncClient(proxy=self.httpx_proxy) as client:
-                    res = await client.post(url_arkose_gpt4,headers=msg_data.arkose_header,data=msg_data.arkose_data) # type: ignore
-                    if res.status_code == 200:
-                        arkose_json = res.json()
-                        msg_data.arkose = arkose_json["token"]
-                    else:
-                        self.logger.error(f"httpx get arkose token error:{res.status_code} {res.text}")
-            except Exception as e:
-                self.logger.error(f"httpx get arkose token error:{e}")            
-            
-                    
-        
-        if page and not self.httpx_status:
-            if not msg_data.conversation_id and not msg_data.p_msg_id:
-                msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
-                header = Payload.headers(token, msg_data.post_data,session.device_id)
-            else:
-                msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
-                                                        msg_data.arkose,msg_data.gpt4)
-                header = Payload.headers(token, msg_data.post_data,session.device_id)
-                
-            # get last wss
-            header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
-            async def route_handle_wss(route: Route, request: Request):
-                header["User-Agent"] = request.headers["user-agent"]
-                await route.continue_(method="POST", headers=header)
-            await page.route(f"**/backend-api/register-websocket", route_handle_wss)
-            try:
-                async with page.expect_response("https://chat.openai.com/backend-api/register-websocket",timeout=10000) as response_info: 
-                    await page.goto("https://chat.openai.com/backend-api/register-websocket",timeout=10000)
-                    tmp = await response_info.value
-                    wss = await tmp.json()
-                    msg_data.last_wss = wss["wss_url"]
-            except Exception as e:
-                self.logger.warning(f"get register-websocket error:{e}")
-                
-            header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
-            if session.gpt4 and msg_data.arkose:
-                header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
-                
-            msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
-            
-            async def route_handle_get(route: Route, request: Request):
-                header["Cookie"] = request.headers["cookie"]
-                header["User-Agent"] = request.headers["user-agent"]
-                header["Accept"] = "*/*"
-                header["Accept-Language"] = "en-US"
-                header["Referer"] = f"https://chat.openai.com/c/{msg_data.conversation_id}"
-                header["DNT"] = "1"
-                header["Sec-GPC"] = "1"
-                del header["Content-Type"]
-                del header["Content-Length"]
-                await route.continue_(method="GET", headers=header)
-                
-            await page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_get)  # type: ignore
-            
-            async def route_handle(route: Route, request: Request):
-                header["Cookie"] = request.headers["cookie"]
-                header["User-Agent"] = request.headers["user-agent"]
-                msg_data.header = header
-                await route.continue_(method="POST", headers=header, post_data=msg_data.post_data)
-
-            await page.route("**/backend-api/conversation", route_handle)  # type: ignore
-
-            if page:
-                msg_data = await self.resend(session,page,msg_data,context_num)
-            else:
-                msg_data.msg_recv = f"error! session {session.email} no page!"
-            
-            self.logger.debug(f"recv:{msg_data.msg_recv}")   
-        elif self.httpx_status:
-            if not msg_data.conversation_id and not msg_data.p_msg_id:
-                msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
-                header = Payload.headers(token, msg_data.post_data,session.device_id)
-                header['Cookie'] = session.cookies
-                header['User-Agent'] = session.user_agent
-            else:
-                msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
-                                                        msg_data.arkose,msg_data.gpt4)
-                header = Payload.headers(token, msg_data.post_data,session.device_id)
-                
-            # get last wss
-            header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
-            header["User-Agent"] = session.user_agent
-            # header['Cookie'] = session.cookies
-            try:
-                async with AsyncClient(proxies=self.httpx_proxy) as client: 
-                    header_copy = header.copy()
-                    header_copy['Content-Length'] = '0'
-                    header_copy['Content-Type'] = 'application/json'
-                    res = await client.post("https://chat.openai.com/backend-api/register-websocket",headers=header_copy,json=None,data=None)
-                    wss = res.json()
-                    msg_data.last_wss = wss["wss_url"]
-            except Exception as e:
-                self.logger.warning(f"get register-websocket error:{e}")
-                
-            header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
-            if session.gpt4 and msg_data.arkose:
-                header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
-                
-            msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
-            msg_data.header = header
-            if page:
-                msg_data = await self.resend(session,page,msg_data,context_num)
-            else:
-                msg_data.msg_recv = f"error! session {session.email} no page!"
-            
-            
-        else:
-            self.logger.error(f"send_msg no page")
-        return msg_data
-        
-    async def resend(self,session: Session,page: Page,msg_data: MsgData,context_num: str,retry: int = 3):
-        '''Multiple attempts to send message | 多次尝试发送消息'''
         if retry != 3:
             self.logger.debug(f"resend {retry}")
         retry -= 1 
         if retry < 0:
-            msg_data.msg_recv = "error: send msg retry max"
+            msg_data.error_info += " and error: send msg retry max"
+            # msg_data.msg_recv = "error: send msg retry max"
             return msg_data
         
+        page = session.page
+        token = session.access_token
+        # context_num = self.Sessions.index(session)
+        context_num = session.email
         try:
-            # msg_data.last_wss = session.last_wss
-            resp = await async_send_msg(session,msg_data,url_chatgpt,logger=self.logger,httpx_status=self.httpx_status,httpx_proxy=self.httpx_proxy,stdout_flush=self.stdout_flush)
-            msg_data = await recive_handle(session,resp,msg_data,self.logger) # type: ignore
+            # get arkose | 获取arkose
+            if page and not self.httpx_status:
+                # get arkose_token when chatgpt3.5 begin arkose verity or used gpt4
+                paid_info = await get_paid(page,token,session.device_id,self.logger)
+                msg_data.sentinel = paid_info['token']
+                if self.arkose_status or (page and session.gpt4): 
+                    async def route_arkose(route: Route, request: Request):
+                        
+                        userAgent = request.headers["user-agent"]
+                        data = Payload.get_data_new()
+                        key = Payload.get_key(userAgent)
+                        bda = await self.get_bda(data, key)
+                        msg_data.arkose_data = Payload.rdm_arkose_new(userAgent, bda, paid_info['arkose']['dx']) # type: ignore
+                        msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
+                        msg_data.arkose_header["Cookie"] = request.headers["cookie"]
+                        msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
+                        await route.continue_(method="POST",headers=msg_data.arkose_header, post_data=msg_data.arkose_data)
+                    await page.route("**/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147", route_arkose)  # type: ignore
+                    async with page.expect_response(
+                            url_or_predicate=url_arkose_gpt4,
+                            timeout=400000) as arkose_info:
+                        try:
+                            await page.wait_for_load_state('load')
+                            self.logger.debug("get arkose")
+                            await page.goto(url_arkose_gpt4, timeout=500000)
+                            await page.wait_for_load_state('load')
+                        except Exception as e:
+                            self.logger.warning(e)
+                            await page.goto(url_arkose_gpt4, timeout=300000)
+                            await page.wait_for_load_state('load')
+                        resp_arkose = await arkose_info.value
+                        if resp_arkose.status == 200:
+                            arkose_json = await resp_arkose.json()
+                            msg_data.arkose = arkose_json["token"]
+                        else:
+                            self.logger.warning(f"get arkose token httpcode {resp_arkose.status} {resp_arkose.status_text}")
+            elif page and not self.httpx_status:
+                msg_data.arkose = None
+
+            elif self.arkose_status and self.httpx_status or (self.httpx_status and session.gpt4):
+                paid_info = await get_paid_by_httpx(session.cookies,token,session.device_id,session.user_agent,self.httpx_proxy,self.logger)
+                msg_data.sentinel = paid_info['token']
+                data = Payload.get_data_new()
+                key = Payload.get_key(session.user_agent)
+                bda = await self.get_bda(data, key)
+                msg_data.arkose_data = Payload.rdm_arkose_new(session.user_agent, bda, paid_info['arkose']['dx']) # type: ignore
+                msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
+                msg_data.arkose_header["Cookie"] = session.cookies
+                msg_data.arkose_header["User-Agent"] = session.user_agent
+                try:
+                    async with AsyncClient(proxy=self.httpx_proxy) as client:
+                        res = await client.post(url_arkose_gpt4,headers=msg_data.arkose_header,data=msg_data.arkose_data) # type: ignore
+                        if res.status_code == 200:
+                            arkose_json = res.json()
+                            msg_data.arkose = arkose_json["token"]
+                        else:
+                            self.logger.error(f"httpx get arkose token error:{res.status_code} {res.text}")
+                except Exception as e:
+                    self.logger.error(f"httpx get arkose token error:{e}")            
+                
+                        
+            
+            if page and not self.httpx_status:
+                if not msg_data.conversation_id and not msg_data.p_msg_id:
+                    msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
+                    header = Payload.headers(token, msg_data.post_data,session.device_id)
+                else:
+                    msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
+                                                            msg_data.arkose,msg_data.gpt4)
+                    header = Payload.headers(token, msg_data.post_data,session.device_id)
+                    
+                # get last wss
+                msg_data,header = await get_wss(page,header,msg_data,self.httpx_status,self.logger,self.httpx_proxy)
+                    
+                header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
+                if session.gpt4 and msg_data.arkose:
+                    header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
+                    
+                msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
+                
+                async def route_handle_get(route: Route, request: Request):
+                    header["Cookie"] = request.headers["cookie"]
+                    header["User-Agent"] = request.headers["user-agent"]
+                    header["Accept"] = "*/*"
+                    header["Accept-Language"] = "en-US"
+                    header["Referer"] = f"https://chat.openai.com/c/{msg_data.conversation_id}"
+                    header["DNT"] = "1"
+                    header["Sec-GPC"] = "1"
+                    del header["Content-Type"]
+                    del header["Content-Length"]
+                    await route.continue_(method="GET", headers=header)
+                    
+                await page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_get)  # type: ignore
+                
+                async def route_handle(route: Route, request: Request):
+                    header["Cookie"] = request.headers["cookie"]
+                    header["User-Agent"] = request.headers["user-agent"]
+                    msg_data.header = header
+                    await route.continue_(method="POST", headers=header, post_data=msg_data.post_data)
+
+                await page.route("**/backend-api/conversation", route_handle)  # type: ignore
+
+
+                
+                self.logger.debug(f"recv:{msg_data.msg_recv}")   
+            elif self.httpx_status and page:
+                if not msg_data.conversation_id and not msg_data.p_msg_id:
+                    msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
+                    header = Payload.headers(token, msg_data.post_data,session.device_id)
+                    header['Cookie'] = session.cookies
+                    header['User-Agent'] = session.user_agent
+                else:
+                    msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
+                                                            msg_data.arkose,msg_data.gpt4)
+                    header = Payload.headers(token, msg_data.post_data,session.device_id)
+                    
+                # get last wss
+                header["User-Agent"] = session.user_agent
+                msg_data,header = await get_wss(page,header,msg_data,self.httpx_status,self.logger,self.httpx_proxy)
+                
+                header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
+                if session.gpt4 and msg_data.arkose:
+                    header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
+                
+                
+                    
+                msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
+                msg_data.header = header
+            
+                
+                
+            else:
+                msg_data.error_info = f"error! session {session.email} no page!"
+                self.logger.error(f"error! session {session.email} no page!")
+                
+            if page:
+                if send_status:
+                    # msg_data = await self.resend(session,page,msg_data,context_num)
+                    resp = await async_send_msg(session,msg_data,url_chatgpt,logger=self.logger,httpx_status=self.httpx_status,httpx_proxy=self.httpx_proxy,stdout_flush=self.stdout_flush)
+                    msg_data = await recive_handle(session,resp,msg_data,self.logger) # type: ignore
+                    if msg_data.status:
+                        await self.save_chat(msg_data, context_num)
+            else:
+                msg_data.error_info = f"error! session {session.email} no page!"
+                self.logger.error(f"error! session {session.email} no page!")
         except Exception as e:
             self.logger.warning(e)
-            msg_data = await self.resend(session,page,msg_data,context_num,retry)
-        finally:
-            session.last_wss = msg_data.last_wss
+            msg_data = await self.send_msg(msg_data,session,send_status,retry)
             
-        if msg_data.status:
-            await self.save_chat(msg_data, context_num)
+               
         return msg_data
+
         
     async def save_chat(self, msg_data: MsgData, context_num: str):
         """save chat file
@@ -643,16 +621,16 @@ class chatgpt:
                     if sessions:
                         session = sessions[0]
                     else:
-                        msg_data.msg_recv = msg_data.error_info = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
+                        msg_data.error_info = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
                         self.logger.error(msg_data.error_info)
                         return msg_data
                     if not session:
                         self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
-                        msg_data.msg_recv = msg_data.error_info = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
+                        msg_data.error_info = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
                         return msg_data
                     if session.status == Status.Stop.value:
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
-                        msg_data.msg_recv = msg_data.error_info = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
+                        msg_data.error_info = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
                         return msg_data
                     while session.status != Status.Ready.value:
                         # if this session is working or updating,waitting | 如果它还没准备好，那就等
@@ -669,22 +647,22 @@ class chatgpt:
                 except Exception as e:
                     # Recovery failed | 恢复失败
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.")
-                    msg_data.msg_recv = msg_data.error_info = f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found."
+                    msg_data.error_info = f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found."
                     return msg_data
         if not session.email:
-            msg_data.msg_recv = msg_data.error_info = ("Not session found,please check your conversation_id input")
+            msg_data.error_info = ("Not session found,please check your conversation_id input")
             self.logger.error(msg_data.error_info)
             return msg_data
         try:
             msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=100) 
         except TimeoutError:
-            msg_data.msg_recv = msg_data.error_info = f"send msg {msg_data.msg_send} time out,session:{session.email}"
+            msg_data.error_info = f"send msg {msg_data.msg_send} time out,session:{session.email}"
             self.logger.warning(msg_data.error_info)
         except Exception as e:
-            msg_data.msg_recv = msg_data.error_info = f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}"
+            msg_data.error_info = f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}"
             self.logger.error(msg_data.error_info)
         else:
-            if not msg_data.error_info:
+            if not msg_data.error_info or msg_data.status:
                 self.logger.info(f"receive message: {msg_data.msg_recv}")
         finally:
             session.status = Status.Ready.value

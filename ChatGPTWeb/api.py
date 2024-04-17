@@ -22,16 +22,55 @@ class MockResponse:
     
     async def text(self):
         return self.data
+    
+
+async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,logger,httpx_proxy: Optional[str] = None):
+    
+    if not httpx_status:
+        header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
+        async def route_handle_wss(route: Route, request: Request):
+            header["User-Agent"] = request.headers["user-agent"]
+            await route.continue_(method="POST", headers=header)
+        await page.route(f"**/backend-api/register-websocket", route_handle_wss)
+        try:
+            async with page.expect_response("https://chat.openai.com/backend-api/register-websocket",timeout=10000) as response_info: 
+                await page.goto("https://chat.openai.com/backend-api/register-websocket",timeout=10000)
+                tmp = await response_info.value
+                wss = await tmp.json()
+                msg_data.last_wss = wss["wss_url"]
+        except Exception as e:
+            logger.warning(f"get register-websocket error:{e}") 
+            msg_data.error_info = f"get register-websocket error:{e}"
+        return msg_data,header
+    else:
+        header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
+        try:
+            async with AsyncClient(proxies=httpx_proxy) as client: 
+                header_copy = header.copy()
+                header_copy['Content-Length'] = '0'
+                header_copy['Content-Type'] = 'application/json'
+                res = await client.post("https://chat.openai.com/backend-api/register-websocket",headers=header_copy,json=None,data=None)
+                wss = res.json()
+                msg_data.last_wss = wss["wss_url"]
+        except Exception as e:
+            logger.warning(f"get register-websocket error:{e}")
+            msg_data.error_info = f"get register-websocket error:{e}"
+        return msg_data,header
+
+    
+def get_wss_payload(last_wss:str):
+    split_jwt = last_wss.split('access_token=')[1].split('.')
+    payload = split_jwt[1]
+    padding = '=' * (4 - len(payload) % 4)
+    decoded_payload = base64.urlsafe_b64decode(payload + padding)
+    payload_data = json.loads(decoded_payload)
+    return payload_data
 
 async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,httpx_status: bool = False,httpx_proxy: Optional[str]=None,stdout_flush:bool = False):
     '''msg send handle func'''
     ws = None
     if msg_data.last_wss != "":
-        split_jwt = msg_data.last_wss.split('access_token=')[1].split('.')
-        payload = split_jwt[1]
-        padding = '=' * (4 - len(payload) % 4)
-        decoded_payload = base64.urlsafe_b64decode(payload + padding)
-        payload_data = json.loads(decoded_payload)
+        payload_data = get_wss_payload(msg_data.last_wss)
         now_time = int(time.time())
         if now_time < payload_data["exp"]:
             try:
@@ -155,10 +194,10 @@ async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger
     msg_data = stream2msgdata(stream_lines,msg_data)
     if msg_data.msg_recv == "":
         logger.warning(f"This content may violate openai's content policy,error:{msg_data.error_info}")
-        msg_data.msg_recv = f"This content may violate openai's content policy,error:{msg_data.error_info}"
+        msg_data.error_info = f"This content may violate openai's content policy,error:{msg_data.error_info}"
     if not msg_data.status:
         logger.warning(f"error:{msg_data.error_info}")
-        msg_data.msg_recv = f"error:{msg_data.error_info}"
+        msg_data.error_info = f"error:{msg_data.error_info}"
     return msg_data
 
 def create_session(**kwargs) -> Session:
