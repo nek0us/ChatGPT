@@ -460,9 +460,6 @@ class chatgpt:
 
                 await page.route("**/backend-api/conversation", route_handle)  # type: ignore
 
-
-                
-                self.logger.debug(f"recv:{msg_data.msg_recv}")   
             elif self.httpx_status and page:
                 if not msg_data.conversation_id and not msg_data.p_msg_id:
                     msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
