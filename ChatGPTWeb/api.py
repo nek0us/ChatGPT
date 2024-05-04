@@ -40,7 +40,7 @@ async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,
                 msg_data.last_wss = wss["wss_url"]
         except Exception as e:
             logger.warning(f"get register-websocket error:{e}") 
-            msg_data.error_info = f"get register-websocket error:{e}"
+            msg_data.error_info += f"get register-websocket error:{e}\n"
         return msg_data,header
     else:
         header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
@@ -54,7 +54,7 @@ async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,
                 msg_data.last_wss = wss["wss_url"]
         except Exception as e:
             logger.warning(f"get register-websocket error:{e}")
-            msg_data.error_info = f"get register-websocket error:{e}"
+            msg_data.error_info += f"get register-websocket error:{e} \n"
         return msg_data,header
 
     
@@ -83,6 +83,8 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             res = await client.post(url=url,json=json.loads(msg_data.post_data),headers=msg_data.header)
             wss = res.json()
     else:            
+        
+        
         async with session.page.expect_response(url,timeout=60000) as response_info: # type: ignore
             try:
                 logger.debug(f"send:{msg_data.msg_send}")
@@ -90,7 +92,7 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             except Exception as e:
                 if "Download is starting" not in e.args[0]:
                     logger.warning(f"send msg error:{e}")
-                    msg_data.error_info = str(e)
+                    msg_data.error_info += f"{str(e)}\n"
                     raise e
                 await session.page.wait_for_load_state("load") # type: ignore
                 if response_info.is_done():
@@ -109,7 +111,7 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
                 data = await recv_ws(session,websocket,stdout_flush) 
     except Exception as e:
         logger.error(f"get recv wss msg error:{e}")
-        msg_data.error_info = str(e)
+        msg_data.error_info += f"{str(e)}\n"
     return data
 
 async def recv_ws(session: Session,ws,stdout_flush: bool = False):
@@ -193,11 +195,11 @@ async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger
     stream_lines = stream_text.splitlines()
     msg_data = stream2msgdata(stream_lines,msg_data)
     if msg_data.msg_recv == "":
-        logger.warning(f"This content may violate openai's content policy,error:{msg_data.error_info}")
-        msg_data.error_info = f"This content may violate openai's content policy,error:{msg_data.error_info}"
+        logger.warning(f"recive_handle error:This content may violate openai's content policy,error:{msg_data.error_info}")
+        msg_data.error_info += f"recive_handle error: This content may violate openai's content policy,error:{msg_data.error_info}\n"
     if not msg_data.status:
-        logger.warning(f"error:{msg_data.error_info}")
-        msg_data.error_info = f"error:{msg_data.error_info}"
+        logger.warning(f"recive_handle error:{msg_data.error_info}")
+        msg_data.error_info += f"recive_handle error:{msg_data.error_info}\n"
     return msg_data
 
 def create_session(**kwargs) -> Session:
@@ -228,7 +230,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
 
             if res.status == 403 and res.url == url:
                 session = await retry_keep_alive(session,url,chat_file,logger,retry)
-            elif res.status == 200 and res.url == url:
+            elif (res.status == 200 or res.status == 307) and res.url == url:
                 logger.debug(f"flush {session.email} cf cookie OK!")
                 await page.wait_for_timeout(1000)
                 cookies = await session.page.context.cookies()
@@ -248,10 +250,15 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                     session.login_cookies = cookies
                     
                     update_session_token(session,chat_file,logger)
+                    
+                    if session.status == Status.Login.value:
+                        session.status = Status.Ready.value
+                    
                 else:
                     # no session-token,re login
                     session.status = Status.Update.value
-                token = await res.json()
+                token = await page.evaluate(
+                    '() => JSON.parse(document.querySelector("body").innerText)')
                 if "error" in token and session.status != Status.Login.value:
                     session.status = Status.Update.value
 
@@ -282,7 +289,6 @@ async def Auth(session: Session,logger):
             session.session_token = cookie
             session.access_token = access_token
             session.status = Status.Ready.value
-            session.login_state = True
             logger.debug(f"{session.email} login success")
         else:
             logger.warning(f"{session.email} login error,waiting for next try")

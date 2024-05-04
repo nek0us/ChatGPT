@@ -189,11 +189,11 @@ class MsgData():
 class Payload():
 
     @staticmethod
-    def new_payload(prompt: str, arkose: Optional[str], gpt4: bool = False) -> str:
+    def new_payload(prompt: str, gpt4: bool = False) -> str:
         return json.dumps({
             "action": "next",
             "messages": [{
-                "id": str(uuid.uuid4()),
+                "id": "aaa" + str(uuid.uuid4())[3:],
                 "author": {
                     "role": "user"
                 },
@@ -203,7 +203,7 @@ class Payload():
                 },
                 "metadata": {}
             }],
-            "parent_message_id": str(uuid.uuid4()),
+            "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
             "model": "gpt-4" if gpt4 else "text-davinci-002-render-sha",
             "timezone_offset_min": -480,
             # "suggestions": [
@@ -218,7 +218,9 @@ class Payload():
                 "kind": "primary_assistant"
             },
             "force_paragen": False,
+            "forece_nulligen":False,
             "force_rate_limit": False,
+            "force_paragen_model_slug": "",
             "websocket_request_id": str(uuid.uuid4())
             
         })
@@ -230,7 +232,7 @@ class Payload():
                 "next",
             "history_and_training_disabled": False,
             "messages": [{
-                "id": str(uuid.uuid4()),
+                "id": "aaa" + str(uuid.uuid4())[3:],
                 "author": {
                     "role": "user"
                 },
@@ -253,7 +255,9 @@ class Payload():
                 "kind": "primary_assistant"
             },
             "force_paragen": False,
+            "forece_nulligen":False,
             "force_rate_limit": False,
+            "force_paragen_model_slug": "",
             "websocket_request_id": str(uuid.uuid4())
         })
 

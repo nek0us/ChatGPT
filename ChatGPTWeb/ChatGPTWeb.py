@@ -13,6 +13,7 @@ import sys
 import base64
 
 from .config import *
+from .load import load_js
 from .api import (
     async_send_msg,
     recive_handle,
@@ -98,7 +99,8 @@ class chatgpt:
             s = Session(**session)
             s = create_session(**session)
             if s.is_valid:
-                s.type = "session"
+                if not s.type:
+                    s.type = "session"
                 s = get_session_token(s,self.chat_file,self.logger)
                 if not s.device_id:
                     s.device_id = str(uuid.uuid4())
@@ -262,12 +264,12 @@ class chatgpt:
         # arkose context
         load_tasks = []
         auth_tasks = []
-        s = Session(type="script")
-        s.browser_contexts = await self.browser.new_context(service_workers="block")
-        s.page = await s.browser_contexts.new_page()
-        await stealth_async(s.page)
-        self.Sessions.append(s)
-        load_tasks.append(self.load_page(s))
+        # s = Session(type="script")
+        # s.browser_contexts = await self.browser.new_context(service_workers="block")
+        # s.page = await s.browser_contexts.new_page()
+        # await stealth_async(s.page)
+        # self.Sessions.append(s)
+        # load_tasks.append(self.load_page(s))
         self.manage["start"] = True # wait remove
         # gpt cookie contexts
         for session in self.Sessions:
@@ -293,7 +295,7 @@ class chatgpt:
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-        if session.type != "script" and page:
+        # if session.type != "script" and page:
             session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
             try:
                 await page.goto(url_check,timeout=30000)
@@ -304,15 +306,49 @@ class chatgpt:
                 access_token = json_data['accessToken']
                 if not session.email:
                     session.email = json_data["user"]["name"]
+                if "error" in json_data:
+                    if json_data['error'] == 'RefreshAccessTokenError':
+                        session.status = Status.Update.value
             except Exception as e:
                 access_token = ""
-                self.logger.warning(f"{session.email}'s have cf checkbox?")
+                self.logger.warning(f"{session.email}'s have cf checkbox? error:{e}")
             session.access_token = access_token
 
+            
+            
+        # if session.type == "script" and page:
+            await page.goto("https://chatgpt.com/",timeout=30000)
+            await page.wait_for_load_state()
+            current_url = page.url
+            await page.wait_for_url(current_url)
+            current_url = page.url
+            
+            while session.status == Status.Update.value:
+                self.logger.debug(f"context {session.email} begin relogin")
+                await Auth(session,self.logger)
+                self.logger.debug(f"context {session.email} relogin over")
+                
+            await page.goto("https://chatgpt.com/",timeout=30000)
+            await page.wait_for_load_state()
+            current_url = page.url
+            await page.wait_for_url(current_url)
+            # await asyncio.sleep(4)
+            await page.wait_for_load_state("load")
+            await page.wait_for_load_state(state="networkidle")
+            res = await page.evaluate_handle(load_js)
+            result: dict = await res.json_value()
+            await asyncio.sleep(3)
+            await page.wait_for_load_state("load")
+            await page.wait_for_load_state(state="networkidle")
+            
+            # await page.evaluate(Payload.get_ajs())
             if access_token:
-                session.login_state = True
-                session.status = Status.Ready.value
-                self.logger.debug(f"context {session.email} start!")
+                if session.status != Status.Update.value:
+                    session.login_state = True
+                    session.status = Status.Ready.value
+                    self.logger.debug(f"context {session.email} start!")
+                else:
+                    self.logger.debug(f"context {session.email} need relogin!")
             else:
                 session.login_state = False
                 await page.screenshot(path=f"context {session.email} faild!.png")
@@ -320,10 +356,8 @@ class chatgpt:
             if self.httpx_status:
                 self.logger.debug("load page over,http_status true,close page")
                 await page.close()
-        elif session.type == "script" and page:
-            await page.evaluate(Payload.get_ajs())
-            session.login_state = False
-            self.logger.debug(f"context {session.email} js start!")
+                
+            # self.logger.debug(f"context {session.email} js start!")
             return
         
     def tmp(self, loop):
@@ -350,161 +384,87 @@ class chatgpt:
         retry -= 1 
         if retry < 0:
             msg_data.error_info += " and error: send msg retry max"
-            # msg_data.msg_recv = "error: send msg retry max"
             return msg_data
         
         page = session.page
         token = session.access_token
-        # context_num = self.Sessions.index(session)
         context_num = session.email
         try:
-            # get arkose | 获取arkose
             if page and not self.httpx_status:
-                # get arkose_token when chatgpt3.5 begin arkose verity or used gpt4
-                paid_info = await get_paid(page,token,session.device_id,self.logger)
-                msg_data.sentinel = paid_info['token']
-                if self.arkose_status or (page and session.gpt4): 
-                    async def route_arkose(route: Route, request: Request):
-                        
-                        userAgent = request.headers["user-agent"]
-                        data = Payload.get_data_new()
-                        key = Payload.get_key(userAgent)
-                        bda = await self.get_bda(data, key)
-                        msg_data.arkose_data = Payload.rdm_arkose_new(userAgent, bda, paid_info['arkose']['dx']) # type: ignore
-                        msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
-                        msg_data.arkose_header["Cookie"] = request.headers["cookie"]
-                        msg_data.arkose_header["User-Agent"] = request.headers["user-agent"]
-                        await route.continue_(method="POST",headers=msg_data.arkose_header, post_data=msg_data.arkose_data)
-                    await page.route("**/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147", route_arkose)  # type: ignore
-                    async with page.expect_response(
-                            url_or_predicate=url_arkose_gpt4,
-                            timeout=400000) as arkose_info:
-                        try:
-                            await page.wait_for_load_state('load')
-                            self.logger.debug("get arkose")
-                            await page.goto(url_arkose_gpt4, timeout=500000)
-                            await page.wait_for_load_state('load')
-                        except Exception as e:
-                            self.logger.warning(e)
-                            await page.goto(url_arkose_gpt4, timeout=300000)
-                            await page.wait_for_load_state('load')
-                        resp_arkose = await arkose_info.value
-                        if resp_arkose.status == 200:
-                            arkose_json = await resp_arkose.json()
-                            msg_data.arkose = arkose_json["token"]
-                        else:
-                            self.logger.warning(f"get arkose token httpcode {resp_arkose.status} {resp_arkose.status_text}")
-            elif page and not self.httpx_status:
-                msg_data.arkose = None
-
-            elif self.arkose_status and self.httpx_status or (self.httpx_status and session.gpt4):
-                paid_info = await get_paid_by_httpx(session.cookies,token,session.device_id,session.user_agent,self.httpx_proxy,self.logger)
-                msg_data.sentinel = paid_info['token']
-                data = Payload.get_data_new()
-                key = Payload.get_key(session.user_agent)
-                bda = await self.get_bda(data, key)
-                msg_data.arkose_data = Payload.rdm_arkose_new(session.user_agent, bda, paid_info['arkose']['dx']) # type: ignore
-                msg_data.arkose_header = Payload.header_arkose(msg_data.arkose_data) # type: ignore
-                msg_data.arkose_header["Cookie"] = session.cookies
-                msg_data.arkose_header["User-Agent"] = session.user_agent
-                try:
-                    async with AsyncClient(proxy=self.httpx_proxy) as client:
-                        res = await client.post(url_arkose_gpt4,headers=msg_data.arkose_header,data=msg_data.arkose_data) # type: ignore
-                        if res.status_code == 200:
-                            arkose_json = res.json()
-                            msg_data.arkose = arkose_json["token"]
-                        else:
-                            self.logger.error(f"httpx get arkose token error:{res.status_code} {res.text}")
-                except Exception as e:
-                    self.logger.error(f"httpx get arkose token error:{e}")            
-                
-                        
-            
-            if page and not self.httpx_status:
-                if not msg_data.conversation_id and not msg_data.p_msg_id:
-                    msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
-                    header = Payload.headers(token, msg_data.post_data,session.device_id)
-                else:
-                    msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
-                                                            msg_data.arkose,msg_data.gpt4)
-                    header = Payload.headers(token, msg_data.post_data,session.device_id)
-                    
-                # get last wss
-                msg_data,header = await get_wss(page,header,msg_data,self.httpx_status,self.logger,self.httpx_proxy)
-                    
-                header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
-                if session.gpt4 and msg_data.arkose:
-                    header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
-                    
-                msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
-                
-                async def route_handle_get(route: Route, request: Request):
-                    header["Cookie"] = request.headers["cookie"]
-                    header["User-Agent"] = request.headers["user-agent"]
-                    header["Accept"] = "*/*"
-                    header["Accept-Language"] = "en-US"
-                    header["Referer"] = f"https://chat.openai.com/c/{msg_data.conversation_id}"
-                    header["DNT"] = "1"
-                    header["Sec-GPC"] = "1"
-                    del header["Content-Type"]
-                    del header["Content-Length"]
-                    await route.continue_(method="GET", headers=header)
-                    
-                await page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_get)  # type: ignore
-                
+                send_page: Page = await session.browser_contexts.new_page() # type: ignore
+                await stealth_async(send_page)
                 async def route_handle(route: Route, request: Request):
+                    header = {}
+                    header['authorization'] = 'Bearer ' + token
+                    header['Content-Type'] = 'application/json'
                     header["Cookie"] = request.headers["cookie"]
                     header["User-Agent"] = request.headers["user-agent"]
+                    header['Referer'] = header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
+                    if not msg_data.conversation_id:
+                        data = Payload.new_payload(msg_data.msg_send)
+                    else:
+                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"")
+                    header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
+                    header['Accept'] = 'text/event-stream'
+                    js_code = """
+                                () => {
+                                    try {
+                                        return { success: true, result: window._chatp.rS() };
+                                    } catch (error) {
+                                        return { success: false, error: error.message };
+                                    }
+                                }
+                                """
+                    res = await page.evaluate("() => window._chatp.rS()")
+                    # if not res['success']:
+                    #     raise Exception("JavaScript Error: " + res['error'])
+                    # else:
+                    #     # 继续使用结果
+                    #     json_result = res['result']
+                    json_result = res 
+                    proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
+                    header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
+                    header['OpenAI-Sentinel-Proof-Token'] = proof
+                    header['Sec-Fetch-Dest'] = 'empty'
+                    header['Sec-Fetch-Mode'] = 'cors'
+                    header['Sec-Fetch-Site'] = 'same-origin'
+                    header['Connection'] = 'keep-alive'
+                    header['DNT'] = '1'
+                    header['OAI-Device-Id'] = '9861f0ba-5a20-4eb7-b9a7-1dae025faf89'
+                    header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
+                    header['OAI-Language'] = 'en-US'
                     msg_data.header = header
-                    await route.continue_(method="POST", headers=header, post_data=msg_data.post_data)
+                    await route.continue_(method="POST", headers=header, post_data=data)
 
-                await page.route("**/backend-api/conversation", route_handle)  # type: ignore
-
-            elif self.httpx_status and page:
-                if not msg_data.conversation_id and not msg_data.p_msg_id:
-                    msg_data.post_data = Payload.new_payload(msg_data.msg_send, msg_data.arkose,msg_data.gpt4)
-                    header = Payload.headers(token, msg_data.post_data,session.device_id)
-                    header['Cookie'] = session.cookies
-                    header['User-Agent'] = session.user_agent
-                else:
-                    msg_data.post_data = Payload.old_payload(msg_data.msg_send, msg_data.conversation_id, msg_data.p_msg_id,
-                                                            msg_data.arkose,msg_data.gpt4)
-                    header = Payload.headers(token, msg_data.post_data,session.device_id)
-                    
-                # get last wss
-                header["User-Agent"] = session.user_agent
-                msg_data,header = await get_wss(page,header,msg_data,self.httpx_status,self.logger,self.httpx_proxy)
+                await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
                 
-                header['OpenAI-Sentinel-Chat-Requirements-Token'] = msg_data.sentinel
-                if session.gpt4 and msg_data.arkose:
-                    header['OpenAI-Sentinel-Arkose-Token'] = msg_data.arkose
-                
-                
-                    
-                msg_data.last_id = json.loads(msg_data.post_data)["messages"][0]["id"]
-                msg_data.header = header
-            
-                
-                
-            else:
-                msg_data.error_info = f"error! session {session.email} no page!"
-                self.logger.error(f"error! session {session.email} no page!")
-                
-            if page:
-                if send_status:
-                    # msg_data = await self.resend(session,page,msg_data,context_num)
-                    resp = await async_send_msg(session,msg_data,url_chatgpt,logger=self.logger,httpx_status=self.httpx_status,httpx_proxy=self.httpx_proxy,stdout_flush=self.stdout_flush)
-                    msg_data = await recive_handle(session,resp,msg_data,self.logger) # type: ignore
-                    if msg_data.status:
-                        await self.save_chat(msg_data, context_num)
-            else:
-                msg_data.error_info = f"error! session {session.email} no page!"
-                self.logger.error(f"error! session {session.email} no page!")
+                async with send_page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=60000) as response_info: # type: ignore
+                    try:
+                        self.logger.debug(f"send:{msg_data.msg_send}")
+                        await send_page.goto("https://chat.openai.com/backend-api/conversation", timeout=60000) # type: ignore
+                    except Exception as e:
+                        if "Download is starting" not in e.args[0]:
+                            self.logger.warning(f"Download message error:{e}")
+                            msg_data.error_info += f"Download message error: {str(e)}\n"
+                            raise e
+                        await send_page.wait_for_load_state("load") # type: ignore
+                        if response_info.is_done():
+                            res = await response_info.value
+                            text = await res.text()
+                            msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
+                    else:
+                        res = await response_info.value
+                        text = await res.text()
+                        msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
+                            
         except Exception as e:
-            self.logger.warning(e)
-            msg_data = await self.send_msg(msg_data,session,send_status,retry)
-            
-               
+            self.logger.warning(f"send message error:{e}")
+            msg_data.error_info += f"send message error: {str(e)} ,retry: {retry}\n"
+            msg_data = await self.send_msg(msg_data,session,retry=retry)
+        finally:
+            await send_page.close()
+        if msg_data.status:
+            await self.save_chat(msg_data, context_num)
         return msg_data
 
         
@@ -584,8 +544,9 @@ class chatgpt:
         Message processing entry, please use this
         聊天处理入口，一般用这个
         """
-        while not self.manage["start"]:
-            await asyncio.sleep(0.5)
+        # script_session: Session = [s for s in self.Sessions if s.type == "script"][0]
+        # while not script_session.login_state:
+        #     await asyncio.sleep(0.5)
         session:Session = Session(status=Status.Working.value)
         # We need to get c_id back to the session that created it
         if not msg_data.conversation_id:
@@ -618,16 +579,16 @@ class chatgpt:
                     if sessions:
                         session = sessions[0]
                     else:
-                        msg_data.error_info = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
+                        msg_data.error_info += f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed.\n"
                         self.logger.error(msg_data.error_info)
                         return msg_data
                     if not session:
                         self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
-                        msg_data.error_info = f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it."
+                        msg_data.error_info += f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.\n"
                         return msg_data
                     if session.status == Status.Stop.value:
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
-                        msg_data.error_info = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
+                        msg_data.error_info += f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.\n"
                         return msg_data
                     while session.status != Status.Ready.value:
                         # if this session is working or updating,waitting | 如果它还没准备好，那就等
@@ -644,19 +605,19 @@ class chatgpt:
                 except Exception as e:
                     # Recovery failed | 恢复失败
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.")
-                    msg_data.error_info = f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found."
+                    msg_data.error_info += f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.\n"
                     return msg_data
         if not session.email:
-            msg_data.error_info = ("Not session found,please check your conversation_id input")
+            msg_data.error_info += ("Not session found,please check your conversation_id input\n")
             self.logger.error(msg_data.error_info)
             return msg_data
         try:
             msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=100) 
         except TimeoutError:
-            msg_data.error_info = f"send msg {msg_data.msg_send} time out,session:{session.email}"
+            msg_data.error_info += f"send msg {msg_data.msg_send} time out,session:{session.email}\n"
             self.logger.warning(msg_data.error_info)
         except Exception as e:
-            msg_data.error_info = f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}"
+            msg_data.error_info += f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}\n"
             self.logger.error(msg_data.error_info)
         else:
             if not msg_data.error_info or msg_data.status:

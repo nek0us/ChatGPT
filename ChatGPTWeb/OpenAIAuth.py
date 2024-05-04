@@ -84,18 +84,28 @@ class AsyncAuth0:
         await self.browser_contexts.clear_cookies()
         await self.login_page.goto(
             url="https://chat.openai.com/auth/login",
-            wait_until="networkidle"
+            wait_until="load"
         )
         cf_locator = self.login_page.locator('//*[@id="cf-chl-widget-lpiae"]')
         if await cf_locator.count() > 0:
             logger.warning(f"cf checkbox in {self.email_address}")
-            
+        
         await asyncio.sleep(5)
+        nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
+        auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
+        if await nologin_home_locator.count() > 0:
+            await nologin_home_locator.click()
         # await self.login_page.wait_for_url("https://auth0.openai.com/**")
-        await self.login_page.click('[data-testid="login-button"]')
-        await self.login_page.wait_for_load_state(state="networkidle")
-        await self.login_page.wait_for_load_state("domcontentloaded")
+        elif await auth_login.count() > 0:
+            await auth_login.click()
+        else:
+            await self.login_page.click('[data-testid="login-button"]')
+        await asyncio.sleep(2)
         current_url = self.login_page.url
+        use_url = "chat.openai.com"
+        if "chatgpt.com" in current_url:
+            use_url = "chatgpt.com"
+        
         if "auth0" in current_url:
             await self.login_page.wait_for_url("https://auth0.openai.com/**")
         else:
@@ -208,21 +218,22 @@ class AsyncAuth0:
             await self.login_page.locator('[name="password"]').first.fill(self.password)
             await asyncio.sleep(1)
             await self.login_page.click('button[type="submit"]._button-login-password')
-            await self.login_page.wait_for_load_state(state="networkidle")
+            await self.login_page.wait_for_load_state()
 
         # go chatgpt
         try:
-            await self.login_page.wait_for_url("https://chat.openai.com/")
+            await asyncio.sleep(3)
+            await self.login_page.wait_for_url(f"https://{use_url}/")
         except Exception as e:
             self.logger.warning(e)
             # Try Again
             await self.login_page.keyboard.press(EnterKey)
-            await self.login_page.wait_for_url("https://chat.openai.com/")
+            await self.login_page.wait_for_url(f"https://{use_url}/")
 
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)
         res = await a.value
-        if res.status == 200 and res.url == url_check:
+        if (res.status == 200 or res.status == 307)and res.url == url_check:
             await asyncio.sleep(3)
             await self.login_page.wait_for_load_state('load')
             json_data = await self.login_page.evaluate(
