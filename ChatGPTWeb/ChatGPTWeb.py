@@ -11,6 +11,7 @@ from pathlib import Path
 from httpx import AsyncClient
 import sys
 import base64
+import websockets
 
 from .config import *
 from .load import load_js
@@ -405,6 +406,13 @@ class chatgpt:
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"")
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
+                    js_test = await page.evaluate("() => window._chatp")
+                    if not js_test:
+                        js_res = await page.evaluate_handle(load_js)
+                        result: dict = await js_res.json_value()
+                        await asyncio.sleep(2)
+                        await page.wait_for_load_state("load")
+                        await page.wait_for_load_state(state="networkidle")
                     json_result = await page.evaluate("() => window._chatp.rS()")
                     await page.wait_for_load_state("networkidle")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
@@ -419,6 +427,11 @@ class chatgpt:
                     # header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
+                    wss_test = await page.evaluate('() => window._test1.ut.activeSocketMap.entries().next().value')
+                    if wss_test:
+                        session.last_wss = wss_test[1]['connectionUrl']
+                        await page.evaluate(f'() => window._test1.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        session.wss = await websockets.connect(uri=session.last_wss,user_agent_header=None)
                     await route.continue_(method="POST", headers=header, post_data=data)
 
                 await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
@@ -432,21 +445,28 @@ class chatgpt:
                             self.logger.warning(f"Download message error:{e}")
                             msg_data.error_info += f"Download message error: {str(e)}\n"
                             raise e
-                        await send_page.wait_for_load_state("load") # type: ignore
+                        await send_page.wait_for_load_state('networkidle') # type: ignore
                         if response_info.is_done():
                             res = await response_info.value
                             text = await res.text()
                             msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
                     else:
                         res = await response_info.value
-                        try:
-                            json_data = await res.json()
-                            data = await try_wss(wss=json_data,msg_data=msg_data,ws=None,session=session,logger=self.logger)
-                            msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
-                        except Exception as e:
-                            self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
-                            msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
-                            raise e
+                        if res.headers['content-type'] != 'application/json':
+                            msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
+                        else: #if res.headers['content-type'] == 'application/json':
+                            
+                            try:
+                                json_data = await res.json()
+                                data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,logger=self.logger)
+                                msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
+                            except Exception as e:
+                                self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
+                                msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
+                                raise e
+                            finally:
+                                if session.wss:
+                                    await session.wss.close()
                             
         except Exception as e:
             self.logger.warning(f"send message error:{e}")

@@ -11,6 +11,7 @@ import random
 import urllib.parse
 import time
 import base64
+from websockets import WebSocketClientProtocol
 
 from playwright._impl._api_structures import Cookie
 from playwright.async_api import Page, BrowserContext
@@ -50,6 +51,7 @@ class Session:
     type: str = ""
     help_email: str = ""
     last_wss: str = ""
+    wss: Optional[WebSocketClientProtocol] = None
     device_id: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()

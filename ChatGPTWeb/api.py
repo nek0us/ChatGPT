@@ -6,6 +6,7 @@ from typing import Optional
 import pickle
 import json
 import websockets
+from websockets import WebSocketClientProtocol
 import base64
 import asyncio
 import time
@@ -100,9 +101,9 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             else:
                 tmp = await response_info.value
                 wss = await tmp.json()
-    return await try_wss(wss=wss,msg_data=msg_data,ws=ws,session=session,logger=logger,stdout_flush=stdout_flush)
+    return await try_wss(wss=wss,msg_data=msg_data,session=session,logger=logger,ws=ws,stdout_flush=stdout_flush)
 
-async def try_wss(wss: dict, msg_data: MsgData,ws,session: Session,logger,stdout_flush:bool = False):            
+async def try_wss(wss: dict, msg_data: MsgData,session: Session,logger,ws: Optional[WebSocketClientProtocol] = None,stdout_flush:bool = False):            
     wss_url = wss["wss_url"]
     msg_data.last_wss = wss_url
     try:
@@ -226,8 +227,8 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
         page = await session.browser_contexts.new_page() # type: ignore
         await stealth_async(page)
         try:
-            async with page.expect_response(url, timeout=20000) as a:
-                res = await page.goto(url, timeout=20000)
+            async with page.expect_response(url, timeout=40000) as a:
+                res = await page.goto(url, timeout=40000)
             res = await a.value
 
             if res.status == 403 and res.url == url:
