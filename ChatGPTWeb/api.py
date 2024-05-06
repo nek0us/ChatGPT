@@ -100,7 +100,9 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             else:
                 tmp = await response_info.value
                 wss = await tmp.json()
-                
+    return await try_wss(wss=wss,msg_data=msg_data,ws=ws,session=session,logger=logger,stdout_flush=stdout_flush)
+
+async def try_wss(wss: dict, msg_data: MsgData,ws,session: Session,logger,stdout_flush:bool = False):            
     wss_url = wss["wss_url"]
     msg_data.last_wss = wss_url
     try:
@@ -261,11 +263,13 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                     '() => JSON.parse(document.querySelector("body").innerText)')
                 if "error" in token and session.status != Status.Login.value:
                     session.status = Status.Update.value
+                session.access_token = token['accessToken']
 
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
         except Exception as e:
             logger.warning(f"retry_keep_alive {retry},error:{e}")
+            await page.screenshot(path=f"flush error {session.email}.jpg")
         finally:
             await page.close()
     else:

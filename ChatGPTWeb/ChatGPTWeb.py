@@ -24,6 +24,7 @@ from .api import (
     get_paid,
     get_paid_by_httpx,
     get_wss,
+    try_wss,
 )
 
 class chatgpt:
@@ -297,24 +298,22 @@ class chatgpt:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
         # if session.type != "script" and page:
             session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
-            try:
-                await page.goto(url_check,timeout=30000)
-                await asyncio.sleep(3)
-                await page.wait_for_load_state('load')
-                json_data = await page.evaluate(
-                    '() => JSON.parse(document.querySelector("body").innerText)')
-                access_token = json_data['accessToken']
-                if not session.email:
-                    session.email = json_data["user"]["name"]
-                if "error" in json_data:
-                    if json_data['error'] == 'RefreshAccessTokenError':
-                        session.status = Status.Update.value
-            except Exception as e:
-                access_token = ""
-                self.logger.warning(f"{session.email}'s have cf checkbox? error:{e}")
-            session.access_token = access_token
-
-            
+            # try:
+            #     await page.goto(url_check,timeout=30000)
+            #     await asyncio.sleep(3)
+            #     await page.wait_for_load_state('networkidle')
+            #     json_data = await page.evaluate(
+            #         '() => JSON.parse(document.querySelector("body").innerText)')
+            #     access_token = json_data['accessToken']
+            #     if not session.email:
+            #         session.email = json_data["user"]["name"]
+            #     if "error" in json_data:
+            #         if json_data['error'] == 'RefreshAccessTokenError':
+            #             session.status = Status.Update.value
+            # except Exception as e:
+            #     access_token = ""
+            #     self.logger.warning(f"{session.email}'s have cf checkbox? error:{e}")
+            # session.access_token = access_token
             
         # if session.type == "script" and page:
             await page.goto("https://chatgpt.com/",timeout=30000)
@@ -332,17 +331,17 @@ class chatgpt:
             await page.wait_for_load_state()
             current_url = page.url
             await page.wait_for_url(current_url)
-            # await asyncio.sleep(4)
+            await asyncio.sleep(4)
             await page.wait_for_load_state("load")
             await page.wait_for_load_state(state="networkidle")
             res = await page.evaluate_handle(load_js)
             result: dict = await res.json_value()
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             await page.wait_for_load_state("load")
             await page.wait_for_load_state(state="networkidle")
             
             # await page.evaluate(Payload.get_ajs())
-            if access_token:
+            if session.access_token:
                 if session.status != Status.Update.value:
                     session.login_state = True
                     session.status = Status.Ready.value
@@ -383,7 +382,7 @@ class chatgpt:
             self.logger.debug(f"resend {retry}")
         retry -= 1 
         if retry < 0:
-            msg_data.error_info += " and error: send msg retry max"
+            msg_data.error_info += " and error: send msg retry max\n"
             return msg_data
         
         page = session.page
@@ -406,22 +405,8 @@ class chatgpt:
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"")
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
-                    js_code = """
-                                () => {
-                                    try {
-                                        return { success: true, result: window._chatp.rS() };
-                                    } catch (error) {
-                                        return { success: false, error: error.message };
-                                    }
-                                }
-                                """
-                    res = await page.evaluate("() => window._chatp.rS()")
-                    # if not res['success']:
-                    #     raise Exception("JavaScript Error: " + res['error'])
-                    # else:
-                    #     # 继续使用结果
-                    #     json_result = res['result']
-                    json_result = res 
+                    json_result = await page.evaluate("() => window._chatp.rS()")
+                    await page.wait_for_load_state("networkidle")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
@@ -430,8 +415,8 @@ class chatgpt:
                     header['Sec-Fetch-Site'] = 'same-origin'
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
-                    header['OAI-Device-Id'] = '9861f0ba-5a20-4eb7-b9a7-1dae025faf89'
-                    header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
+                    header['OAI-Device-Id'] = await page.evaluate("() => window._device.f3()")
+                    # header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
                     await route.continue_(method="POST", headers=header, post_data=data)
@@ -454,8 +439,14 @@ class chatgpt:
                             msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
                     else:
                         res = await response_info.value
-                        text = await res.text()
-                        msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
+                        try:
+                            json_data = await res.json()
+                            data = await try_wss(wss=json_data,msg_data=msg_data,ws=None,session=session,logger=self.logger)
+                            msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
+                        except Exception as e:
+                            self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
+                            msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
+                            raise e
                             
         except Exception as e:
             self.logger.warning(f"send message error:{e}")
