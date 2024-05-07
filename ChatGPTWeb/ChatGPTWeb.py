@@ -429,8 +429,9 @@ class chatgpt:
                     msg_data.header = header
                     wss_test = await page.evaluate('() => window._test1.ut.activeSocketMap.entries().next().value')
                     if wss_test:
-                        session.last_wss = wss_test[1]['connectionUrl']
                         await page.evaluate(f'() => window._test1.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        wss = await page.evaluate(f'() => window._test3.Z.postRegisterWebsocket()')
+                        session.last_wss = wss['wss_url']
                         session.wss = await websockets.connect(uri=session.last_wss,user_agent_header=None)
                     await route.continue_(method="POST", headers=header, post_data=data)
 
