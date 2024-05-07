@@ -198,11 +198,14 @@ async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger
     stream_lines = stream_text.splitlines()
     msg_data = stream2msgdata(stream_lines,msg_data)
     if msg_data.msg_recv == "":
-        logger.warning(f"recive_handle error:This content may violate openai's content policy,error:{msg_data.error_info}")
-        msg_data.error_info += f"recive_handle error: This content may violate openai's content policy,error:{msg_data.error_info}\n"
+        logger.warning(f"recive_handle error:msg_data.recv == None,This content may violate openai's content policy,error:{msg_data.error_info}")
+        msg_data.error_info += f"recive_handle error:msg_data.recv == None, This content may violate openai's content policy,error:{msg_data.error_info}\n"
+        raise Exception("recive_handle error:msg_data.recv == None")
+        
     if not msg_data.status:
-        logger.warning(f"recive_handle error:{msg_data.error_info}")
-        msg_data.error_info += f"recive_handle error:{msg_data.error_info}\n"
+        logger.warning(f"recive_handle error:,msg_data.status==false{msg_data.error_info}")
+        msg_data.error_info += f"recive_handle error:,msg_data.status==false{msg_data.error_info}\n"
+        raise Exception("recive_handle error,msg_data.status==false")
     return msg_data
 
 def create_session(**kwargs) -> Session:
