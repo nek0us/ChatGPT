@@ -256,7 +256,7 @@ class chatgpt:
             self.logger.info("Firefox browser has been successfully installed.")
         else:
             self.logger.debug("Firefox browser is already installed.")
-            
+        self.js = await load_js(self.httpx_proxy)    
         self.playwright_manager = async_playwright()
         self.playwright = await self.playwright_manager.start()
         self.browser = await self.playwright.firefox.launch(
@@ -335,7 +335,7 @@ class chatgpt:
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
             await page.wait_for_load_state(state="networkidle")
-            res = await page.evaluate_handle(load_js)
+            res = await page.evaluate_handle(self.js)
             result: dict = await res.json_value()
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
@@ -408,7 +408,7 @@ class chatgpt:
                     header['Accept'] = 'text/event-stream'
                     js_test = await page.evaluate("() => window._chatp")
                     if not js_test:
-                        js_res = await page.evaluate_handle(load_js)
+                        js_res = await page.evaluate_handle(self.js)
                         result: dict = await js_res.json_value()
                         await asyncio.sleep(2)
                         await page.wait_for_load_state("load")
@@ -427,10 +427,10 @@ class chatgpt:
                     # header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
-                    wss_test = await page.evaluate('() => window._test1.ut.activeSocketMap.entries().next().value')
+                    wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
                     if wss_test:
-                        await page.evaluate(f'() => window._test1.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                        wss = await page.evaluate(f'() => window._test3.Z.postRegisterWebsocket()')
+                        await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        wss = await page.evaluate(f'() => window._wss.ut()')
                         session.last_wss = wss['wss_url']
                         session.wss = await websockets.connect(uri=session.last_wss,user_agent_header=None)
                     await route.continue_(method="POST", headers=header, post_data=data)
@@ -467,8 +467,7 @@ class chatgpt:
                                 raise e
                             finally:
                                 if session.wss:
-                                    await session.wss.close()
-                            
+                                    await session.wss.close()             
         except Exception as e:
             self.logger.warning(f"send message error:{e}")
             msg_data.error_info += f"send message error: {str(e)} ,retry: {retry}\n"
