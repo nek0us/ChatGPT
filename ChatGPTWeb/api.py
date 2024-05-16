@@ -271,9 +271,12 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
 
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
+                # await page.screenshot(path=f"flush error {session.email}.jpg")
+                session = await retry_keep_alive(session,url,chat_file,logger,retry)
         except Exception as e:
             logger.warning(f"retry_keep_alive {retry},error:{e}")
             # await page.screenshot(path=f"flush error {session.email}.jpg")
+            session = await retry_keep_alive(session,url,chat_file,logger,retry)
         finally:
             await page.close()
     else:

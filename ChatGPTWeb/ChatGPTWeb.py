@@ -335,11 +335,25 @@ class chatgpt:
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
             await page.wait_for_load_state(state="networkidle")
-            res = await page.evaluate_handle(self.js)
+            res = await page.evaluate_handle(self.js[0])
             result: dict = await res.json_value()
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
             await page.wait_for_load_state(state="networkidle")
+            js_test = await page.evaluate("() => window._chatp")
+            if not js_test:
+                js_res = await page.evaluate_handle(self.js[1])
+                result: dict = await js_res.json_value()
+                await asyncio.sleep(2)
+                await page.wait_for_load_state("load")
+                await page.wait_for_load_state(state="networkidle")
+                js_test2 = await page.evaluate("() => window._chatp")
+                if js_test2:
+                    self.js_used = 1
+                else:
+                    self.js_used = 0
+            else:
+                self.js_used = 0
             
             # await page.evaluate(Payload.get_ajs())
             if session.access_token:
@@ -408,11 +422,19 @@ class chatgpt:
                     header['Accept'] = 'text/event-stream'
                     js_test = await page.evaluate("() => window._chatp")
                     if not js_test:
-                        js_res = await page.evaluate_handle(self.js)
+                        js_res = await page.evaluate_handle(self.js[self.js_used])
                         result: dict = await js_res.json_value()
                         await asyncio.sleep(2)
                         await page.wait_for_load_state("load")
                         await page.wait_for_load_state(state="networkidle")
+                        js_test2 = await page.evaluate("() => window._chatp")
+                        if not js_test2:
+                            js_res = await page.evaluate_handle(self.js[(self.js_used ^ 1)])
+                            result: dict = await js_res.json_value()
+                            await asyncio.sleep(2)
+                            await page.wait_for_load_state("load")
+                            await page.wait_for_load_state(state="networkidle")
+                            
                     json_result = await page.evaluate("() => window._chatp.rS()")
                     await page.wait_for_load_state("networkidle")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
@@ -430,8 +452,10 @@ class chatgpt:
                     wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
                     if wss_test:
                         await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                        wss = await page.evaluate(f'() => window._wss.ut()')
-                        session.last_wss = wss['wss_url']
+                        await page.evaluate('() => window._wss.ut.register()')
+                        await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
+                        session.last_wss = wss[1]['connectionUrl']
                         session.wss = await websockets.connect(uri=session.last_wss,user_agent_header=None)
                     await route.continue_(method="POST", headers=header, post_data=data)
 
