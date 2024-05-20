@@ -1,18 +1,19 @@
-import typing
-import uuid
-import json
-import logging
-from dataclasses import dataclass
-import datetime
-from enum import Enum
-from typing import TypedDict, Optional, Literal, List, Dict
-from pathlib import Path
-import random
-import urllib.parse
-import time
-import base64
-from websockets import WebSocketClientProtocol
 
+import uuid
+import time
+import json
+import random
+import base64
+import typing
+import logging
+import datetime
+import urllib.parse
+
+from enum import Enum
+from pathlib import Path
+from dataclasses import dataclass
+from aiohttp import ClientSession,ClientWebSocketResponse
+from typing import TypedDict, Optional, Literal, List, Dict
 from playwright._impl._api_structures import Cookie
 from playwright.async_api import Page, BrowserContext
 
@@ -51,7 +52,8 @@ class Session:
     type: str = ""
     help_email: str = ""
     last_wss: str = ""
-    wss: Optional[WebSocketClientProtocol] = None
+    wss: Optional[ClientWebSocketResponse] = None
+    wss_session: Optional[ClientSession] = None
     device_id: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()

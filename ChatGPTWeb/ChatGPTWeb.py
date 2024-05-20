@@ -1,17 +1,15 @@
-import json
+
 import os
-from playwright.async_api import async_playwright, Route, Request, BrowserContext, Page
-from playwright_stealth import stealth_async
-import asyncio
+import json
 import typing
-import threading
-import re
-import random
-from pathlib import Path
-from httpx import AsyncClient
-import sys
 import base64
-import websockets
+import random
+import asyncio
+import threading
+from pathlib import Path
+from aiohttp import ClientSession
+from playwright_stealth import stealth_async
+from playwright.async_api import async_playwright, Route, Request, Page
 
 from .config import *
 from .load import load_js
@@ -351,6 +349,7 @@ class chatgpt:
                 if js_test2:
                     self.js_used = 1
                 else:
+                    js_res = await page.evaluate(self.js[1])
                     self.js_used = 0
             else:
                 self.js_used = 0
@@ -446,7 +445,6 @@ class chatgpt:
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
                     header['OAI-Device-Id'] = await page.evaluate("() => window._device.f3()")
-                    # header['OAI-Echo-Logs'] = '0,8046474,1,8046474,0,8046477,0,8047943,1,8047943,0,8047946,0,8086997,1,8086997,0,8086998,0,8095630'
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
                     wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
@@ -456,7 +454,8 @@ class chatgpt:
                         await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
                         wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
                         session.last_wss = wss[1]['connectionUrl']
-                        session.wss = await websockets.connect(uri=session.last_wss,user_agent_header=None)
+                        session.wss_session = ClientSession()
+                        session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
                     await route.continue_(method="POST", headers=header, post_data=data)
 
                 await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
@@ -473,7 +472,7 @@ class chatgpt:
                         await send_page.wait_for_load_state('networkidle') # type: ignore
                         if response_info.is_done():
                             res = await response_info.value
-                            text = await res.text()
+                            await res.text()
                             msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
                     else:
                         res = await response_info.value
@@ -483,15 +482,19 @@ class chatgpt:
                             
                             try:
                                 json_data = await res.json()
-                                data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,logger=self.logger)
+                                data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,proxy=self.httpx_proxy,logger=self.logger)
                                 msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
                             except Exception as e:
                                 self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
                                 msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
                                 raise e
                             finally:
-                                if session.wss:
-                                    await session.wss.close()             
+                                if session.wss and session.wss_session:
+                                    await session.wss.close()
+                                    await session.wss_session.close()
+                                    session.wss = None
+                                    session.wss_session = None
+                                                 
         except Exception as e:
             self.logger.warning(f"send message error:{e}")
             msg_data.error_info += f"send message error: {str(e)} ,retry: {retry}\n"

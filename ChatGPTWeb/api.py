@@ -1,20 +1,21 @@
+import sys
+import time
+import uuid
+import json
+import pickle
+import base64
+import asyncio
+
 from pathlib import Path
+from typing import Optional
+from httpx import AsyncClient
+from aiohttp import ClientSession,ClientWebSocketResponse
 from playwright.async_api import Page
 from playwright.async_api import Response,Route, Request
 from playwright_stealth import stealth_async
-from typing import Optional
-import pickle
-import json
-import websockets
-from websockets import WebSocketClientProtocol
-import base64
-import asyncio
-import time
-import uuid
-import sys
-from httpx import AsyncClient
-from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload
+
 from .OpenAIAuth import AsyncAuth0
+from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload
 
 class MockResponse:
     def __init__(self, data, status=200):
@@ -32,7 +33,7 @@ async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,
         async def route_handle_wss(route: Route, request: Request):
             header["User-Agent"] = request.headers["user-agent"]
             await route.continue_(method="POST", headers=header)
-        await page.route(f"**/backend-api/register-websocket", route_handle_wss)
+        await page.route("**/backend-api/register-websocket", route_handle_wss)
         try:
             async with page.expect_response("https://chat.openai.com/backend-api/register-websocket",timeout=10000) as response_info: 
                 await page.goto("https://chat.openai.com/backend-api/register-websocket",timeout=10000)
@@ -69,13 +70,13 @@ def get_wss_payload(last_wss:str):
 
 async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,httpx_status: bool = False,httpx_proxy: Optional[str]=None,stdout_flush:bool = False):
     '''msg send handle func'''
-    ws = None
     if msg_data.last_wss != "":
         payload_data = get_wss_payload(msg_data.last_wss)
         now_time = int(time.time())
         if now_time < payload_data["exp"]:
             try:
-                ws = await websockets.connect(msg_data.last_wss,user_agent_header=None)
+                session.wss_session = ClientSession()
+                session.wss = await session.wss_session.ws_connect(msg_data.last_wss,headers=None,proxy=httpx_proxy)
             except Exception as e:
                 logger.warning(f"open last wss error:{e}")
     if httpx_status:
@@ -101,31 +102,32 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             else:
                 tmp = await response_info.value
                 wss = await tmp.json()
-    return await try_wss(wss=wss,msg_data=msg_data,session=session,logger=logger,ws=ws,stdout_flush=stdout_flush)
+    return await try_wss(wss=wss,msg_data=msg_data,session=session,proxy=httpx_proxy,logger=logger,ws=session.wss,stdout_flush=stdout_flush)
 
-async def try_wss(wss: dict, msg_data: MsgData,session: Session,logger,ws: Optional[WebSocketClientProtocol] = None,stdout_flush:bool = False):            
+async def try_wss(wss: dict, msg_data: MsgData,session: Session,proxy: Optional[str],logger,ws: Optional[ClientWebSocketResponse] = None,stdout_flush:bool = False):            
     wss_url = wss["wss_url"]
     msg_data.last_wss = wss_url
     try:
         if ws:
             data = await recv_ws(session,ws,stdout_flush)
         else:
-            async with websockets.connect(wss_url,user_agent_header=None) as websocket:
-                data = await recv_ws(session,websocket,stdout_flush) 
+            async with ClientSession() as wss_session:
+                async with wss_session.ws_connect(wss_url,headers=None,proxy=proxy) as websocket:
+                    data = await recv_ws(session,websocket,stdout_flush) 
     except Exception as e:
         logger.error(f"get recv wss msg error:{e}")
         msg_data.error_info += f"{str(e)}\n"
     return data
 
-async def recv_ws(session: Session,ws,stdout_flush: bool = False):
+async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool = False):
     body = ""
     while 1:
-        recv = await asyncio.wait_for(ws.recv(),timeout=20)
-        if json.loads(recv)["body"] == "ZGF0YTogW0RPTkVdCgo=":
+        recv = await asyncio.wait_for(ws.receive(),timeout=20)
+        if json.loads(recv.data)["body"] == "ZGF0YTogW0RPTkVdCgo=":
             sys.stdout.write("\r" + " " * 40 + "\r")
             sys.stdout.flush()
             return MockResponse(body)
-        ws_tmp = json.loads(recv)
+        ws_tmp = json.loads(recv.data)
         ws_tmp_body = base64.b64decode(ws_tmp['body']).decode('utf-8')
         msg_body = json.loads(ws_tmp_body[5:])
         if 'message' in msg_body:
