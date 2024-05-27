@@ -40,7 +40,7 @@ class Session:
     email: str = ""
     password: str = ""
     access_token: str = ""
-    gpt4: bool = False
+    gptplus: bool = False
     session_token: Cookie|None = None
     status: str = ""
     login_state: bool = False
@@ -155,7 +155,9 @@ class MsgData():
                  header: dict = {},
                  sentinel: str = "",
                  error_info: str = "",
-                 gpt4: bool = False,
+                 gpt4o: bool = False,
+                 upload_file: bytes = b"",
+                 upload_file_name: str = "",
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -169,7 +171,9 @@ class MsgData():
         arkose_header : arkose http header
         arkose : arkose
         error_info : error info
-        gpt4: this msg used gpt4
+        gpt4o: this msg used gpt40
+        upload_file: upload file in this msg
+        upload_file_name: the name of upload file in this msg
         '''
         self.status = status
         self.msg_type = msg_type
@@ -187,13 +191,13 @@ class MsgData():
         self.header = header
         self.sentinel = sentinel
         self.error_info = error_info
-        self.gpt4 = gpt4
+        self.gpt4o = gpt4o
 
 
 class Payload():
 
     @staticmethod
-    def new_payload(prompt: str, gpt4: bool = False) -> str:
+    def new_payload(prompt: str, gpt4o: bool = False) -> str:
         return json.dumps({
             "action": "next",
             "messages": [{
@@ -208,7 +212,7 @@ class Payload():
                 "metadata": {}
             }],
             "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
-            "model": "gpt-4" if gpt4 else "text-davinci-002-render-sha",
+            "model": "gpt-4o" if gpt4o else "text-davinci-002-render-sha",
             "timezone_offset_min": -480,
             # "suggestions": [
             #     "'Explain what this bash command does: lazy_i18n(\"cat config.yaml | awk NF\"'",
@@ -225,12 +229,14 @@ class Payload():
             "forece_nulligen":False,
             "force_rate_limit": False,
             "force_paragen_model_slug": "",
+            "force_use_sse": True,
+            "reset_rate_limits": False,
             "websocket_request_id": str(uuid.uuid4())
             
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt4: bool = False) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt4o: bool = False) -> str:
         return json.dumps({
             "action":
                 "next",
@@ -251,7 +257,7 @@ class Payload():
             "parent_message_id":
                 p_msg_id,
             "model":
-                "gpt-4" if gpt4 else "text-davinci-002-render-sha",
+                "gpt-4o" if gpt4o else "text-davinci-002-render-sha",
             "timezone_offset_min":
                 -480,
             "suggestions": [],
@@ -262,6 +268,8 @@ class Payload():
             "forece_nulligen":False,
             "force_rate_limit": False,
             "force_paragen_model_slug": "",
+            "force_use_sse": True,
+            "reset_rate_limits": False,
             "websocket_request_id": str(uuid.uuid4())
         })
 

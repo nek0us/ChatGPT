@@ -114,7 +114,11 @@ class AsyncAuth0:
         # Select Mode
         if self.mode == "google":
             try:
-                await self.login_page.click('[data-provider="google"] button')
+                if "auth0" in self.login_page.url:
+                    await self.login_page.click('[data-provider="google"] button')
+                else:
+                    await self.login_page.click('//html/body/div/div/main/section/div[2]/div[3]/button[1]')
+                    
             except Exception as e:
                 self.logger.warning(f"google point error:{e}")
                 raise e
@@ -190,7 +194,8 @@ class AsyncAuth0:
         elif self.mode == "google":
             # enter google email
             await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-            await self.login_page.keyboard.press(EnterKey)
+            await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
+            # await self.login_page.keyboard.press(EnterKey)
             await self.login_page.wait_for_load_state()
             # enter passwd
             await self.login_page.locator(

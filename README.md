@@ -15,7 +15,8 @@ ChatGPT playwright api,not openai api
 -   [x] 重置聊天或回到某一时刻 | Reset a chat or go back to a certain moment
 -   [x] 多账号并发聊天 | Concurrent chatting with multiple accounts
 -   [x] 使用账号登录（暂不支持苹果）| Log in with your account (Apple is not supported yet)
--   [ ] GPT4
+-   [x] GPT4o
+-   [ ] GPT4 and upload file
 -   [ ] 代码过于混乱等优化 | The code is too confusing and other optimizations
 -   [ ] 抽空完善readme | Take the time to improve the readme
 
@@ -38,6 +39,8 @@ class MsgData():
     msg_type: typing.Optional[typing.Literal["old_session","back_loop","new_session"]] = "new_session",
     msg_send: str = "hi",
     # your msg 
+    gpt4o: bool = False,
+    # if you use gpt4o by gptplus
     msg_recv: str = "",
     # gpt's msg
     conversation_id: str = "",
@@ -81,6 +84,12 @@ sessions = [
         "email": "xxx@gmail.com",
         "password": "",
         "mode": "google"
+    },
+    ,
+    {
+        "email": "xxx@hotmail.com",
+        "password": "",
+        "gptplus": True
     }
 ]
 # please remove account if u don't have | 请删除你不需要的登录方式 
@@ -88,6 +97,9 @@ sessions = [
 # if you use an openai account to log in, 
 # pleases manually obtain the session_token in advance and add it together to reduce the possibility of openai verification
 # 使用openai账号登录的话，请提前手动获取 session_token并一同添加，降低 openai 验证的可能性
+
+# There is currently a known issue, the Google account login method is not available, waiting for updates
+# 目前已知问题，google账户登录方式不可用，等待更新
 
 
 personality_definition = Personality(
@@ -109,12 +121,23 @@ async def main():
     # if u don't have,pleases enter empty
     data:MsgData = MsgData(conversation_id=c_id,p_msg_id=p_id)
     while 1:
-        print("\n------------------------------")
+        print("------------------------------")
         data.msg_send = await aioconsole.ainput("input：")
-        print("------------------------------\n")
+        print("------------------------------")
         if data.msg_send == "quit":
-        # quit 
             break
+        elif data.msg_send == "gpt4o":
+            if not data.gpt4o:
+                data.gpt4o = True
+                data.conversation_id = ""
+                data.p_msg_id = ""
+            data.msg_send = await aioconsole.ainput("reinput：")
+        elif data.msg_send == "gpt3.5":
+            if data.gpt4o:
+                data.gpt4o = False
+                data.conversation_id = ""
+                data.p_msg_id = ""
+            data.msg_send = await aioconsole.ainput("reinput：")
         elif data.msg_send == "re":
             data.msg_type = "back_loop"
             data.p_msg_id = await aioconsole.ainput("your parent_message_id if you go back:")
@@ -181,14 +204,6 @@ headless: bool = True,
 begin_sleep_time: bool = True,
 # 启动时的随即等待时间，默认开启，推荐仅在少量账号测试时关闭
 # The immediate waiting time at startup is enabled by default. It is recommended to turn it off only when testing with a small number of accounts.
-
-arkose_status: bool = False
-# chatgpt3.5是否启用了arkose验证
-# Does chatgpt3.5 enable arkose verification?
-
-httpx_status: bool = True
-# 使用httpx减少内存使用、
-# use httpx to chat
 
 logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 # 日志等级，默认INFO

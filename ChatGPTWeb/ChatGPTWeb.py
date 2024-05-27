@@ -10,8 +10,21 @@ from pathlib import Path
 from aiohttp import ClientSession
 from playwright_stealth import stealth_async
 from playwright.async_api import async_playwright, Route, Request, Page
+from typing import Optional,Literal,List
 
-from .config import *
+from .config import (
+    Payload,
+    Personality,
+    MsgData,
+    ProxySettings,
+    logging,
+    formator,
+    Session,
+    uuid,
+    url_check,
+    url_session,
+    Status,
+)
 from .load import load_js
 from .api import (
     async_send_msg,
@@ -70,7 +83,7 @@ class chatgpt:
         ### stdout_flush
         command shell flush stdout|命令行即时输出
         """
-        self.Sessions = []
+        self.Sessions: List[Session] = []
         self.data = MsgData()
         self.proxy: typing.Optional[ProxySettings] = {"server":proxy} if proxy else None
         self.httpx_proxy = proxy
@@ -414,22 +427,22 @@ class chatgpt:
                     header["User-Agent"] = request.headers["user-agent"]
                     header['Referer'] = header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
                     if not msg_data.conversation_id:
-                        data = Payload.new_payload(msg_data.msg_send)
+                        data = Payload.new_payload(msg_data.msg_send,gpt4o=msg_data.gpt4o)
                     else:
-                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"")
+                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt4o=msg_data.gpt4o)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
                     js_test = await page.evaluate("() => window._chatp")
                     if not js_test:
                         js_res = await page.evaluate_handle(self.js[self.js_used])
-                        result: dict = await js_res.json_value()
+                        await js_res.json_value()
                         await asyncio.sleep(2)
                         await page.wait_for_load_state("load")
                         await page.wait_for_load_state(state="networkidle")
                         js_test2 = await page.evaluate("() => window._chatp")
                         if not js_test2:
                             js_res = await page.evaluate_handle(self.js[(self.js_used ^ 1)])
-                            result: dict = await js_res.json_value()
+                            await js_res.json_value()
                             await asyncio.sleep(2)
                             await page.wait_for_load_state("load")
                             await page.wait_for_load_state(state="networkidle")
@@ -439,6 +452,12 @@ class chatgpt:
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
+                    if session.gptplus:
+                        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147", timeout=40000) as arkose_info:
+                            await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
+                            res_ark = await arkose_info.value
+                            arkose = await res_ark.json()
+                            header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
                     header['Sec-Fetch-Dest'] = 'empty'
                     header['Sec-Fetch-Mode'] = 'cors'
                     header['Sec-Fetch-Site'] = 'same-origin'
@@ -590,9 +609,12 @@ class chatgpt:
         if not msg_data.conversation_id:
             # new chat
             # gpt4 ready
-            gpt4_list = [s for s in self.Sessions if s.gpt4==True]
-            
-            session_list = gpt4_list if msg_data.gpt4 else self.Sessions
+            gpt4_list = [s for s in self.Sessions if s.gptplus==True]
+            if gpt4_list == [] and msg_data.gpt4o:
+                msg_data.error_info = "your use gpt4o,but gptplus account not found"
+                self.logger.error(msg_data.error_info)
+                return msg_data
+            session_list = gpt4_list if msg_data.gpt4o else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
