@@ -427,9 +427,9 @@ class chatgpt:
                     header["User-Agent"] = request.headers["user-agent"]
                     header['Referer'] = header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
                     if not msg_data.conversation_id:
-                        data = Payload.new_payload(msg_data.msg_send,gpt4o=msg_data.gpt4o)
+                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model)
                     else:
-                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt4o=msg_data.gpt4o)
+                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt_model=msg_data.gpt_model)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
                     js_test = await page.evaluate("() => window._chatp")
@@ -610,11 +610,11 @@ class chatgpt:
             # new chat
             # gpt4 ready
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
-            if gpt4_list == [] and msg_data.gpt4o:
-                msg_data.error_info = "your use gpt4o,but gptplus account not found"
+            if gpt4_list == [] and msg_data.gpt_model != "text-davinci-002-render-sha":
+                msg_data.error_info = "you use gptplus,but gptplus account not found"
                 self.logger.error(msg_data.error_info)
                 return msg_data
-            session_list = gpt4_list if msg_data.gpt4o else self.Sessions
+            session_list = gpt4_list if msg_data.gpt_model != "text-davinci-002-render-sha" else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
@@ -784,5 +784,7 @@ class chatgpt:
             "account": [session.email  for session in self.Sessions if session.type != "script"],
             "token": [True if session.access_token else False for session in self.Sessions if session.type != "script"],
             "work": [session.status for session in self.Sessions if session.type != "script"],
-            "cid_num": [len(cid_all[x]) for x in cid_all]
+            "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
+            "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
         }
+

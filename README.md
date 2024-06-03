@@ -3,9 +3,6 @@ ChatGPT playwright api,not openai api
 
 一个不怎么使用网页的ChatGPT playwright api
 
-## gpt plus account is not currently supported, waiting for repair
-## 暂不支持gpt plus账户，等待修复中 
-
 
 # 待填坑 feature
 -   [x] 使用网页版 chatgpt | use chatgpt
@@ -15,8 +12,8 @@ ChatGPT playwright api,not openai api
 -   [x] 重置聊天或回到某一时刻 | Reset a chat or go back to a certain moment
 -   [x] 多账号并发聊天 | Concurrent chatting with multiple accounts
 -   [x] 使用账号登录（暂不支持苹果）| Log in with your account (Apple is not supported yet)
--   [x] GPT4o
--   [ ] GPT4 and upload file
+-   [x] GPT4 and PLUS
+-   [ ] GPT4 upload file
 -   [ ] 代码过于混乱等优化 | The code is too confusing and other optimizations
 -   [ ] 抽空完善readme | Take the time to improve the readme
 
@@ -39,7 +36,7 @@ class MsgData():
     msg_type: typing.Optional[typing.Literal["old_session","back_loop","new_session"]] = "new_session",
     msg_send: str = "hi",
     # your msg 
-    gpt4o: bool = False,
+    gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha",
     # if you use gpt4o by gptplus
     msg_recv: str = "",
     # gpt's msg
@@ -128,13 +125,13 @@ async def main():
             break
         elif data.msg_send == "gpt4o":
             if not data.gpt4o:
-                data.gpt4o = True
+                data.gpt_model = "gpt-4o"
                 data.conversation_id = ""
                 data.p_msg_id = ""
             data.msg_send = await aioconsole.ainput("reinput：")
         elif data.msg_send == "gpt3.5":
             if data.gpt4o:
-                data.gpt4o = False
+                data.gpt_model = "text-davinci-002-render-sha"
                 data.conversation_id = ""
                 data.p_msg_id = ""
             data.msg_send = await aioconsole.ainput("reinput：")
@@ -326,3 +323,8 @@ After opening chat.openai.com and logging in, press F12 on the browser to open t
 A file will be generated in the startup directory. Please put the verification code into it and save it. Pay attention to the log prompts.
 
 启动目录下会生成文件，请将验证码放入其中并保存，注意日志提示
+
+### 谷歌登录错误 | google login error 
+will be fix by next
+
+下次修，先鸽了

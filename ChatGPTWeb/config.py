@@ -155,7 +155,7 @@ class MsgData():
                  header: dict = {},
                  sentinel: str = "",
                  error_info: str = "",
-                 gpt4o: bool = False,
+                 gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha",
                  upload_file: bytes = b"",
                  upload_file_name: str = "",
                  ) -> None:
@@ -191,13 +191,13 @@ class MsgData():
         self.header = header
         self.sentinel = sentinel
         self.error_info = error_info
-        self.gpt4o = gpt4o
+        self.gpt_model = gpt_model
 
 
 class Payload():
 
     @staticmethod
-    def new_payload(prompt: str, gpt4o: bool = False) -> str:
+    def new_payload(prompt: str, gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha") -> str:
         return json.dumps({
             "action": "next",
             "messages": [{
@@ -212,7 +212,7 @@ class Payload():
                 "metadata": {}
             }],
             "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
-            "model": "gpt-4o" if gpt4o else "text-davinci-002-render-sha",
+            "model": gpt_model,
             "timezone_offset_min": -480,
             # "suggestions": [
             #     "'Explain what this bash command does: lazy_i18n(\"cat config.yaml | awk NF\"'",
@@ -236,7 +236,7 @@ class Payload():
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt4o: bool = False) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha") -> str:
         return json.dumps({
             "action":
                 "next",
@@ -257,7 +257,7 @@ class Payload():
             "parent_message_id":
                 p_msg_id,
             "model":
-                "gpt-4o" if gpt4o else "text-davinci-002-render-sha",
+                gpt_model,
             "timezone_offset_min":
                 -480,
             "suggestions": [],
