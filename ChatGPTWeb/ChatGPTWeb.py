@@ -672,7 +672,7 @@ class chatgpt:
             self.logger.error(msg_data.error_info)
             return msg_data
         try:
-            msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=100) 
+            msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=180) 
         except TimeoutError:
             msg_data.error_info += f"send msg {msg_data.msg_send} time out,session:{session.email}\n"
             self.logger.warning(msg_data.error_info)
