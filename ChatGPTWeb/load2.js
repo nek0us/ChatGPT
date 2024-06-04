@@ -5,7 +5,7 @@ window._device = null;
 window._ark = null;
 window._wss = null;
 function p(e){var t=l[e];if(void 0!==t)return t.exports;var a=l[e]={id:e,loaded:!1,exports:{}},n=!0;try{s[e].call(a.exports,a,a.exports,p),n=!1}finally{n&&delete l[e]}
-if (e === 82660 ){window._proof = a.exports;}
+if (e === 20434 ){window._proof = a.exports;}
 if (e === 71199 ){window._chatp = a.exports;}
 if (e === 58328 ){window._device = a.exports;}
 if (e === 55179 ){window._ark = a.exports;}
