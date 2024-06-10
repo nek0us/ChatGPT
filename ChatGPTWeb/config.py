@@ -17,12 +17,12 @@ from typing import TypedDict, Optional, Literal, List, Dict
 from playwright._impl._api_structures import Cookie
 from playwright.async_api import Page, BrowserContext
 
-url_session = "https://chat.openai.com/api/auth/session"
-url_chatgpt = "https://chat.openai.com/backend-api/conversation"
-url_check = "https://chat.openai.com/api/auth/session"
+url_session = "https://chatgpt.com/api/auth/session"
+url_chatgpt = "https://chatgpt.com/backend-api/conversation"
+url_check = "https://chatgpt.com/api/auth/session"
 url_arkose = "https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC"
 url_arkose_gpt4 = "https://tcr9i.chat.openai.com/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147"
-url_requirements = "https://chat.openai.com/backend-api/sentinel/chat-requirements"
+url_requirements = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
 
 formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(message)s", datefmt="%Y/%m/%d %X")
 
@@ -191,7 +191,7 @@ class MsgData():
         self.header = header
         self.sentinel = sentinel
         self.error_info = error_info
-        self.gpt_model = gpt_model
+        self.gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
 
 
 class Payload():

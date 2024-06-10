@@ -96,6 +96,7 @@ class chatgpt:
         self.arkose_status = arkose_status
         self.httpx_status = httpx_status
         self.stdout_flush = stdout_flush
+        self.js_used = 0
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -243,12 +244,12 @@ class chatgpt:
             token = session.session_token
             await session.browser_contexts.add_cookies([token]) # type: ignore
             session.page = await session.browser_contexts.new_page()
-            await stealth_async(session.page)
+            # await stealth_async(session.page)
             session.status = Status.Login.value
 
         elif session.email and session.password:
             session.page = await session.browser_contexts.new_page()
-            await stealth_async(session.page)
+            # await stealth_async(session.page)
             await Auth(session,self.logger)
         else:
             # TODO:
@@ -332,32 +333,27 @@ class chatgpt:
             await page.wait_for_load_state()
             current_url = page.url
             await page.wait_for_url(current_url)
-            current_url = page.url
+            current_url = page.url 
             
             while session.status == Status.Update.value:
                 self.logger.debug(f"context {session.email} begin relogin")
                 await Auth(session,self.logger)
                 self.logger.debug(f"context {session.email} relogin over")
-                
             await page.goto("https://chatgpt.com/",timeout=30000)
-            await page.wait_for_load_state()
-            current_url = page.url
-            await page.wait_for_url(current_url)
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
-            await page.wait_for_load_state(state="networkidle")
             res = await page.evaluate_handle(self.js[0])
             result: dict = await res.json_value()
             await asyncio.sleep(4)
             await page.wait_for_load_state("load")
-            await page.wait_for_load_state(state="networkidle")
+            await asyncio.sleep(4)
             js_test = await page.evaluate("() => window._chatp")
             if not js_test:
                 js_res = await page.evaluate_handle(self.js[1])
                 result: dict = await js_res.json_value()
                 await asyncio.sleep(2)
                 await page.wait_for_load_state("load")
-                await page.wait_for_load_state(state="networkidle")
+                await asyncio.sleep(4)
                 js_test2 = await page.evaluate("() => window._chatp")
                 if js_test2:
                     self.js_used = 1
@@ -418,20 +414,23 @@ class chatgpt:
         try:
             if page and not self.httpx_status:
                 send_page: Page = await session.browser_contexts.new_page() # type: ignore
-                await stealth_async(send_page)
+                # await stealth_async(send_page)
                 async def route_handle(route: Route, request: Request):
                     header = {}
                     header['authorization'] = 'Bearer ' + token
                     header['Content-Type'] = 'application/json'
-                    header["Cookie"] = request.headers["cookie"]
                     header["User-Agent"] = request.headers["user-agent"]
-                    header['Referer'] = header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
+                    header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
+                    header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
                     if not msg_data.conversation_id:
                         data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model)
                     else:
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt_model=msg_data.gpt_model)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
+                    header['Accept-Encoding'] = 'gzip, deflate, zstd'
+                    header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
+                    header['Host'] = 'chatgpt.com'
                     js_test = await page.evaluate("() => window._chatp")
                     if not js_test:
                         js_res = await page.evaluate_handle(self.js[self.js_used])
@@ -461,6 +460,7 @@ class chatgpt:
                     header['Sec-Fetch-Dest'] = 'empty'
                     header['Sec-Fetch-Mode'] = 'cors'
                     header['Sec-Fetch-Site'] = 'same-origin'
+                    header['Sec-GPC'] = '1'
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
                     header['OAI-Device-Id'] = await page.evaluate("() => window._device.f3()")
@@ -475,16 +475,20 @@ class chatgpt:
                         session.last_wss = wss[1]['connectionUrl']
                         session.wss_session = ClientSession()
                         session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
-                    await route.continue_(method="POST", headers=header, post_data=data)
 
+                    header["Cookie"] = request.headers["cookie"] 
+                    await route.continue_(method="POST", headers=header, post_data=data)
+                
                 await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
                 
-                async with send_page.expect_response("https://chat.openai.com/backend-api/conversation",timeout=60000) as response_info: # type: ignore
+                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=60000) as response_info: # type: ignore
                     try:
                         self.logger.debug(f"send:{msg_data.msg_send}")
-                        await send_page.goto("https://chat.openai.com/backend-api/conversation", timeout=60000) # type: ignore
+                        await send_page.goto(url_check, timeout=60000) # type: ignore
+                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=60000) # type: ignore
                     except Exception as e:
                         if "Download is starting" not in e.args[0]:
+                            # 处理重定向
                             self.logger.warning(f"Download message error:{e}")
                             msg_data.error_info += f"Download message error: {str(e)}\n"
                             raise e
@@ -782,7 +786,7 @@ class chatgpt:
         # cid_num 可能和session数量对不上，因为它只记录会话成功的session，这在允许一段时间后会自动解决
         return {
             "account": [session.email  for session in self.Sessions if session.type != "script"],
-            "token": [True if session.access_token else False for session in self.Sessions if session.type != "script"],
+            "token": [True if session.login_state else False for session in self.Sessions if session.type != "script"],
             "work": [session.status for session in self.Sessions if session.type != "script"],
             "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],

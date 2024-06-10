@@ -95,10 +95,6 @@ sessions = [
 # pleases manually obtain the session_token in advance and add it together to reduce the possibility of openai verification
 # 使用openai账号登录的话，请提前手动获取 session_token并一同添加，降低 openai 验证的可能性
 
-# There is currently a known issue, the Google account login method is not available, waiting for updates
-# 目前已知问题，google账户登录方式不可用，等待更新
-
-
 personality_definition = Personality(
     [
         {
@@ -324,7 +320,9 @@ A file will be generated in the startup directory. Please put the verification c
 
 启动目录下会生成文件，请将验证码放入其中并保存，注意日志提示
 
-### 谷歌登录错误 | google login error 
-will be fix by next
+### 谷歌登录 | google login 
+Please log in to chatgpt manually using Google from your browser once, then visit https://myaccount.google.com/ and use the browser plug-in Cookie-Editor to export the cookies of this page in json format.
+When the "{email_address}_google_cookie.txt" file appears, paste the copied json into it and save it.
 
-下次修，先鸽了
+请先从你的浏览器手动使用google登录chatgpt一次，然后访问https://myaccount.google.com/，使用浏览器插件Cookie-Editor导出该页面的Cookie为json格式。
+当"{email_address}_google_cookie.txt"文件出现时，将复制的json粘贴进去并保存。

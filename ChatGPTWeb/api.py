@@ -214,7 +214,7 @@ def create_session(**kwargs) -> Session:
     session_token = kwargs.get("session_token")
     if session_token and isinstance(session_token, str):
         kwargs["session_token"] = SetCookieParam(
-            url="https://chat.openai.com",
+            url="https://chatgpt.com",
             name="__Secure-next-auth.session-token",
             value=session_token
         )
@@ -239,37 +239,40 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
             if res.status == 403 and res.url == url:
                 session = await retry_keep_alive(session,url,chat_file,logger,retry)
             elif (res.status == 200 or res.status == 307) and res.url == url:
-                logger.debug(f"flush {session.email} cf cookie OK!")
-                await page.wait_for_timeout(1000)
-                cookies = await session.page.context.cookies()
-                cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+                if await res.json():
+                    logger.debug(f"flush {session.email} cf cookie OK!")
+                    await page.wait_for_timeout(1000)
+                    cookies = await session.page.context.cookies()
+                    cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
 
-                if cookie:
-                    session.session_token = SetCookieParam(
-                        url="https://chat.openai.com",
-                        name="__Secure-next-auth.session-token",
-                        value=cookie["value"] # type: ignore
-                    ) # type: ignore
-                    cookie_str = ''
-                    for cookie in cookies:
-                        if "chat.openai.com" in cookie["domain"]:
-                            cookie_str += f"{cookie['name']}={cookie['value']}; "
-                    session.cookies = cookie_str.strip()
-                    session.login_cookies = cookies
-                    
-                    update_session_token(session,chat_file,logger)
-                    
-                    if session.status == Status.Login.value:
-                        session.status = Status.Ready.value
-                    
+                    if cookie:
+                        session.session_token = SetCookieParam(
+                            url="https://chatgpt.com",
+                            name="__Secure-next-auth.session-token",
+                            value=cookie["value"] # type: ignore
+                        ) # type: ignore
+                        cookie_str = ''
+                        for cookie in cookies:
+                            if "chatgpt.com" in cookie["domain"]:
+                                cookie_str += f"{cookie['name']}={cookie['value']}; "
+                        session.cookies = cookie_str.strip()
+                        session.login_cookies = cookies
+                        
+                        update_session_token(session,chat_file,logger)
+                        
+                        if session.status == Status.Login.value:
+                            session.status = Status.Ready.value
+                        
+                    else:
+                        # no session-token,re login
+                        session.status = Status.Update.value
+                    token = await page.evaluate(
+                        '() => JSON.parse(document.querySelector("body").innerText)')
+                    if "error" in token and session.status != Status.Login.value:
+                        session.status = Status.Update.value
+                    session.access_token = token['accessToken']
                 else:
-                    # no session-token,re login
                     session.status = Status.Update.value
-                token = await page.evaluate(
-                    '() => JSON.parse(document.querySelector("body").innerText)')
-                if "error" in token and session.status != Status.Login.value:
-                    session.status = Status.Update.value
-                session.access_token = token['accessToken']
 
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
@@ -339,6 +342,11 @@ def get_session_token(session: Session,chat_file: Path,logger):
     try:
         with open(session_file, 'rb') as file:
             load_session: Session = pickle.load(file)
+            if load_session:
+                if load_session.session_token:
+                    if 'url' in load_session.session_token:
+                        if load_session.session_token['url'] == 'https://chat.openai.com':
+                            load_session.session_token['url'] = 'https://chatgpt.com'
             session.session_token = load_session.session_token
             session.login_cookies = load_session.login_cookies
             session.last_wss = load_session.last_wss
