@@ -3,7 +3,7 @@ import json
 from logging import Logger
 from typing import Literal
 from playwright.async_api import Page
-from playwright.async_api import Response
+from playwright.async_api import Response,BrowserContext
 from playwright_stealth import stealth_async
 
 from .config import url_check,SetCookieParam
@@ -48,7 +48,7 @@ class AsyncAuth0:
         self.password = password
         self.page = page
         self.logger = logger
-        self.browser_contexts = browser_contexts
+        self.browser_contexts: BrowserContext = browser_contexts
         self.mode = mode
         self.help_email = help_email
 
@@ -86,7 +86,11 @@ class AsyncAuth0:
         retry -= 1
         access_token = None
         EnterKey = "Enter"
-        # await self.browser_contexts.clear_cookies()
+        cookies = await self.browser_contexts.cookies()
+        cookies = [cookie for cookie in cookies if cookie['name'] != '__Secure-next-auth.session-token']
+        await self.browser_contexts.clear_cookies()
+        await self.browser_contexts.add_cookies(cookies)
+        
         await self.login_page.goto(
             url="https://chatgpt.com/auth/login",
             wait_until="load"
@@ -124,25 +128,36 @@ class AsyncAuth0:
 
             # Select Mode
             if self.mode == "google":
-                with open(f"{self.email_address}_google_cookie.txt","w") as code_file:
-                    code_file.write("")
-                    logger.info(f"please input google cookie to {self.email_address}_google_cookie.txt")
-                with open(f"{self.email_address}_google_cookie.txt","r") as code_file:
-                    while 1:
-                        await asyncio.sleep(1)
-                        code = code_file.read()
-                        if code != "":
-                            tmp = json.loads(code)
-                            tmp1 = []
-                            for cookie in tmp:
-                                del cookie["sameSite"]
-                                del cookie['firstPartyDomain']
-                                del cookie['partitionKey']
-                                del cookie['storeId']
-                                tmp1.append(cookie)
-                            await self.browser_contexts.add_cookies(tmp1)
-                            break
-                os.unlink(f"{self.email_address}_google_cookie.txt")
+                new_login = True
+                for cookie in cookies:
+                    if cookie['name'] == '__Secure-1PSIDTS': # type: ignore
+                        new_login = False
+                        break
+                
+                if new_login:
+                    with open(f"{self.email_address}_google_cookie.txt","w") as code_file:
+                        code_file.write("")
+                        logger.info(f"please input google cookie to {self.email_address}_google_cookie.txt")
+                    with open(f"{self.email_address}_google_cookie.txt","r") as code_file:
+                        while 1:
+                            await asyncio.sleep(1)
+                            code = code_file.read()
+                            if code != "":
+                                tmp = json.loads(code)
+                                tmp1 = []
+                                for cookie in tmp:
+                                    if "sameSite" in cookie:
+                                        del cookie["sameSite"]
+                                    if 'firstPartyDomain' in cookie:
+                                        del cookie['firstPartyDomain']
+                                    if 'partitionKey' in cookie:
+                                        del cookie['partitionKey']
+                                    if 'storeId' in cookie:
+                                        del cookie['storeId']
+                                    tmp1.append(cookie)
+                                await self.browser_contexts.add_cookies(tmp1)
+                                break
+                    os.unlink(f"{self.email_address}_google_cookie.txt")
                 
                 
                 try:
@@ -283,7 +298,6 @@ class AsyncAuth0:
                 # Try Again
                 await self.login_page.keyboard.press(EnterKey)
                 await self.login_page.wait_for_url(f"https://{use_url}/")
-
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)
         res = await a.value

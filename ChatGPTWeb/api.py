@@ -230,7 +230,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
     
     if session.page:
         page = await session.browser_contexts.new_page() # type: ignore
-        await stealth_async(page)
+        # await stealth_async(page)
         try:
             async with page.expect_response(url, timeout=40000) as a:
                 res = await page.goto(url, timeout=40000)
@@ -243,6 +243,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                     logger.debug(f"flush {session.email} cf cookie OK!")
                     await page.wait_for_timeout(1000)
                     cookies = await session.page.context.cookies()
+                    # cookies = [cookie for cookie in cookies if (cookie["name"] != '__Secure-next-auth.session-token') or (cookie["name"] == '__Secure-next-auth.session-token' and cookie["domain"] == 'chatgpt.com')]
                     cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
 
                     if cookie:
