@@ -181,123 +181,125 @@ class AsyncAuth0:
                     self.logger.warning(f"microsoft point error:{e}")
                     raise e
 
-            await self.login_page.wait_for_load_state(state="domcontentloaded")
-
-            # Start Fill
-            # TODO: SPlit Parts from select mode
-            if self.mode == "microsoft":
-                # enter email_address
-                await self.login_page.fill('//*[@id="i0116"]', self.email_address)
-                await asyncio.sleep(1)
-                await self.login_page.click('//*[@id="idSIButton9"]')
-                await self.login_page.wait_for_load_state()
-                await asyncio.sleep(1)
-                # enter passwd
-                await self.login_page.fill('//*[@id="i0118"]', self.password)
-                await asyncio.sleep(1)
-                await self.login_page.click('//*[@id="idSIButton9"]')
-                await self.login_page.wait_for_load_state()
-                # verify code 
-                await self.login_page.wait_for_timeout(1000)
-                try:
+            cookies = await self.browser_contexts.cookies()
+            cookies = [cookie for cookie in cookies if cookie['name'] == '__Secure-next-auth.session-token']
+            if cookies == []:
+                # Start Fill
+                # TODO: SPlit Parts from select mode
+                if self.mode == "microsoft":
+                    # enter email_address
+                    await self.login_page.fill('//*[@id="i0116"]', self.email_address)
+                    await asyncio.sleep(1)
+                    await self.login_page.click('//*[@id="idSIButton9"]')
+                    await self.login_page.wait_for_load_state()
+                    await asyncio.sleep(1)
+                    # enter passwd
+                    await self.login_page.fill('//*[@id="i0118"]', self.password)
+                    await asyncio.sleep(1)
+                    await self.login_page.click('//*[@id="idSIButton9"]')
+                    await self.login_page.wait_for_load_state()
+                    # verify code 
+                    await self.login_page.wait_for_timeout(1000)
+                    try:
+                        await self.login_page.wait_for_url("https://login.live.com/**")
+                        # await self.login_page.wait_for_url("https://account.live.com/identity/**")
+                        locator = self.login_page.locator('//*[@id="iProof0"]')
+                        if await locator.count() > 0:
+                            if self.help_email != "":
+                                await self.login_page.click('//*[@id="iProof0"]')
+                                await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
+                                await self.login_page.keyboard.press(EnterKey)
+                                await self.login_page.wait_for_load_state()
+                                await self.login_page.wait_for_timeout(1000)
+                                logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
+                                with open(f"{self.email_address}_code.txt","w") as code_file:
+                                    code_file.write("")
+                                with open(f"{self.email_address}_code.txt","r") as code_file:
+                                    while 1:
+                                        await asyncio.sleep(1)
+                                        code = code_file.read()
+                                        if code != "":
+                                            logger.info(f"get {self.email_address} verify code {code}")
+                                            await self.login_page.fill('//*[@id="iOttText"]', code)
+                                            await self.login_page.keyboard.press(EnterKey)
+                                            await self.login_page.wait_for_load_state()
+                                            await self.login_page.wait_for_timeout(1000)
+                                            break
+                                os.unlink(f"{self.email_address}_code.txt")
+                            else:
+                                logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
+                    except Exception as e:
+                        if "Timeout" not in e.args[0]:
+                            raise e
+                    # don't stay
+                    await self.login_page.wait_for_timeout(1000)
                     await self.login_page.wait_for_url("https://login.live.com/**")
-                    # await self.login_page.wait_for_url("https://account.live.com/identity/**")
-                    locator = self.login_page.locator('//*[@id="iProof0"]')
-                    if await locator.count() > 0:
-                        if self.help_email != "":
-                            await self.login_page.click('//*[@id="iProof0"]')
-                            await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
-                            await self.login_page.keyboard.press(EnterKey)
-                            await self.login_page.wait_for_load_state()
-                            await self.login_page.wait_for_timeout(1000)
-                            logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
-                            with open(f"{self.email_address}_code.txt","w") as code_file:
-                                code_file.write("")
-                            with open(f"{self.email_address}_code.txt","r") as code_file:
-                                while 1:
-                                    await asyncio.sleep(1)
-                                    code = code_file.read()
-                                    if code != "":
-                                        logger.info(f"get {self.email_address} verify code {code}")
-                                        await self.login_page.fill('//*[@id="iOttText"]', code)
-                                        await self.login_page.keyboard.press(EnterKey)
-                                        await self.login_page.wait_for_load_state()
-                                        await self.login_page.wait_for_timeout(1000)
-                                        break
-                            os.unlink(f"{self.email_address}_code.txt")
-                        else:
-                            logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
-                except Exception as e:
-                    if "Timeout" not in e.args[0]:
-                        raise e
-                # don't stay
-                await self.login_page.wait_for_timeout(1000)
-                await self.login_page.wait_for_url("https://login.live.com/**")
-                # await self.page.click('//*[@id="idBtn_Back"]')
-                await self.login_page.keyboard.press(EnterKey)
-                await self.login_page.wait_for_load_state()
+                    # await self.page.click('//*[@id="idBtn_Back"]')
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
 
 
-            elif self.mode == "google":
-                # enter google email
-                await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-                await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
-                # await self.login_page.keyboard.press(EnterKey)
-                await self.login_page.wait_for_load_state()
-                # enter passwd
-                await self.login_page.locator(
-                    "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
-                    self.password)
+                elif self.mode == "google":
+                    # enter google email
+                    await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
+                    await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
+                    # await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
+                    # enter passwd
+                    await self.login_page.locator(
+                        "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
+                        self.password)
 
-                # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
-                await asyncio.sleep(1)
-                await self.login_page.keyboard.press(EnterKey)
-                await self.login_page.wait_for_load_state()
-
-            else:
-                if "auth0" in current_url:
-                    await self.login_page.fill('[name="username"]', self.email_address)
+                    # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
                     await asyncio.sleep(1)
-                    await self.login_page.click('button[type="submit"]._button-login-id')
-                
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
+
                 else:
-                    await self.login_page.fill('//*[@id="email-input"]', self.email_address)
+                    if "auth0" in current_url:
+                        await self.login_page.fill('[name="username"]', self.email_address)
+                        await asyncio.sleep(1)
+                        await self.login_page.click('button[type="submit"]._button-login-id')
+                    
+                    else:
+                        await self.login_page.fill('//*[@id="email-input"]', self.email_address)
+                        await asyncio.sleep(1)
+                        await self.login_page.click('//html/body/div/div/main/section/div[2]/button')
+                    
+                    
+                    await self.login_page.wait_for_load_state(state="domcontentloaded")
+                    await self.login_page.locator('[name="password"]').first.fill(self.password)
                     await asyncio.sleep(1)
-                    await self.login_page.click('//html/body/div/div/main/section/div[2]/button')
-                
-                
-                await self.login_page.wait_for_load_state(state="domcontentloaded")
-                await self.login_page.locator('[name="password"]').first.fill(self.password)
-                await asyncio.sleep(1)
-                await self.login_page.click('button[type="submit"]._button-login-password')
-                await self.login_page.wait_for_load_state()
-                await self.login_page.wait_for_load_state('networkidle')
+                    await self.login_page.click('button[type="submit"]._button-login-password')
+                    await self.login_page.wait_for_load_state()
+                    await self.login_page.wait_for_load_state('networkidle')
 
-            
-            # go chatgpt
-            try:
-                await asyncio.sleep(5)
-                await self.login_page.wait_for_load_state('networkidle')
+                
+                # go chatgpt
                 try:
-                    await self.login_page.wait_for_url(f"https://{use_url}/",timeout=30000)
-                except:
-                    await self.login_page.goto(f"https://{use_url}/")
-                await self.login_page.wait_for_load_state('networkidle')
-                nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
-                auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
-                if await nologin_home_locator.count() > 0:
-                    access_token = await self.normal_begin(logger,retry)
-                elif await auth_login.count() > 0:
-                    access_token = await self.normal_begin(logger,retry)
-                # else:
-                #     await self.login_page.click('[data-testid="login-button"]')
-                if access_token:
-                    return access_token
-            except Exception as e:
-                self.logger.warning(e)
-                # Try Again
-                await self.login_page.keyboard.press(EnterKey)
-                await self.login_page.wait_for_url(f"https://{use_url}/")
+                    await asyncio.sleep(5)
+                    await self.login_page.wait_for_load_state('networkidle')
+                    try:
+                        await self.login_page.wait_for_url(f"https://{use_url}/",timeout=30000)
+                    except:
+                        await self.login_page.goto(f"https://{use_url}/")
+                    await self.login_page.wait_for_load_state('networkidle')
+                    nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
+                    auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
+                    if await nologin_home_locator.count() > 0:
+                        access_token = await self.normal_begin(logger,retry)
+                    elif await auth_login.count() > 0:
+                        access_token = await self.normal_begin(logger,retry)
+                    # else:
+                    #     await self.login_page.click('[data-testid="login-button"]')
+                    if access_token:
+                        return access_token
+                except Exception as e:
+                    self.logger.warning(e)
+                    # Try Again
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_url(f"https://{use_url}/")
+                    
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)
         res = await a.value
