@@ -50,7 +50,7 @@ class chatgpt:
                  headless: bool = True,
                  begin_sleep_time: bool = True,
                  arkose_status: bool = False,
-                 httpx_status: bool = True,
+                 httpx_status: bool = False,
                  logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO",
                  stdout_flush: bool = False,
                 
