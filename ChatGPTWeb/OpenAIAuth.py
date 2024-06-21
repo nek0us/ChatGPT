@@ -102,7 +102,7 @@ class AsyncAuth0:
         await asyncio.sleep(5)
         check_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/button/div/div/img')
         if await check_login.count() == 0:
-            alert_login_box = self.login_page.locator('//html/body/div[3]/div/div/div/div/div/button[1]')
+            alert_login_box = self.login_page.locator('//html/body/div[3]/div/div/div/div/div/button[1]/div')
             
             nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
             auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
