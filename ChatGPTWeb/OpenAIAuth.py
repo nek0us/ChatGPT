@@ -4,7 +4,6 @@ from logging import Logger
 from typing import Literal
 from playwright.async_api import Page
 from playwright.async_api import Response,BrowserContext
-from playwright_stealth import stealth_async
 
 from .config import url_check,SetCookieParam
 

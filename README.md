@@ -120,13 +120,13 @@ async def main():
         if data.msg_send == "quit":
             break
         elif data.msg_send == "gpt4o":
-            if not data.gpt4o:
+            if data.gpt_model != "gpt-4o":
                 data.gpt_model = "gpt-4o"
                 data.conversation_id = ""
                 data.p_msg_id = ""
             data.msg_send = await aioconsole.ainput("reinput：")
         elif data.msg_send == "gpt3.5":
-            if data.gpt4o:
+            if data.gpt_model != "text-davinci-002-render-sha":
                 data.gpt_model = "text-davinci-002-render-sha"
                 data.conversation_id = ""
                 data.p_msg_id = ""

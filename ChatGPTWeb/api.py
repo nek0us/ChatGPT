@@ -12,7 +12,6 @@ from httpx import AsyncClient
 from aiohttp import ClientSession,ClientWebSocketResponse
 from playwright.async_api import Page
 from playwright.async_api import Response,Route, Request
-from playwright_stealth import stealth_async
 
 from .OpenAIAuth import AsyncAuth0
 from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload

@@ -8,7 +8,6 @@ import asyncio
 import threading
 from pathlib import Path
 from aiohttp import ClientSession
-from playwright_stealth import stealth_async
 from playwright.async_api import async_playwright, Route, Request, Page
 from typing import Optional,Literal,List
 
