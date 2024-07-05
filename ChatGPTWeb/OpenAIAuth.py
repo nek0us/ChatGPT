@@ -105,14 +105,17 @@ class AsyncAuth0:
             
             nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
             auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
+            login_button = self.login_page.locator('[data-testid="login-button"]')
             if await alert_login_box.count() > 0:
                 await alert_login_box.click()
             elif await nologin_home_locator.count() > 0:
                 await nologin_home_locator.click()
             elif await auth_login.count() > 0:
                 await auth_login.click()
+            elif await login_button.count() > 0:
+                await login_button.click()
             else:
-                await self.login_page.click('[data-testid="login-button"]')
+                pass
             await asyncio.sleep(2)
             await self.login_page.wait_for_load_state('networkidle')
             current_url = self.login_page.url
