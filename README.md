@@ -172,6 +172,7 @@ sessions: list[dict] = [],
 
 proxy: typing.Optional[str] = None,
 # proxy = "http://127.0.0.1:1090"
+# proxy = "http://user:pass@127.0.0.1:1090"
 # chatgpt(proxy=proxy)
 # 要用代理的话就像这样 | proxy like it if u need use
 

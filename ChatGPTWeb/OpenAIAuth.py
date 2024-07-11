@@ -10,7 +10,6 @@ from .config import url_check,SetCookieParam
 import asyncio
 import urllib.parse
 import os
-import re
 
 class Error(Exception):
     """
@@ -105,7 +104,7 @@ class AsyncAuth0:
             
             nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
             auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
-            login_button = self.login_page.locator('[data-testid="login-button"]')
+            login_button = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[2]/div')
             if await alert_login_box.count() > 0:
                 await alert_login_box.click()
             elif await nologin_home_locator.count() > 0:
@@ -113,7 +112,7 @@ class AsyncAuth0:
             elif await auth_login.count() > 0:
                 await auth_login.click()
             elif await login_button.count() > 0:
-                await login_button.click()
+                await login_button.first.click()
             else:
                 pass
             await asyncio.sleep(2)

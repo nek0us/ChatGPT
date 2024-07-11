@@ -10,6 +10,7 @@ from pathlib import Path
 from aiohttp import ClientSession
 from playwright.async_api import async_playwright, Route, Request, Page
 from typing import Optional,Literal,List
+from urllib.parse import urlparse
 
 from .config import (
     Payload,
@@ -84,7 +85,7 @@ class chatgpt:
         """
         self.Sessions: List[Session] = []
         self.data = MsgData()
-        self.proxy: typing.Optional[ProxySettings] = {"server":proxy} if proxy else None
+        self.proxy: typing.Optional[ProxySettings] = self.parse_proxy(proxy)
         self.httpx_proxy = proxy
         self.chat_file = chat_file
         self.personality =  Personality([{"name": "cat", "value": "you are a cat now."}], chat_file) if personality is None else personality
@@ -144,7 +145,20 @@ class chatgpt:
         '''
         data : base data type | 内部数据类型
         '''
+    def parse_proxy(self, proxy: str|None) -> ProxySettings|None:
+        if not proxy:
+            return None
 
+        parsed_proxy = urlparse(proxy)
+        proxy_settings = ProxySettings(server=f"{parsed_proxy.scheme}://{parsed_proxy.hostname}:{parsed_proxy.port}")
+        
+
+        if parsed_proxy.username and parsed_proxy.password:
+            proxy_settings["username"] = parsed_proxy.username
+            proxy_settings["password"] = parsed_proxy.password
+
+        return proxy_settings
+    
     # 检测Firefox是否已经安装 
     async def is_firefox_installed(self):
         '''chekc firefox install | 检测Firefox是否已经安装 '''
