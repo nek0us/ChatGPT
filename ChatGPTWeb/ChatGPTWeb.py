@@ -460,7 +460,12 @@ class chatgpt:
                             await page.wait_for_load_state(state="networkidle")
                             
                     json_result = await page.evaluate("() => window._chatp.rS()")
-                    await page.wait_for_load_state("networkidle")
+                    try:
+                        await page.wait_for_load_state("networkidle",timeout=300)
+                    except TimeoutError:
+                        pass
+                    except Exception as e:
+                        raise e
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
