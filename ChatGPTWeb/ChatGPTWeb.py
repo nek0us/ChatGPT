@@ -427,8 +427,9 @@ class chatgpt:
         try:
             if page and not self.httpx_status:
                 send_page: Page = await session.browser_contexts.new_page() # type: ignore
-                # await stealth_async(send_page)
+                self.logger.debug(f"{session.email} create new page to send msg")
                 async def route_handle(route: Route, request: Request):
+                    self.logger.debug(f"{session.email} begin create send msg cookie and header")
                     header = {}
                     header['authorization'] = 'Bearer ' + token
                     header['Content-Type'] = 'application/json'
@@ -436,16 +437,20 @@ class chatgpt:
                     header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
                     header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
                     if not msg_data.conversation_id:
+                        self.logger.debug(f"{session.email} msg is new conversation")
                         data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model)
                     else:
+                        self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt_model=msg_data.gpt_model)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
                     header['Accept-Encoding'] = 'gzip, deflate, zstd'
                     header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
                     header['Host'] = 'chatgpt.com'
+                    self.logger.debug(f"{session.email} will use page's _chatp")
                     js_test = await page.evaluate("() => window._chatp")
                     if not js_test:
+                        self.logger.debug(f"{session.email} page's _chatp not ready,test other js")
                         js_res = await page.evaluate_handle(self.js[self.js_used])
                         await js_res.json_value()
                         await asyncio.sleep(2)
@@ -458,45 +463,63 @@ class chatgpt:
                             await asyncio.sleep(2)
                             await page.wait_for_load_state("load")
                             await page.wait_for_load_state(state="networkidle")
-                            
+                    self.logger.debug(f"{session.email} will run page's _chatp.rS()")        
                     json_result = await page.evaluate("() => window._chatp.rS()")
                     try:
+                        self.logger.debug(f"{session.email} get _chatp.rS() json_result,wait networkidle")
                         await page.wait_for_load_state("networkidle",timeout=300)
                     except TimeoutError:
                         pass
                     except Exception as e:
-                        raise e
+                        if "Timeout" not in e.args[0]:
+                            self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
+                            raise e
+                        self.logger.debug(f"{session.email} wait networkidle timeout")
+                    self.logger.debug(f"{session.email} will run _proof")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
+                    self.logger.debug(f"{session.email} get proof token")
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
-                    if session.gptplus:
-                        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/35536E1E-65B4-4D96-9D97-6ADB7EFF8147", timeout=40000) as arkose_info:
+                    self.logger.debug(f"{session.email} check chatp's arkose")
+                    if json_result['arkose']:# session.gptplus:
+                        self.logger.debug(f"{session.email} get a arkose token")
+                        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC", timeout=40000) as arkose_info:
+                            self.logger.debug(f"{session.email} will handle arkose")
                             await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
                             res_ark = await arkose_info.value
                             arkose = await res_ark.json()
                             header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
+                            self.logger.debug(f"{session.email} handle arkose success")
                     header['Sec-Fetch-Dest'] = 'empty'
                     header['Sec-Fetch-Mode'] = 'cors'
                     header['Sec-Fetch-Site'] = 'same-origin'
                     header['Sec-GPC'] = '1'
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
+                    self.logger.debug(f"{session.email} will run _device.f3()")
                     header['OAI-Device-Id'] = await page.evaluate("() => window._device.f3()")
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
+                    self.logger.debug(f"{session.email} will test wss alive")
                     wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
                     if wss_test:
+                        self.logger.debug(f"{session.email} wss alive,will stop it")
                         await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        self.logger.debug(f"{session.email} stop wss success,will register it")
                         await page.evaluate('() => window._wss.ut.register()')
+                        self.logger.debug(f"{session.email} register success,will get it and stop")
                         await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
                         wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
+                        self.logger.debug(f"{session.email} get new wss success,it's :{wss}")
                         session.last_wss = wss[1]['connectionUrl']
                         session.wss_session = ClientSession()
                         session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
+                        self.logger.debug(f"{session.email} aleady connect wss")
 
                     header["Cookie"] = request.headers["cookie"] 
+                    self.logger.debug(f"{session.email} will continue_ send msg")
                     await route.continue_(method="POST", headers=header, post_data=data)
-                
+                self.logger.debug(f"{session.email} will register conversation api route")
                 await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
                 
                 async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=60000) as response_info: # type: ignore
@@ -510,31 +533,41 @@ class chatgpt:
                             self.logger.warning(f"Download message error:{e}")
                             msg_data.error_info += f"Download message error: {str(e)}\n"
                             raise e
+                        self.logger.debug(f"{session.email} download msg will wait networkidle")
                         await send_page.wait_for_load_state('networkidle') # type: ignore
                         if response_info.is_done():
+                            self.logger.debug(f"{session.email} get response is done,will check it")
                             res = await response_info.value
                             await res.text()
+                            self.logger.debug(f"{session.email} get text success,will handle text")
                             msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
                     else:
                         res = await response_info.value
+                        self.logger.debug(f"{session.email} download msg else,will test content-type")
                         if res.headers['content-type'] != 'application/json':
+                            self.logger.debug(f"{session.email} download msg context-type != json")
                             msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
                         else: #if res.headers['content-type'] == 'application/json':
-                            
+                            self.logger.debug(f"{session.email} download msg context-type == json,maybe wss")
                             try:
                                 json_data = await res.json()
+                                self.logger.debug(f"{session.email} get json ok,will run try_wss()")
                                 data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,proxy=self.httpx_proxy,logger=self.logger)
+                                self.logger.debug(f"{session.email} run try_wss ok,will handle data")
                                 msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
                             except Exception as e:
                                 self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
                                 msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
                                 raise e
                             finally:
-                                if session.wss and session.wss_session:
+                                if session.wss:
+                                    self.logger.debug(f"{session.email} will close wss")
                                     await session.wss.close()
+                                if session.wss_session:
+                                    self.logger.debug(f"{session.email} will close wss_session")
                                     await session.wss_session.close()
-                                    session.wss = None
-                                    session.wss_session = None
+                                session.wss = None
+                                session.wss_session = None
                                                  
         except Exception as e:
             self.logger.warning(f"send message error:{e}")

@@ -225,8 +225,9 @@ class Payload():
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
+            "conversation_origin": None,
             "force_paragen": False,
-            "forece_nulligen":False,
+            "force_nulligen":False,
             "force_rate_limit": False,
             "force_paragen_model_slug": "",
             "force_use_sse": True,
@@ -262,10 +263,12 @@ class Payload():
                 -480,
             "suggestions": [],
             "conversation_mode": {
-                "kind": "primary_assistant"
+                "kind": "primary_assistant",
+                "plugin_ids":None,
             },
+            "conversation_origin": None,
             "force_paragen": False,
-            "forece_nulligen":False,
+            "force_nulligen":False,
             "force_rate_limit": False,
             "force_paragen_model_slug": "",
             "force_use_sse": True,
