@@ -483,7 +483,7 @@ class chatgpt:
                     self.logger.debug(f"{session.email} check chatp's arkose")
                     if json_result['arkose']:# session.gptplus:
                         self.logger.debug(f"{session.email} get a arkose token")
-                        async with page.expect_response("https://tcr9i.chat.openai.com/fc/gt2/public_key/3D86FBBA-9D22-402A-B512-3420086BA6CC", timeout=40000) as arkose_info:
+                        async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
                             self.logger.debug(f"{session.email} will handle arkose")
                             await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
                             res_ark = await arkose_info.value
