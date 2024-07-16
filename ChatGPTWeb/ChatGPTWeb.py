@@ -463,14 +463,19 @@ class chatgpt:
                             await asyncio.sleep(2)
                             await page.wait_for_load_state("load")
                             await page.wait_for_load_state(state="networkidle")
-                    self.logger.debug(f"{session.email} will run page's _chatp.rS()")        
-                    json_result = await page.evaluate("() => window._chatp.rS()")
                     try:
+                        self.logger.debug(f"{session.email} will run page's _chatp.rS()")        
+                        json_result = await page.evaluate("() => window._chatp.rS()")
                         self.logger.debug(f"{session.email} get _chatp.rS() json_result,wait networkidle")
                         await page.wait_for_load_state("networkidle",timeout=300)
-                    except TimeoutError:
-                        pass
                     except Exception as e:
+                        if "authentication token is expired" in e.args[0]:
+                            self.logger.debug(f"{session.email} send msg,bug page's access_token expired,it will run js")
+                            js_res = await page.evaluate_handle(self.js[self.js_used])
+                            await asyncio.sleep(2)
+                            await page.wait_for_load_state(state="networkidle")
+                            self.logger.debug(f"{session.email} will run page's _chatp.rS() in try catch")        
+                            json_result = await page.evaluate("() => window._chatp.rS()")
                         if "Timeout" not in e.args[0]:
                             self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
                             raise e

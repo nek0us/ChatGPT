@@ -243,7 +243,6 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                 session = await retry_keep_alive(session,url,chat_file,logger,retry)
             elif (res.status == 200 or res.status == 307) and res.url == url:
                 if await res.json():
-                    logger.debug(f"flush {session.email} cf cookie OK!")
                     await page.wait_for_timeout(1000)
                     cookies = await session.page.context.cookies()
                     # cookies = [cookie for cookie in cookies if (cookie["name"] != '__Secure-next-auth.session-token') or (cookie["name"] == '__Secure-next-auth.session-token' and cookie["domain"] == 'chatgpt.com')]
@@ -266,6 +265,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                         
                         if session.status == Status.Login.value:
                             session.status = Status.Ready.value
+                            logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
                         
                     else:
                         # no session-token,re login
@@ -274,8 +274,11 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                         '() => JSON.parse(document.querySelector("body").innerText)')
                     if "error" in token and session.status != Status.Login.value:
                         session.status = Status.Update.value
+                        logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
                     session.access_token = token['accessToken']
+                    logger.debug(f"flush {session.email} cf cookie OK!")
                 else:
+                    logger.debug(f"flush {session.email}'s cookie get a {res.status} code,html text: \n{await res.body()}\n,it begin Status.Update")
                     session.status = Status.Update.value
 
             else:
