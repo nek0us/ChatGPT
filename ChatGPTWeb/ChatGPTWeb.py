@@ -670,11 +670,11 @@ class chatgpt:
             # new chat
             # gpt4 ready
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
-            if gpt4_list == [] and msg_data.gpt_model != "text-davinci-002-render-sha":
+            if gpt4_list == [] and msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"]:
                 msg_data.error_info = "you use gptplus,but gptplus account not found"
                 self.logger.error(msg_data.error_info)
                 return msg_data
-            session_list = gpt4_list if msg_data.gpt_model != "text-davinci-002-render-sha" else self.Sessions
+            session_list = gpt4_list if msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"] else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [

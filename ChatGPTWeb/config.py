@@ -155,7 +155,7 @@ class MsgData():
                  header: dict = {},
                  sentinel: str = "",
                  error_info: str = "",
-                 gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha",
+                 gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini",
                  upload_file: bytes = b"",
                  upload_file_name: str = "",
                  ) -> None:
@@ -191,13 +191,13 @@ class MsgData():
         self.header = header
         self.sentinel = sentinel
         self.error_info = error_info
-        self.gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
+        self.gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
 
 
 class Payload():
 
     @staticmethod
-    def new_payload(prompt: str, gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha") -> str:
+    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini") -> str:
         return json.dumps({
             "action": "next",
             "messages": [{
@@ -237,7 +237,7 @@ class Payload():
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt_model: typing.Literal["text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "text-davinci-002-render-sha") -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini") -> str:
         return json.dumps({
             "action":
                 "next",
