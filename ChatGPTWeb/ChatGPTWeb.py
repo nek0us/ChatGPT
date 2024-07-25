@@ -53,6 +53,7 @@ class chatgpt:
                  httpx_status: bool = False,
                  logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO",
                  stdout_flush: bool = False,
+                 local_js: bool = False
                 
                  ) -> None:
         """
@@ -96,6 +97,7 @@ class chatgpt:
         self.arkose_status = arkose_status
         self.httpx_status = httpx_status
         self.stdout_flush = stdout_flush
+        self.local_js = local_js
         self.js_used = 0
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
@@ -281,7 +283,7 @@ class chatgpt:
             self.logger.info("Firefox browser has been successfully installed.")
         else:
             self.logger.debug("Firefox browser is already installed.")
-        self.js = await load_js(self.httpx_proxy)    
+        self.js = await load_js(self.httpx_proxy,self.local_js)    
         self.playwright_manager = async_playwright()
         self.playwright = await self.playwright_manager.start()
         self.browser = await self.playwright.firefox.launch(
@@ -470,10 +472,13 @@ class chatgpt:
                         await page.wait_for_load_state("networkidle",timeout=300)
                     except Exception as e:
                         if "authentication token is expired" in e.args[0]:
-                            self.logger.debug(f"{session.email} send msg,bug page's access_token expired,it will run js")
+                            self.logger.debug(f"{session.email} send msg,but page's access_token expired,it will run js")
                             js_res = await page.evaluate_handle(self.js[self.js_used])
                             await asyncio.sleep(2)
-                            await page.wait_for_load_state(state="networkidle")
+                            try:
+                                await page.wait_for_load_state(state="networkidle",timeout=300)
+                            except Exception as e:
+                                self.logger.debug(f"{session.email} flush page's access_token networkidle exception:{e}")
                             self.logger.debug(f"{session.email} will run page's _chatp.rS() in try catch")        
                             json_result = await page.evaluate("() => window._chatp.rS()")
                         if "Timeout" not in e.args[0]:
@@ -527,11 +532,11 @@ class chatgpt:
                 self.logger.debug(f"{session.email} will register conversation api route")
                 await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
                 
-                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=60000) as response_info: # type: ignore
+                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=120000) as response_info: # type: ignore
                     try:
                         self.logger.debug(f"send:{msg_data.msg_send}")
-                        await send_page.goto(url_check, timeout=60000) # type: ignore
-                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=60000) # type: ignore
+                        await send_page.goto(url_check, timeout=120000) # type: ignore
+                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=120000) # type: ignore
                     except Exception as e:
                         if "Download is starting" not in e.args[0]:
                             # 处理重定向
@@ -670,11 +675,11 @@ class chatgpt:
             # new chat
             # gpt4 ready
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
-            if gpt4_list == [] and msg_data.gpt_model != "text-davinci-002-render-sha":
+            if gpt4_list == [] and msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"]:
                 msg_data.error_info = "you use gptplus,but gptplus account not found"
                 self.logger.error(msg_data.error_info)
                 return msg_data
-            session_list = gpt4_list if msg_data.gpt_model != "text-davinci-002-render-sha" else self.Sessions
+            session_list = gpt4_list if msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"] else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
