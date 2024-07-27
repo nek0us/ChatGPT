@@ -483,15 +483,20 @@ class chatgpt:
                             json_result = await page.evaluate("() => window._chatp.rS()")
                         if "Timeout" not in e.args[0]:
                             self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
-                            raise e
+                            pass
                         self.logger.debug(f"{session.email} wait networkidle timeout")
                     self.logger.debug(f"{session.email} will run _proof")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     self.logger.debug(f"{session.email} get proof token")
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
+                    self.logger.debug(f"{session.email} check chatp's turnstile")
+                    if json_result['turnstile']:
+                        turnstile = await page.evaluate(f'() => window._turnstile.Z.getEnforcementToken({json.dumps(json_result)})')
+                        self.logger.debug(f"{session.email} get turnstile token")
+                        header['OpenAI-Sentinel-turnstile-Token'] = turnstile
                     self.logger.debug(f"{session.email} check chatp's arkose")
-                    if json_result['arkose']:# session.gptplus:
+                    if json_result['arkose']:
                         self.logger.debug(f"{session.email} get a arkose token")
                         async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
                             self.logger.debug(f"{session.email} will handle arkose")
