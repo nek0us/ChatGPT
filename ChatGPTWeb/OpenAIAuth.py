@@ -85,9 +85,9 @@ class AsyncAuth0:
         access_token = None
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
-        cookies = [cookie for cookie in cookies if cookie['name'] != '__Secure-next-auth.session-token']
+        cookies = [cookie for cookie in cookies if cookie['name'] != '__Secure-next-auth.session-token'] # type: ignore
         await self.browser_contexts.clear_cookies()
-        await self.browser_contexts.add_cookies(cookies)
+        await self.browser_contexts.add_cookies(cookies) # type: ignore
         
         await self.login_page.goto(
             url="https://chatgpt.com/auth/login",
@@ -183,7 +183,7 @@ class AsyncAuth0:
                     raise e
 
             cookies = await self.browser_contexts.cookies()
-            cookies = [cookie for cookie in cookies if cookie['name'] == '__Secure-next-auth.session-token']
+            cookies = [cookie for cookie in cookies if cookie['name'] == '__Secure-next-auth.session-token'] # type: ignore
             if cookies == []:
                 # Start Fill
                 # TODO: SPlit Parts from select mode

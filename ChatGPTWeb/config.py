@@ -1,4 +1,4 @@
-
+import io
 import uuid
 import time
 import json
@@ -7,13 +7,15 @@ import base64
 import typing
 import logging
 import datetime
+import filetype
 import urllib.parse
 
 from enum import Enum
+from PIL import Image
 from pathlib import Path
 from dataclasses import dataclass
 from aiohttp import ClientSession,ClientWebSocketResponse
-from typing import TypedDict, Optional, Literal, List, Dict
+from typing import TypedDict, Optional, Literal, List, Dict, Any
 from playwright._impl._api_structures import Cookie
 from playwright.async_api import Page, BrowserContext
 
@@ -136,6 +138,68 @@ class ProxySettings(TypedDict, total=False):
     username: Optional[str]
     password: Optional[str]
 
+class IOFile():
+    '''### content: bytes
+    ### name: str'''
+    content: bytes
+    name: str
+    file_id: Optional[str]
+    upload_url: Optional[str]
+    size = Optional[int]
+    mime_type = Optional[str]
+    content_type = Optional[str]
+    
+    def __init__(self, content: bytes, name: str, file_id: Optional[str] = None, upload_url: Optional[str] = None):
+        self.content = content
+        self.name = name
+        self.file_id = file_id
+        self.upload_url = upload_url
+        self.size = self.get_size()
+        self.mime_type = self.get_mime_type()
+        if self.mime_type and "image" in self.mime_type:
+            self.width, self.height = self.get_hw()
+            self.content_type = "image_asset_pointer"
+        else:
+            self.content_type = None
+    
+    def get_size(self):
+        return len(self.content)
+        
+    def get_mime_type(self):
+        kind = filetype.guess(self.content)
+        return kind.mime if kind else 'application/octet-stream'
+        
+    def get_hw(self) -> tuple:
+        image = Image.open(io.BytesIO(self.content))
+        return image.size
+    
+    @property
+    def to_dict(self) -> Dict[str, Any]:
+        if self.content_type == "image_asset_pointer":
+            return {
+                "asset_pointer": f"file-service://{self.file_id}",
+                "content_type": self.content_type,
+                "height": self.height,
+                "size_bytes": self.size,
+                "width": self.width
+            }
+        return {}
+        
+    @property
+    def to_attachment(self) -> Dict[str, Any]:
+        attachment = {
+            "id": self.file_id,
+            "mime_type": self.mime_type,
+            "name": self.name,
+            "size": self.size
+        }
+        if self.content_type == "image_asset_pointer":
+            attachment.update({
+                "height": self.height,
+                "width": self.width
+            })
+        return attachment
+    
 
 class MsgData():
     def __init__(self,
@@ -156,8 +220,8 @@ class MsgData():
                  sentinel: str = "",
                  error_info: str = "",
                  gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini",
-                 upload_file: bytes = b"",
-                 upload_file_name: str = "",
+                 upload_file: List[IOFile] = [],
+                 download_file: List[IOFile] = [],
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -192,12 +256,21 @@ class MsgData():
         self.sentinel = sentinel
         self.error_info = error_info
         self.gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
+        self.upload_file = upload_file
+        self.download_file = download_file
 
 
 class Payload():
-
+        
     @staticmethod
-    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini") -> str:
+    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini", files: Optional[List[IOFile]] = None) -> str:
+        create_time = time.time()
+        files = files or []
+        is_image = any(files.content_type == "image_asset_pointer" for files in files)
+        parts = [files.to_dict for files in files if files.content_type == "image_asset_pointer"] if is_image else [prompt]
+        content_type = "multimodal_text" if is_image else "text"
+        attachments = [file.to_attachment for file in files]
+        
         return json.dumps({
             "action": "next",
             "messages": [{
@@ -206,20 +279,17 @@ class Payload():
                     "role": "user"
                 },
                 "content": {
-                    "content_type": "text",
-                    "parts": [prompt]
+                    "content_type": content_type,
+                    "parts": parts + ([prompt] if is_image else [])
                 },
-                "metadata": {}
+                "create_time": create_time,
+                "metadata": {
+                    "attachments": attachments
+                } if attachments else {}
             }],
             "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
             "model": gpt_model,
             "timezone_offset_min": -480,
-            # "suggestions": [
-            #     "'Explain what this bash command does: lazy_i18n(\"cat config.yaml | awk NF\"'",
-            #     "What are 5 creative things I could do with my kids' art? I don't want to throw them away, but it's also so much clutter.",
-            #     "Tell me a random fun fact about the Roman Empire",
-            #     "What are five fun and creative activities to do indoors with my dog who has a lot of energy?"
-            # ],
             "suggestions": [],
             "history_and_training_disabled": False,
             "conversation_mode": {
@@ -237,7 +307,13 @@ class Payload():
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str, arkose: Optional[str], gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini") -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini",files: Optional[List[IOFile]] = None ) -> str:
+        create_time = time.time()
+        files = files or []
+        is_image = any(files.content_type == "image_asset_pointer" for files in files)
+        parts = [files.to_dict for files in files if files.content_type == "image_asset_pointer"] if is_image else [prompt]
+        content_type = "multimodal_text" if is_image else "text"
+        attachments = [file.to_attachment for file in files]
         return json.dumps({
             "action":
                 "next",
@@ -248,10 +324,13 @@ class Payload():
                     "role": "user"
                 },
                 "content": {
-                    "content_type": "text",
-                    "parts": [prompt]
+                    "content_type": content_type,
+                    "parts": parts + ([prompt] if is_image else [])
                 },
-                "metadata": {}
+                "create_time": create_time,
+                "metadata": {
+                    "attachments": attachments
+                } if attachments else {}
             }],
             "conversation_id":
                 conversation_id,

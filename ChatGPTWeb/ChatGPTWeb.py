@@ -37,6 +37,8 @@ from .api import (
     get_paid_by_httpx,
     get_wss,
     try_wss,
+    flush_page,
+    upload_file,
 )
 
 class chatgpt:
@@ -320,30 +322,10 @@ class chatgpt:
         '''start page | 载入初始页面'''
         if self.begin_sleep_time and session.type != "script":
             await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
-        access_token = None
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-        # if session.type != "script" and page:
             session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
-            # try:
-            #     await page.goto(url_check,timeout=30000)
-            #     await asyncio.sleep(3)
-            #     await page.wait_for_load_state('networkidle')
-            #     json_data = await page.evaluate(
-            #         '() => JSON.parse(document.querySelector("body").innerText)')
-            #     access_token = json_data['accessToken']
-            #     if not session.email:
-            #         session.email = json_data["user"]["name"]
-            #     if "error" in json_data:
-            #         if json_data['error'] == 'RefreshAccessTokenError':
-            #             session.status = Status.Update.value
-            # except Exception as e:
-            #     access_token = ""
-            #     self.logger.warning(f"{session.email}'s have cf checkbox? error:{e}")
-            # session.access_token = access_token
-            
-        # if session.type == "script" and page:
             await page.goto("https://chatgpt.com/",timeout=30000)
             await page.wait_for_load_state()
             current_url = page.url
@@ -354,31 +336,9 @@ class chatgpt:
                 self.logger.debug(f"context {session.email} begin relogin")
                 await Auth(session,self.logger)
                 self.logger.debug(f"context {session.email} relogin over")
-            await page.goto("https://chatgpt.com/",timeout=30000)
-            await asyncio.sleep(4)
-            await page.wait_for_load_state("load")
-            res = await page.evaluate_handle(self.js[0])
-            result: dict = await res.json_value()
-            await asyncio.sleep(4)
-            await page.wait_for_load_state("load")
-            await asyncio.sleep(4)
-            js_test = await page.evaluate("() => window._chatp")
-            if not js_test:
-                js_res = await page.evaluate_handle(self.js[1])
-                result: dict = await js_res.json_value()
-                await asyncio.sleep(2)
-                await page.wait_for_load_state("load")
-                await asyncio.sleep(4)
-                js_test2 = await page.evaluate("() => window._chatp")
-                if js_test2:
-                    self.js_used = 1
-                else:
-                    js_res = await page.evaluate(self.js[1])
-                    self.js_used = 0
-            else:
-                self.js_used = 0
             
-            # await page.evaluate(Payload.get_ajs())
+            self.js_used = await flush_page(page,self.js,self.js_used)
+            
             if session.access_token:
                 if session.status != Status.Update.value:
                     session.login_state = True
@@ -394,7 +354,6 @@ class chatgpt:
                 self.logger.debug("load page over,http_status true,close page")
                 await page.close()
                 
-            # self.logger.debug(f"context {session.email} js start!")
             return
         
     def tmp(self, loop):
@@ -438,12 +397,16 @@ class chatgpt:
                     header["User-Agent"] = request.headers["user-agent"]
                     header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
                     header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
+                    
+                    if msg_data.upload_file:
+                        self.logger.debug(f"{session.email} upload file")
+                        await upload_file(msg_data=msg_data,session=session,logger=self.logger)
                     if not msg_data.conversation_id:
                         self.logger.debug(f"{session.email} msg is new conversation")
-                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model)
+                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
                     else:
                         self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
-                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,"",gpt_model=msg_data.gpt_model)
+                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
                     header['Accept-Encoding'] = 'gzip, deflate, zstd'
@@ -473,7 +436,7 @@ class chatgpt:
                     except Exception as e:
                         if "authentication token is expired" in e.args[0]:
                             self.logger.debug(f"{session.email} send msg,but page's access_token expired,it will run js")
-                            js_res = await page.evaluate_handle(self.js[self.js_used])
+                            await flush_page(page,self.js,self.js_used)
                             await asyncio.sleep(2)
                             try:
                                 await page.wait_for_load_state(state="networkidle",timeout=300)
@@ -512,7 +475,7 @@ class chatgpt:
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
                     self.logger.debug(f"{session.email} will run _device.f3()")
-                    header['OAI-Device-Id'] = await page.evaluate("() => window._device.f3()")
+                    header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device.f3()")
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
                     self.logger.debug(f"{session.email} will test wss alive")

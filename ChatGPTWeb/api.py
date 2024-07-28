@@ -256,8 +256,8 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                         ) # type: ignore
                         cookie_str = ''
                         for cookie in cookies:
-                            if "chatgpt.com" in cookie["domain"]:
-                                cookie_str += f"{cookie['name']}={cookie['value']}; "
+                            if "chatgpt.com" in cookie["domain"]: # type: ignore
+                                cookie_str += f"{cookie['name']}={cookie['value']}; " # type: ignore
                         session.cookies = cookie_str.strip()
                         session.login_cookies = cookies
                         
@@ -417,3 +417,120 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
         logger.error(f"get chat-requirements exception:{e}")
         raise e
         
+async def flush_page(page: Page,js: tuple, js_used: int) -> int:
+    await page.goto("https://chatgpt.com/",timeout=30000)
+    await asyncio.sleep(4)
+    await page.wait_for_load_state("load")
+    res = await page.evaluate_handle(js[0])
+    await res.json_value()
+    await asyncio.sleep(4)
+    await page.wait_for_load_state("load")
+    await asyncio.sleep(4)
+    js_test = await page.evaluate("() => window._chatp")
+    if not js_test:
+        js_res = await page.evaluate_handle(js[1])
+        await js_res.json_value()
+        await asyncio.sleep(2)
+        await page.wait_for_load_state("load")
+        await asyncio.sleep(4)
+        js_test2 = await page.evaluate("() => window._chatp")
+        if js_test2:
+            js_used = 1
+        else:
+            js_res = await page.evaluate(js[1])
+            js_used = 0
+    else:
+        js_used = 0
+    return js_used
+
+async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
+    page: Page = await session.browser_contexts.new_page() # type: ignore
+    try:
+        header = {}
+        header['authorization'] = 'Bearer ' + session.access_token
+        header['Content-Type'] = 'application/json'
+        header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' 
+        header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
+        header['Accept'] = '*/*'
+        header['Accept-Encoding'] = 'gzip, deflate, zstd'
+        header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
+        header['Host'] = 'chatgpt.com'
+        header['OAI-Device-Id'] = session.device_id  
+        header['OAI-Language'] = 'en-US'
+        header['Connection'] = 'keep-alive'
+        header['Sec-Fetch-Dest'] = 'empty'
+        header['Sec-Fetch-Mode'] = 'cors'
+        header['Sec-Fetch-Site'] = 'same-origin'
+        header['Sec-GPC'] = '1'      
+        logger.debug(f"{session.email} have {len(msg_data.upload_file)}'s file")
+        for index,file in enumerate(msg_data.upload_file):
+            async def route_files(route: Route, request: Request):
+                logger.debug(f"{session.email} begin create upload cookie and header")
+                payload = {
+                    "file_name":file.name,
+                    "file_size":file.size,
+                    "use_case":"multimodal",
+                    "timezone_offset_min":-480,
+                    "reset_rate_limits":False
+                    } 
+                header["User-Agent"] = request.headers["user-agent"]
+                header['Content-Length'] = str(len(json.dumps(payload).encode('utf-8')))
+                header["Cookie"] = request.headers["cookie"] 
+                logger.debug(f"{session.email} will continue_ send msg")
+                await route.continue_(method="POST", headers=header, post_data=payload)         
+            await page.route("**/backend-api/files", route_files)  
+            logger.debug(f"{session.email} begin upload")
+            async with page.expect_response("https://chatgpt.com/backend-api/files",timeout=120000) as response_info: # type: ignore
+                await page.goto("https://chatgpt.com/backend-api/files",timeout=60000)
+                res_value = await response_info.value   
+                res: dict = await res_value.json()
+                msg_data.upload_file[index].upload_url = file.upload_url = res['upload_url']
+                msg_data.upload_file[index].file_id = file.file_id = res['file_id']
+            
+            async def route_put(route: Route, request: Request):
+                logger.debug(f"{session.email} begin create put cookie and header")
+                header_put = {}
+                header_put['Accept'] = "application/json, text/plain, */*"
+                header_put['Host'] = "files.oaiusercontent.com"
+                header_put['Accept-Language'] = "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
+                header_put['Accept-Encoding'] = "gzip, deflate"
+                header_put['Referer'] = "https://chatgpt.com/"
+                header_put['x-ms-blob-type'] = "BlockBlob"
+                header_put['x-ms-version'] = "2020-04-08"
+                header_put['Content-Length'] = str(file.size)
+                header_put['Content-Type'] = ""
+                header_put['Origin'] = "https://chatgpt.com"
+                header_put['Connection'] = "keep-alive"
+                header_put['Sec-Fetch-Dest'] = 'empty'
+                header_put['Sec-Fetch-Mode'] = 'cors'
+                header_put['Sec-Fetch-Site'] = 'same-origin'
+                header_put["User-Agent"] = request.headers["user-agent"]
+                header_put["Cookie"] = request.headers["cookie"] 
+                await route.continue_(method="PUT", headers=header_put, post_data=file.content)
+            await page.route("**/file-**", route_put)  
+            logger.debug(f"{session.email} begin put")
+            async with page.expect_response(file.upload_url,timeout=120000) as response_info: # type: ignore
+                await page.goto(file.upload_url,timeout=60000) # type: ignore
+                res_value = await response_info.value   
+
+            async def route_uploaded(route: Route, request: Request):
+                logger.debug(f"{session.email} begin create uploaded cookie and header")
+                payload = {} 
+                header["User-Agent"] = request.headers["user-agent"]
+                header['Content-Length'] = str(len(json.dumps(payload).encode('utf-8')))
+                header["Cookie"] = request.headers["cookie"] 
+                logger.debug(f"{session.email} will continue_ send msg")
+                await route.continue_(method="POST", headers=header, post_data=payload)         
+            await page.route("**/backend-api/files/file-**/uploaded", route_uploaded)  
+            logger.debug(f"{session.email} began uploaded")
+            async with page.expect_response(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=120000) as response_info: # type: ignore
+                await page.goto(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=60000)
+                res_value = await response_info.value   
+                res: dict = await res_value.json()
+                if res['status'] == "success":
+                    pass
+    except Exception as e:
+        logger.warning(f"upload file error:{e}")
+    finally:
+        await page.close()
+        return msg_data

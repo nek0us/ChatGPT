@@ -13,7 +13,8 @@ ChatGPT playwright api,not openai api
 -   [x] 多账号并发聊天 | Concurrent chatting with multiple accounts
 -   [x] 使用账号登录（暂不支持苹果）| Log in with your account (Apple is not supported yet)
 -   [x] GPT4 and PLUS
--   [ ] GPT4 upload file
+-   [x] GPT4 upload file
+-   [ ] GPT4 download file
 -   [ ] 代码过于混乱等优化 | The code is too confusing and other optimizations
 -   [ ] 抽空完善readme | Take the time to improve the readme
 
@@ -125,6 +126,13 @@ async def main():
                 data.conversation_id = ""
                 data.p_msg_id = ""
             data.msg_send = await aioconsole.ainput("reinput：")
+            if data.msg_send == "what's the png":
+                with open("1.png","rb") as f:
+                    file = IOFile(
+                        content=f.read(),
+                        name="1.png"
+                    )
+                    data.upload_file.append(file)
         elif data.msg_send == "gpt3.5":
             if data.gpt_model != "text-davinci-002-render-sha":
                 data.gpt_model = "text-davinci-002-render-sha"
