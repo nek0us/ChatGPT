@@ -447,7 +447,7 @@ class chatgpt:
                         if "Timeout" not in e.args[0]:
                             self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
                             pass
-                        self.logger.debug(f"{session.email} wait networkidle timeout")
+                        # self.logger.debug(f"{session.email} wait networkidle ：{e}")
                     self.logger.debug(f"{session.email} will run _proof")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     self.logger.debug(f"{session.email} get proof token")
@@ -553,6 +553,8 @@ class chatgpt:
             msg_data = await self.send_msg(msg_data,session,retry=retry)
         finally:
             await send_page.close()
+            if msg_data.upload_file:
+                msg_data.upload_file.clear()
         if msg_data.status:
             await self.save_chat(msg_data, context_num)
         return msg_data
