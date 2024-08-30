@@ -476,16 +476,9 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                 header["User-Agent"] = request.headers["user-agent"]
                 header['Content-Length'] = str(len(json.dumps(payload).encode('utf-8')))
                 header["Cookie"] = request.headers["cookie"] 
-                logger.debug(f"{session.email} will continue_ send msg")
+                logger.debug(f"{session.email} will continue_ upload")
                 await route.continue_(method="POST", headers=header, post_data=payload)         
             await page.route("**/backend-api/files", route_files)  
-            logger.debug(f"{session.email} begin upload")
-            async with page.expect_response("https://chatgpt.com/backend-api/files",timeout=120000) as response_info: # type: ignore
-                await page.goto("https://chatgpt.com/backend-api/files",timeout=60000)
-                res_value = await response_info.value   
-                res: dict = await res_value.json()
-                msg_data.upload_file[index].upload_url = file.upload_url = res['upload_url']
-                msg_data.upload_file[index].file_id = file.file_id = res['file_id']
             
             async def route_put(route: Route, request: Request):
                 logger.debug(f"{session.email} begin create put cookie and header")
@@ -498,7 +491,7 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                 header_put['x-ms-blob-type'] = "BlockBlob"
                 header_put['x-ms-version'] = "2020-04-08"
                 header_put['Content-Length'] = str(file.size)
-                header_put['Content-Type'] = ""
+                header_put['Content-Type'] = file.mime_type
                 header_put['Origin'] = "https://chatgpt.com"
                 header_put['Connection'] = "keep-alive"
                 header_put['Sec-Fetch-Dest'] = 'empty'
@@ -506,29 +499,61 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                 header_put['Sec-Fetch-Site'] = 'same-origin'
                 header_put["User-Agent"] = request.headers["user-agent"]
                 header_put["Cookie"] = request.headers["cookie"] 
+                logger.debug(f"{session.email} will continue_ put")
                 await route.continue_(method="PUT", headers=header_put, post_data=file.content)
             await page.route("**/file-**", route_put)  
-            logger.debug(f"{session.email} begin put")
-            async with page.expect_response(file.upload_url,timeout=120000) as response_info: # type: ignore
-                await page.goto(file.upload_url,timeout=60000) # type: ignore
-                res_value = await response_info.value   
+            
+            retry = 3
+            while retry != 0:
+                
+                logger.debug(f"{session.email} begin upload")
+                async with page.expect_response("https://chatgpt.com/backend-api/files",timeout=120000) as response_info: # type: ignore
+                    await page.goto("https://chatgpt.com/backend-api/files",timeout=60000)
+                    res_value = await response_info.value   
+                    res: dict = await res_value.json()
+                    if res_value.status in (200,201):
+                        msg_data.upload_file[index].upload_url = file.upload_url = res['upload_url']
+                        msg_data.upload_file[index].file_id = file.file_id = res['file_id']
+                        logger.debug(f"{session.email} upload get id: {file.file_id} url: {file.upload_url}")
+                    else:
+                        logger.debug(f"{session.email} upload error,retry:{retry},status:{res_value.status} {res_value.status_text},{await res_value.text()}")
+                        retry -= 1
+                        continue
+                logger.debug(f"{session.email} begin put")
+            
+                async with page.expect_response(file.upload_url,timeout=120000) as response_info: # type: ignore
+                    await page.goto(file.upload_url,timeout=60000) # type: ignore
+                    res_value = await response_info.value   
+                    if res_value.status in (200,201):
+                        logger.debug(f"{session.email} put ok")
+                        break
+                    else:
+                        logger.debug(f"{session.email} put error,retry:{retry},status:{res_value.status} {res_value.status_text},{await res_value.text()}")
+                        retry -= 1
+                        await asyncio.sleep(1)
 
             async def route_uploaded(route: Route, request: Request):
                 logger.debug(f"{session.email} begin create uploaded cookie and header")
                 payload = {} 
                 header["User-Agent"] = request.headers["user-agent"]
-                header['Content-Length'] = str(len(json.dumps(payload).encode('utf-8')))
+                header['Content-Length'] = "2"
                 header["Cookie"] = request.headers["cookie"] 
-                logger.debug(f"{session.email} will continue_ send msg")
+                logger.debug(f"{session.email} will continue_ uploaded")
                 await route.continue_(method="POST", headers=header, post_data=payload)         
             await page.route("**/backend-api/files/file-**/uploaded", route_uploaded)  
             logger.debug(f"{session.email} began uploaded")
-            async with page.expect_response(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=120000) as response_info: # type: ignore
-                await page.goto(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=60000)
-                res_value = await response_info.value   
-                res: dict = await res_value.json()
-                if res['status'] == "success":
-                    pass
+            retry = 3
+            while retry != 0:
+                async with page.expect_response(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=120000) as response_info: # type: ignore
+                    await page.goto(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=60000)
+                    res_value = await response_info.value   
+                    res: dict = await res_value.json()
+                    if res['status'] == "success":
+                        logger.debug(f"{session.email} uploaded ok")
+                        break
+                    else:
+                        logger.debug(f"{session.email} uploaded faid,retry:{retry},https://chatgpt.com/backend-api/files/{file.file_id}/uploaded {res_value.status} {res_value.status_text} {res}")
+                        retry -= 1
     except Exception as e:
         logger.warning(f"upload file error:{e}")
     finally:

@@ -398,16 +398,6 @@ class chatgpt:
                     header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
                     header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
                     
-                    if msg_data.upload_file:
-                        self.logger.debug(f"{session.email} upload file")
-                        await upload_file(msg_data=msg_data,session=session,logger=self.logger)
-                    if not msg_data.conversation_id:
-                        self.logger.debug(f"{session.email} msg is new conversation")
-                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
-                    else:
-                        self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
-                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
-                    header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     header['Accept'] = 'text/event-stream'
                     header['Accept-Encoding'] = 'gzip, deflate, zstd'
                     header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
@@ -451,6 +441,8 @@ class chatgpt:
                     self.logger.debug(f"{session.email} will run _proof")
                     proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
                     self.logger.debug(f"{session.email} get proof token")
+                    if len(proof) < 30:
+                        self.logger.warning(f"{session.email} 's proof may error: {proof}")
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
                     self.logger.debug(f"{session.email} check chatp's turnstile")
@@ -495,6 +487,17 @@ class chatgpt:
                         self.logger.debug(f"{session.email} aleady connect wss")
 
                     header["Cookie"] = request.headers["cookie"] 
+                    self.logger.debug(f"{session.email} will test upload")
+                    if msg_data.upload_file:
+                        self.logger.debug(f"{session.email} upload file")
+                        await upload_file(msg_data=msg_data,session=session,logger=self.logger)
+                    if not msg_data.conversation_id:
+                        self.logger.debug(f"{session.email} msg is new conversation")
+                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
+                    else:
+                        self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
+                        data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
+                    header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
                     self.logger.debug(f"{session.email} will continue_ send msg")
                     await route.continue_(method="POST", headers=header, post_data=data)
                 self.logger.debug(f"{session.email} will register conversation api route")
@@ -727,8 +730,8 @@ class chatgpt:
         展示聊天记录"""
         msg_history = await self.load_chat(msg_data)
         msg = []
-        for x in msg_history["message"]:
-            msg.append(f"Q:{x['input']}\n\nA:{x['output']}\n\np_msg_id:{x['next_msg_id']}")
+        for i,x in enumerate(msg_history["message"]):
+            msg.append(f"Index:{i+1}\n\nQ:{x['input']}\n\nA:{x['output']}\n\np_msg_id:{x['next_msg_id']}")
         return msg
 
     async def back_chat_from_input(self, msg_data: MsgData):

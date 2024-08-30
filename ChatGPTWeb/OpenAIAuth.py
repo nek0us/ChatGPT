@@ -105,6 +105,8 @@ class AsyncAuth0:
             nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
             auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
             login_button = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[2]/div')
+            login_button2 = self.login_page.locator('//html/body/div[1]/div/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
+            login_button3 = self.login_page.locator('//html/body/div[1]/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
             if await alert_login_box.count() > 0:
                 await alert_login_box.click()
             elif await nologin_home_locator.count() > 0:
@@ -113,6 +115,10 @@ class AsyncAuth0:
                 await auth_login.click()
             elif await login_button.count() > 0:
                 await login_button.first.click()
+            elif await login_button2.count() > 0:
+                await login_button2.first.click()
+            elif await login_button3.count() > 0:
+                await login_button3.first.click()
             else:
                 pass
             await asyncio.sleep(2)
@@ -165,7 +171,7 @@ class AsyncAuth0:
                     if "auth0" in self.login_page.url:
                         await self.login_page.click('[data-provider="google"] button')
                     else:
-                        await self.login_page.click('//html/body/div/div/main/section/div[2]/div[3]/button[1]')
+                        await self.login_page.click('//html/body/div/main/section/div[2]/div[3]/button[1]')
                         
                 except Exception as e:
                     self.logger.warning(f"google point error:{e}")
@@ -177,7 +183,7 @@ class AsyncAuth0:
                         await self.login_page.click('//html/body/div/main/section/div/div/div/div[4]/form[1]/button')
                     else:
                         
-                        await self.login_page.click('//html/body/div/div/main/section/div[2]/div[3]/button[2]')
+                        await self.login_page.click('//html/body/div/main/section/div[2]/div[3]/button[2]')
                 except Exception as e:
                     self.logger.warning(f"microsoft point error:{e}")
                     raise e
@@ -265,7 +271,7 @@ class AsyncAuth0:
                     else:
                         await self.login_page.fill('//*[@id="email-input"]', self.email_address)
                         await asyncio.sleep(1)
-                        await self.login_page.click('//html/body/div/div/main/section/div[2]/button')
+                        await self.login_page.click('//html/body/div/main/section/div[2]/button')
                     
                     
                     await self.login_page.wait_for_load_state(state="domcontentloaded")
