@@ -101,6 +101,7 @@ class AsyncAuth0:
         check_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/button/div/div/img')
         if await check_login.count() == 0:
             alert_login_box = self.login_page.locator('//html/body/div[3]/div/div/div/div/div/button[1]/div')
+            alert_login_box2 = self.login_page.locator('//html/body/div[5]/div/div/div/div/div/button[1]/div')
             
             nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
             auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
@@ -109,6 +110,8 @@ class AsyncAuth0:
             login_button3 = self.login_page.locator('//html/body/div[1]/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
             if await alert_login_box.count() > 0:
                 await alert_login_box.click()
+            elif await alert_login_box2.count() > 0:
+                await alert_login_box2.click()
             elif await nologin_home_locator.count() > 0:
                 await nologin_home_locator.click()
             elif await auth_login.count() > 0:
@@ -195,10 +198,13 @@ class AsyncAuth0:
                 # TODO: SPlit Parts from select mode
                 if self.mode == "microsoft":
                     # enter email_address
-                    await self.login_page.fill('//*[@id="i0116"]', self.email_address)
-                    await asyncio.sleep(1)
-                    await self.login_page.click('//*[@id="idSIButton9"]')
-                    await self.login_page.wait_for_load_state()
+                    
+                    mc_username = self.login_page.locator('//*[@id="i0116"]')
+                    if await mc_username.count() > 0:
+                        await self.login_page.fill('//*[@id="i0116"]', self.email_address)
+                        await asyncio.sleep(1)
+                        await self.login_page.click('//*[@id="idSIButton9"]')
+                        await self.login_page.wait_for_load_state()
                     await asyncio.sleep(1)
                     # enter passwd
                     await self.login_page.fill('//*[@id="i0118"]', self.password)

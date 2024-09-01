@@ -424,7 +424,7 @@ class chatgpt:
                         self.logger.debug(f"{session.email} get _chatp.rS() json_result,wait networkidle")
                         await page.wait_for_load_state("networkidle",timeout=300)
                     except Exception as e:
-                        if "authentication token is expired" in e.args[0]:
+                        if "token is expired" in str(e.args[0]):
                             self.logger.debug(f"{session.email} send msg,but page's access_token expired,it will run js")
                             await flush_page(page,self.js,self.js_used)
                             await asyncio.sleep(2)
@@ -538,6 +538,12 @@ class chatgpt:
                                 msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
                             except Exception as e:
                                 self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
+                                if "token_expired" in await res.text():
+                                    session.status = Status.Update.value
+                                    self.logger.warning(f"{session.email} maybe token expired,set session.status Update,please try again later")
+                                    msg_data.error_info += f"{session.email} maybe token expired,set session.status Update,please try again later\n"
+                                    retry = 0
+                                    raise e
                                 msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
                                 raise e
                             finally:
