@@ -193,13 +193,60 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         break
     return msg_data
 
+async def handle_event_stream(response: Response,msg_data: MsgData):
+    stream_text = await response.text()
+    text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
+    if text_tmp1.endswith("\n\ndata: [DONE]\n\n"):
+        text_tmp2 = text_tmp1[:-16] 
+    else:
+        text_tmp2 = text_tmp1
+    text_list = []
+    for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
+        if x != "":
+            tmp1 = repr(x.strip())[1:-1]
+            tmp2 = tmp1.replace(r"\\",r"\\").replace("\\\\","\\")
+            text_list.append(json.loads(tmp2))
+    first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
+    first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
+    msg_list = ""
+    msg_id = ""
+    if first_msg_list_begin and not first_msg_list_end:
+        first_msg_list_end = [len(text_list)]
+    if first_msg_list_begin and first_msg_list_end:
+        begin = first_msg_list_begin[0]
+        end = first_msg_list_end[0]
+        for index,msg in enumerate(text_list):
+            if index >= begin and index <= end:
+                if "v" in msg and isinstance(msg["v"],str):
+                    msg_list += msg["v"]
+                elif "v" in msg and isinstance(msg["v"],list):
+                    for x in msg["v"]:
+                        if "p" in x and x["p"] == "/message/content/parts/0":
+                            msg_list += x["v"]
+                        elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
+                            break
+            elif "v" in msg and isinstance(msg["v"],dict):
+                if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
+                    if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
+                        if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
+                            msg_id = msg["v"]["message"]["id"]
+                            msg_data.conversation_id = msg["v"]['conversation_id']
+    if msg_list:
+        msg_data.status = True
+        msg_data.msg_type = "old_session"
+        msg_data.next_msg_id = msg_id
+        msg_data.msg_recv = msg_list
+        
+    return msg_data
+
 async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger):
     '''recive handle stream to msgdata'''
-    stream_text = await resp.text()
+    # stream_text = await resp.text()
     logger.debug(f"{session.email} get stream_text ok")
-    stream_lines = stream_text.splitlines()
+    # stream_lines = stream_text.splitlines()
     logger.debug(f"{session.email} get stream_lines ok")
-    msg_data = stream2msgdata(stream_lines,msg_data)
+    # msg_data = stream2msgdata(stream_lines,msg_data)
+    msg_data = await handle_event_stream(resp,msg_data)
     if msg_data.msg_recv == "":
         logger.warning(f"recive_handle error:msg_data.recv == None,This content may violate openai's content policy,error:{msg_data.error_info}")
         msg_data.error_info += f"recive_handle error:msg_data.recv == None, This content may violate openai's content policy,error:{msg_data.error_info}\n"

@@ -347,7 +347,7 @@ class Payload():
                 "create_time": create_time,
                 "metadata": {
                     "attachments": attachments
-                } if attachments else {}
+                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}}
             }],
             "conversation_id":
                 conversation_id,
@@ -357,19 +357,33 @@ class Payload():
                 gpt_model,
             "timezone_offset_min":
                 -480,
+            "timezone": "Asia/Shanghai",
             "suggestions": [],
             "conversation_mode": {
                 "kind": "primary_assistant",
-                "plugin_ids":None,
             },
-            "conversation_origin": None,
             "force_paragen": False,
-            "force_nulligen":False,
-            "force_rate_limit": False,
             "force_paragen_model_slug": "",
-            "force_use_sse": True,
+            "force_rate_limit": False,
             "reset_rate_limits": False,
-            "websocket_request_id": str(uuid.uuid4())
+            "websocket_request_id": str(uuid.uuid4()),
+            "system_hints": [],
+            "supported_encodings": [
+                "v1"
+            ],
+            "conversation_origin": None,
+            "client_contextual_info": {
+                "is_dark_mode": False,
+                "time_since_loaded": 19,
+                "page_height": 992,
+                "page_width": 1100,
+                "pixel_ratio": 1.25,
+                "screen_height": 1152,
+                "screen_width": 2048
+            },
+            "paragen_stream_type_override": None,
+            "paragen_cot_summary_display_override": "allow",
+            "supports_buffering": True
         })
 
     @staticmethod

@@ -482,19 +482,23 @@ class chatgpt:
                     msg_data.header = header
                     self.logger.debug(f"{session.email} will test wss alive")
                     # wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
-                    # if wss_test:
-                    #     self.logger.debug(f"{session.email} wss alive,will stop it")
-                    #     await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                    #     self.logger.debug(f"{session.email} stop wss success,will register it")
-                    #     await page.evaluate('() => window._wss.ut.register()')
-                    #     self.logger.debug(f"{session.email} register success,will get it and stop")
-                    #     await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                    #     wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
-                    #     self.logger.debug(f"{session.email} get new wss success,it's :{wss}")
-                    #     session.last_wss = wss[1]['connectionUrl']
-                    #     session.wss_session = ClientSession()
-                    #     session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
-                    #     self.logger.debug(f"{session.email} aleady connect wss")
+                    wss_test = await page.evaluate('() => window._wss.postRegisterWebsocket()')
+                    if wss_test:
+                        self.logger.debug(f"{session.email} wss alive,will stop it")
+                        # await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        await page.evaluate('() => window._wss.stopWebsocketConversation()')
+                        self.logger.debug(f"{session.email} stop wss success,will register it")
+                        # await page.evaluate('() => window._wss.ut.register()')
+                        wss = await page.evaluate('() => window._wss.postRegisterWebsocket()')
+                        self.logger.debug(f"{session.email} register success,will get it and stop")
+                        # await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                        await page.evaluate('() => window._wss.stopWebsocketConversation()')
+                        # wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
+                        self.logger.debug(f"{session.email} get new wss success,it's :{wss}")
+                        session.last_wss = wss['wss_url'] # wss[1]['connectionUrl']
+                        session.wss_session = ClientSession()
+                        session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
+                        self.logger.debug(f"{session.email} aleady connect wss")
 
                     header["Cookie"] = request.headers["cookie"] 
                     self.logger.debug(f"{session.email} will test upload")
