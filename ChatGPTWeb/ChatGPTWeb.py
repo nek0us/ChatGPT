@@ -403,7 +403,7 @@ class chatgpt:
                     header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
                     header['Host'] = 'chatgpt.com'
                     self.logger.debug(f"{session.email} will use page's _chatp")
-                    js_test = await page.evaluate("() => window._chatp")
+                    js_test = await page.evaluate("window._chatp")
                     if not js_test:
                         self.logger.debug(f"{session.email} page's _chatp not ready,test other js")
                         js_res = await page.evaluate_handle(self.js[self.js_used])
@@ -419,9 +419,9 @@ class chatgpt:
                             await page.wait_for_load_state("load")
                             await page.wait_for_load_state(state="networkidle")
                     try:
-                        self.logger.debug(f"{session.email} will run page's _chatp.rS()")        
-                        json_result = await page.evaluate("() => window._chatp.rS()")
-                        self.logger.debug(f"{session.email} get _chatp.rS() json_result,wait networkidle")
+                        self.logger.debug(f"{session.email} will run page's _chatp.getRequirementsToken()")        
+                        json_result = await page.evaluate("() => window._chatp(true)")
+                        self.logger.debug(f"{session.email} get _chatp.getRequirementsToken() json_result,wait networkidle")
                         await page.wait_for_load_state("networkidle",timeout=300)
                     except Exception as e:
                         if "token is expired" in str(e.args[0]):
@@ -432,14 +432,17 @@ class chatgpt:
                                 await page.wait_for_load_state(state="networkidle",timeout=300)
                             except Exception as e:
                                 self.logger.debug(f"{session.email} flush page's access_token networkidle exception:{e}")
-                            self.logger.debug(f"{session.email} will run page's _chatp.rS() in try catch")        
-                            json_result = await page.evaluate("() => window._chatp.rS()")
+                            self.logger.debug(f"{session.email} will run page's _chatp.getRequirementsToken() in try catch")        
+                            json_result = await page.evaluate("() => window._chatp(true)")
                         if "Timeout" not in e.args[0]:
                             self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
                             pass
                         # self.logger.debug(f"{session.email} wait networkidle ：{e}")
+                        
+                        
                     self.logger.debug(f"{session.email} will run _proof")
-                    proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
+                    # proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
+                    proof = await page.evaluate(f'() => window._chatp_old.getEnforcementToken({json.dumps(json_result)})')
                     self.logger.debug(f"{session.email} get proof token")
                     if len(proof) < 30:
                         self.logger.warning(f"{session.email} 's proof may error: {proof}")
@@ -447,44 +450,51 @@ class chatgpt:
                     header['OpenAI-Sentinel-Proof-Token'] = proof
                     self.logger.debug(f"{session.email} check chatp's turnstile")
                     if json_result['turnstile']:
-                        turnstile = await page.evaluate(f'() => window._turnstile.Z.getEnforcementToken({json.dumps(json_result)})')
+                        # turnstile = await page.evaluate(f'() => window._turnstile.Z.getEnforcementToken({json.dumps(json_result)})')
+                        turnstile = await page.evaluate(f'() => window._turnstile.getEnforcementToken({json.dumps(json_result)})')
                         self.logger.debug(f"{session.email} get turnstile token")
                         header['OpenAI-Sentinel-turnstile-Token'] = turnstile
                     self.logger.debug(f"{session.email} check chatp's arkose")
                     if json_result['arkose']:
-                        self.logger.debug(f"{session.email} get a arkose token")
-                        async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
-                            self.logger.debug(f"{session.email} will handle arkose")
-                            await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
-                            res_ark = await arkose_info.value
-                            arkose = await res_ark.json()
-                            header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
-                            self.logger.debug(f"{session.email} handle arkose success")
+                        # self.logger.debug(f"{session.email} get a arkose token")
+                        # async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
+                        #     self.logger.debug(f"{session.email} will handle arkose")
+                        #     await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
+                        #     res_ark = await arkose_info.value
+                        #     arkose = await res_ark.json()
+                        #     header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
+                        #     self.logger.debug(f"{session.email} handle arkose success")
+                        
+                        self.logger.debug(f"{session.email} will handle arkose")
+                        arkose = await page.evaluate(f"() => window._ark.startEnforcement({json.dumps(json_result)})")
+                        header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
+                        self.logger.debug(f"{session.email} handle arkose success")
+                        
                     header['Sec-Fetch-Dest'] = 'empty'
                     header['Sec-Fetch-Mode'] = 'cors'
                     header['Sec-Fetch-Site'] = 'same-origin'
                     header['Sec-GPC'] = '1'
                     header['Connection'] = 'keep-alive'
                     header['DNT'] = '1'
-                    self.logger.debug(f"{session.email} will run _device.f3()")
-                    header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device.f3()")
+                    self.logger.debug(f"{session.email} will run _device()")
+                    header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device()")
                     header['OAI-Language'] = 'en-US'
                     msg_data.header = header
                     self.logger.debug(f"{session.email} will test wss alive")
-                    wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
-                    if wss_test:
-                        self.logger.debug(f"{session.email} wss alive,will stop it")
-                        await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                        self.logger.debug(f"{session.email} stop wss success,will register it")
-                        await page.evaluate('() => window._wss.ut.register()')
-                        self.logger.debug(f"{session.email} register success,will get it and stop")
-                        await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
-                        wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
-                        self.logger.debug(f"{session.email} get new wss success,it's :{wss}")
-                        session.last_wss = wss[1]['connectionUrl']
-                        session.wss_session = ClientSession()
-                        session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
-                        self.logger.debug(f"{session.email} aleady connect wss")
+                    # wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
+                    # if wss_test:
+                    #     self.logger.debug(f"{session.email} wss alive,will stop it")
+                    #     await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                    #     self.logger.debug(f"{session.email} stop wss success,will register it")
+                    #     await page.evaluate('() => window._wss.ut.register()')
+                    #     self.logger.debug(f"{session.email} register success,will get it and stop")
+                    #     await page.evaluate(f'() => window._wss.ut.activeSocketMap.get("{wss_test[0]}").stop()')
+                    #     wss = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
+                    #     self.logger.debug(f"{session.email} get new wss success,it's :{wss}")
+                    #     session.last_wss = wss[1]['connectionUrl']
+                    #     session.wss_session = ClientSession()
+                    #     session.wss = await session.wss_session.ws_connect(session.last_wss,proxy=self.httpx_proxy,headers=None)
+                    #     self.logger.debug(f"{session.email} aleady connect wss")
 
                     header["Cookie"] = request.headers["cookie"] 
                     self.logger.debug(f"{session.email} will test upload")

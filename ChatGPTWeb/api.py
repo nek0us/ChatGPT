@@ -366,10 +366,10 @@ def get_session_token(session: Session,chat_file: Path,logger):
         logger.warning(f"get session_token from file error : {e}")
         return session
             
-async def get_paid(page: Page,token: str,device_id: str,logger):
+async def get_paid(page: Page,token: str,chatp: str,device_id: str,logger):
     
     async def route_handle_paid(route: Route, request: Request):
-        data = {"conversation_mode_kind":"primary_assistant"}
+        data = {"p":chatp}
         header = Payload.headers(token,json.dumps(data),device_id)
         header['Cookie'] = request.headers['cookie']
         header["User-Agent"] = request.headers["user-agent"]
@@ -382,6 +382,7 @@ async def get_paid(page: Page,token: str,device_id: str,logger):
         header['Cache-Control'] = 'no-cache'
         header['Connection'] = 'keep-alive'
         header['Pragma'] = 'no-cache'
+        header['Origin'] = header['Referer'] = "https://chatgpt.com"
         await route.continue_(method="POST",headers=header,post_data=data)
             
     await page.route("**/backend-api/sentinel/chat-requirements", route_handle_paid)  # type: ignore
@@ -420,20 +421,20 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
     await page.goto("https://chatgpt.com/",timeout=30000)
     await asyncio.sleep(4)
-    await page.wait_for_load_state("load")
+    await page.wait_for_load_state('networkidle')
+    await asyncio.sleep(4)
     res = await page.evaluate_handle(js[0])
     await res.json_value()
-    await asyncio.sleep(4)
     await page.wait_for_load_state("load")
     await asyncio.sleep(4)
-    js_test = await page.evaluate("() => window._chatp")
+    js_test = await page.evaluate("window._chatp")
     if not js_test:
         js_res = await page.evaluate_handle(js[1])
         await js_res.json_value()
         await asyncio.sleep(2)
         await page.wait_for_load_state("load")
         await asyncio.sleep(4)
-        js_test2 = await page.evaluate("() => window._chatp")
+        js_test2 = await page.evaluate("window._chatp")
         if js_test2:
             js_used = 1
         else:

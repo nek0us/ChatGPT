@@ -285,11 +285,12 @@ class Payload():
                 "create_time": create_time,
                 "metadata": {
                     "attachments": attachments
-                } if attachments else {}
+                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}}
             }],
             "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
             "model": gpt_model,
             "timezone_offset_min": -480,
+            "timezone": "Asia/Shanghai",
             "suggestions": [],
             "history_and_training_disabled": False,
             "conversation_mode": {
@@ -302,7 +303,23 @@ class Payload():
             "force_paragen_model_slug": "",
             "force_use_sse": True,
             "reset_rate_limits": False,
-            "websocket_request_id": str(uuid.uuid4())
+            "system_hints": [],
+            "supported_encodings": [
+                "v1"
+            ],
+            "websocket_request_id": str(uuid.uuid4()),
+            "client_contextual_info": {
+                "is_dark_mode": False,
+                "time_since_loaded": 19,
+                "page_height": 992,
+                "page_width": 1100,
+                "pixel_ratio": 1.25,
+                "screen_height": 1152,
+                "screen_width": 2048
+            },
+            "paragen_stream_type_override": None,
+            "paragen_cot_summary_display_override": "allow",
+            "supports_buffering": True
             
         })
 

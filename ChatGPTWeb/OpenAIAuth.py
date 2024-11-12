@@ -108,6 +108,7 @@ class AsyncAuth0:
             login_button = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[2]/div')
             login_button2 = self.login_page.locator('//html/body/div[1]/div/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
             login_button3 = self.login_page.locator('//html/body/div[1]/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
+            login_button_index = self.login_page.locator('//html/body/div/div[2]/div[1]/div/div/button[1]/div')
             if await alert_login_box.count() > 0:
                 await alert_login_box.click()
             elif await alert_login_box2.count() > 0:
@@ -122,6 +123,8 @@ class AsyncAuth0:
                 await login_button2.first.click()
             elif await login_button3.count() > 0:
                 await login_button3.first.click()
+            elif await login_button_index.count() > 0:
+                await login_button_index.first.click()
             else:
                 pass
             await asyncio.sleep(2)
@@ -329,6 +332,9 @@ class AsyncAuth0:
 
     async def get_session_token(self,logger):
         self.login_page: Page = await self.browser_contexts.new_page()
+        # await asyncio.sleep(1000)
+        from playwright_stealth import stealth_async
+        # await stealth_async(self.login_page)
         # await stealth_async(self.login_page)
         access_token = None
         try:
