@@ -46,6 +46,7 @@ class Session:
     session_token: Cookie|None = None
     status: str = ""
     login_state: bool = False
+    login_state_first: Optional[bool] = None
     browser_contexts: Optional[BrowserContext] = None
     page: Optional[Page] = None
     user_agent: str = ""

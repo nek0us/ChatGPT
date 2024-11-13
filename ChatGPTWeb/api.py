@@ -103,7 +103,7 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
                 wss = await tmp.json()
     return await try_wss(wss=wss,msg_data=msg_data,session=session,proxy=httpx_proxy,logger=logger,ws=session.wss,stdout_flush=stdout_flush)
 
-async def try_wss(wss: dict, msg_data: MsgData,session: Session,proxy: Optional[str],logger,ws: Optional[ClientWebSocketResponse] = None,stdout_flush:bool = False):            
+async def try_wss(wss: dict, msg_data: MsgData,session: Session,proxy: Optional[str],logger,ws: Optional[ClientWebSocketResponse] = None,stdout_flush:bool = False) -> MockResponse:            
     wss_url = wss["wss_url"]
     msg_data.last_wss = wss_url
     try:
@@ -118,7 +118,7 @@ async def try_wss(wss: dict, msg_data: MsgData,session: Session,proxy: Optional[
         msg_data.error_info += f"{str(e)}\n"
     return data
 
-async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool = False):
+async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool = False) -> MockResponse:
     body = ""
     while 1:
         recv = await asyncio.wait_for(ws.receive(),timeout=20)
@@ -143,6 +143,7 @@ async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool
                         body = ws_tmp_body
                     if "is_complete" in msg_body['message']:
                         return MockResponse(ws_tmp_body)
+    return MockResponse(body)
 
 async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
     url_cid = url + '/' + msg_data.conversation_id
@@ -193,7 +194,7 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         break
     return msg_data
 
-async def handle_event_stream(response: Response,msg_data: MsgData):
+async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData) -> MsgData:
     stream_text = await response.text()
     text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
     if text_tmp1.endswith("\n\ndata: [DONE]\n\n"):
@@ -239,12 +240,12 @@ async def handle_event_stream(response: Response,msg_data: MsgData):
         
     return msg_data
 
-async def recive_handle(session: Session,resp: Response,msg_data: MsgData,logger):
+async def recive_handle(session: Session,resp: Response|MockResponse,msg_data: MsgData,logger) -> MsgData:
     '''recive handle stream to msgdata'''
     # stream_text = await resp.text()
     logger.debug(f"{session.email} get stream_text ok")
     # stream_lines = stream_text.splitlines()
-    logger.debug(f"{session.email} get stream_lines ok")
+    # logger.debug(f"{session.email} get stream_lines ok")
     # msg_data = stream2msgdata(stream_lines,msg_data)
     msg_data = await handle_event_stream(resp,msg_data)
     if msg_data.msg_recv == "":
@@ -270,7 +271,7 @@ def create_session(**kwargs) -> Session:
         )
     return Session(**kwargs)
 
-async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retry:int = 2) -> Session:
+async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,js_num: int,logger,retry:int = 2) -> Session:
     if retry != 2:
         logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
@@ -287,7 +288,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
             res = await a.value
 
             if res.status == 403 and res.url == url:
-                session = await retry_keep_alive(session,url,chat_file,logger,retry)
+                session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
             elif (res.status == 200 or res.status == 307) and res.url == url:
                 if await res.json():
                     await page.wait_for_timeout(1000)
@@ -312,6 +313,8 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
                         
                         if session.status == Status.Login.value:
                             session.status = Status.Ready.value
+                            if session.login_state_first == False:
+                                await flush_page(session.page,js,js_num)
                             logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
                         
                     else:
@@ -331,11 +334,11 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,logger,retr
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
                 # await page.screenshot(path=f"flush error {session.email}.jpg")
-                session = await retry_keep_alive(session,url,chat_file,logger,retry)
+                session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
         except Exception as e:
             logger.warning(f"retry_keep_alive {retry},error:{e}")
             # await page.screenshot(path=f"flush error {session.email}.jpg")
-            session = await retry_keep_alive(session,url,chat_file,logger,retry)
+            session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
         finally:
             await page.close()
     else:
@@ -466,14 +469,14 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
         raise e
         
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
-    await page.goto("https://chatgpt.com/",timeout=30000)
-    await asyncio.sleep(4)
-    await page.wait_for_load_state('networkidle')
-    await asyncio.sleep(4)
+    await page.goto("https://chatgpt.com/",timeout=30000,wait_until='networkidle')
+    # await asyncio.sleep(4)
+    # await page.wait_for_load_state()
+    # await asyncio.sleep(4)
     res = await page.evaluate_handle(js[0])
     await res.json_value()
-    await page.wait_for_load_state("load")
-    await asyncio.sleep(4)
+    await page.wait_for_load_state('networkidle')
+    # await asyncio.sleep(4)
     js_test = await page.evaluate("window._chatp")
     if not js_test:
         js_res = await page.evaluate_handle(js[1])

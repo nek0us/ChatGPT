@@ -1,5 +1,6 @@
 
 import os
+import sys
 import json
 import typing
 import base64
@@ -205,7 +206,7 @@ class chatgpt:
     async def __keep_alive__(self, session: Session):
         url = url_check
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
-        session = await retry_keep_alive(session,url,self.chat_file,self.logger)
+        session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.logger)
         # check session_token need update
         if session.status == Status.Update.value:
             # yes,we should update it
@@ -257,21 +258,21 @@ class chatgpt:
         if not session.browser_contexts:
             session.browser_contexts = await self.browser.new_context(service_workers="block")
         self.logger.debug(f"{session.email} begin login when it start")
-        if session.session_token:
+        if session.session_token and session.browser_contexts:
             token = session.session_token
             await session.browser_contexts.add_cookies([token]) # type: ignore
             session.page = await session.browser_contexts.new_page()
             # await stealth_async(session.page)
             session.status = Status.Login.value
 
-        elif session.email and session.password:
+        elif session.email and session.password and session.browser_contexts:
             session.page = await session.browser_contexts.new_page()
             # await stealth_async(session.page)
             await Auth(session,self.logger)
         else:
             # TODO:
             pass
-        if session.login_cookies:
+        if session.login_cookies and session.browser_contexts:
             await session.browser_contexts.add_cookies(session.login_cookies)
         
 
@@ -325,7 +326,7 @@ class chatgpt:
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-            session = await retry_keep_alive(session,url_check,self.chat_file,self.logger)
+            session = await retry_keep_alive(session,url_check,self.chat_file,self.js,self.js_used,self.logger)
             await page.goto("https://chatgpt.com/",timeout=30000)
             await page.wait_for_load_state()
             current_url = page.url
@@ -348,6 +349,7 @@ class chatgpt:
                     self.logger.debug(f"context {session.email} need relogin!")
             else:
                 session.login_state = False
+                session.login_state_first = False
                 await page.screenshot(path=f"context {session.email} faild!.png")
                 self.logger.warning(f"context {session.email} faild!")
             if self.httpx_status:
@@ -372,7 +374,7 @@ class chatgpt:
 
 
 
-    async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3):
+    async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
         发送消息处理函数"""
         if retry != 3:
@@ -424,6 +426,7 @@ class chatgpt:
                         self.logger.debug(f"{session.email} get _chatp.getRequirementsToken() json_result,wait networkidle")
                         await page.wait_for_load_state("networkidle",timeout=300)
                     except Exception as e:
+                        a, b, exc_traceback = sys.exc_info()
                         if "token is expired" in str(e.args[0]):
                             self.logger.debug(f"{session.email} send msg,but page's access_token expired,it will run js")
                             await flush_page(page,self.js,self.js_used)
@@ -435,7 +438,7 @@ class chatgpt:
                             self.logger.debug(f"{session.email} will run page's _chatp.getRequirementsToken() in try catch")        
                             json_result = await page.evaluate("() => window._chatp(true)")
                         if "Timeout" not in e.args[0]:
-                            self.logger.debug(f"{session.email} wait networkidle meet error:{e}")
+                            self.logger.debug(f"{session.email} wait networkidle meet error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
                             pass
                         # self.logger.debug(f"{session.email} wait networkidle ：{e}")
                         
@@ -515,64 +518,63 @@ class chatgpt:
                     self.logger.debug(f"{session.email} will continue_ send msg")
                     await route.continue_(method="POST", headers=header, post_data=data)
                 self.logger.debug(f"{session.email} will register conversation api route")
-                await send_page.route("**/backend-api/conversation", route_handle)  # type: ignore
-                
-                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=120000) as response_info: # type: ignore
+                await send_page.route("**/backend-api/conversation", route_handle)  
+
+                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=70000) as response_info: 
                     try:
                         self.logger.debug(f"send:{msg_data.msg_send}")
-                        await send_page.goto(url_check, timeout=120000) # type: ignore
-                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=120000) # type: ignore
+                        await send_page.goto(url_check, timeout=60000)
+                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=60000,wait_until='networkidle') 
                     except Exception as e:
+                        a, b, exc_traceback = sys.exc_info()
                         if "Download is starting" not in e.args[0]:
                             # 处理重定向
-                            self.logger.warning(f"Download message error:{e}")
-                            msg_data.error_info += f"Download message error: {str(e)}\n"
+                            self.logger.warning(f"Download message error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
+                            msg_data.error_info += f"Download message error: {str(e)},line number {exc_traceback.tb_lineno}\n" # type: ignore
                             raise e
-                        self.logger.debug(f"{session.email} download msg will wait networkidle")
-                        await send_page.wait_for_load_state('networkidle') # type: ignore
-                        if response_info.is_done():
-                            self.logger.debug(f"{session.email} get response is done,will check it")
-                            res = await response_info.value
-                            await res.text()
-                            self.logger.debug(f"{session.email} get text success,will handle text")
-                            msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
-                    else:
-                        res = await response_info.value
-                        self.logger.debug(f"{session.email} download msg else,will test content-type")
-                        if res.headers['content-type'] != 'application/json':
-                            self.logger.debug(f"{session.email} download msg context-type != json")
-                            msg_data = await recive_handle(session,res,msg_data,self.logger) # type: ignore
-                        else: #if res.headers['content-type'] == 'application/json':
-                            self.logger.debug(f"{session.email} download msg context-type == json,maybe wss")
-                            try:
-                                json_data = await res.json()
-                                self.logger.debug(f"{session.email} get json ok,will run try_wss()")
-                                data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,proxy=self.httpx_proxy,logger=self.logger)
-                                self.logger.debug(f"{session.email} run try_wss ok,will handle data")
-                                msg_data = await recive_handle(session,data,msg_data,self.logger) # type: ignore
-                            except Exception as e:
-                                self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()}")
-                                if "token_expired" in await res.text():
-                                    session.status = Status.Update.value
-                                    self.logger.warning(f"{session.email} maybe token expired,set session.status Update,please try again later")
-                                    msg_data.error_info += f"{session.email} maybe token expired,set session.status Update,please try again later\n"
-                                    retry = 0
-                                    raise e
-                                msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()}\n"
-                                raise e
-                            finally:
-                                if session.wss:
-                                    self.logger.debug(f"{session.email} will close wss")
-                                    await session.wss.close()
-                                if session.wss_session:
-                                    self.logger.debug(f"{session.email} will close wss_session")
-                                    await session.wss_session.close()
-                                session.wss = None
-                                session.wss_session = None
-                                                 
+                    self.logger.debug(f"{session.email} download msg will wait networkidle")
+                    await send_page.wait_for_load_state('networkidle')
+                    if response_info.is_done():
+                        self.logger.debug(f"{session.email} get response is done,will check it")
+                    res = await response_info.value
+                    
+                self.logger.debug(f"{session.email} download msg,will test content-type")
+                if res.headers['content-type'] != 'application/json':
+                    self.logger.debug(f"{session.email} download msg context-type != json")
+                    msg_data = await recive_handle(session,res,msg_data,self.logger) 
+                else: #if res.headers['content-type'] == 'application/json':
+                    self.logger.debug(f"{session.email} download msg context-type == json,maybe wss")
+                    try:
+                        json_data = await res.json()
+                        self.logger.debug(f"{session.email} get json ok,will run try_wss()")
+                        data = await try_wss(wss=json_data,msg_data=msg_data,session=session,ws=session.wss,proxy=self.httpx_proxy,logger=self.logger)
+                        self.logger.debug(f"{session.email} run try_wss ok,will handle data")
+                        msg_data = await recive_handle(session,data,msg_data,self.logger) 
+                    except Exception as e:
+                        a, b, exc_traceback = sys.exc_info()
+                        self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()},line number {exc_traceback.tb_lineno}") # type: ignore
+                        if "token_expired" in await res.text():
+                            session.status = Status.Update.value
+                            self.logger.warning(f"{session.email} maybe token expired,set session.status Update,please try again later")
+                            msg_data.error_info += f"{session.email} maybe token expired,set session.status Update,please try again later\n"
+                            retry = 0
+                            raise e
+                        msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()},line number {exc_traceback.tb_lineno}\n" # type: ignore
+                        raise e
+                    finally:
+                        if session.wss:
+                            self.logger.debug(f"{session.email} will close wss")
+                            await session.wss.close()
+                        if session.wss_session:
+                            self.logger.debug(f"{session.email} will close wss_session")
+                            await session.wss_session.close()
+                        session.wss = None
+                        session.wss_session = None
+            
         except Exception as e:
+            a, b, exc_traceback = sys.exc_info()
             self.logger.warning(f"send message error:{e}")
-            msg_data.error_info += f"send message error: {str(e)} ,retry: {retry}\n"
+            msg_data.error_info += f"send message error: {str(e)} ,retry: {retry},line number {exc_traceback.tb_lineno}\n" # type: ignore
             msg_data = await self.send_msg(msg_data,session,retry=retry)
         finally:
             await send_page.close()
@@ -722,8 +724,9 @@ class chatgpt:
                     msg_data.p_msg_id = msg_history["message"][-1]["next_msg_id"]
                 except Exception as e:
                     # Recovery failed | 恢复失败
-                    self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.")
-                    msg_data.error_info += f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found.\n"
+                    a, b, exc_traceback = sys.exc_info()
+                    self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.") # type: ignore
+                    msg_data.error_info += f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.\n" # type: ignore
                     return msg_data
         if not session.email:
             msg_data.error_info += ("Not session found,please check your conversation_id input\n")
@@ -731,11 +734,13 @@ class chatgpt:
             return msg_data
         try:
             msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=180) 
+            session.status = Status.Ready.value
         except TimeoutError:
             msg_data.error_info += f"send msg {msg_data.msg_send} time out,session:{session.email}\n"
             self.logger.warning(msg_data.error_info)
         except Exception as e:
-            msg_data.error_info += f"send msg {msg_data.msg_send} error,session:{session.email},error:{e}\n"
+            a, b, exc_traceback = sys.exc_info()
+            msg_data.error_info += f"send msg {msg_data.msg_send} error,session:{session.email}，行号 {exc_traceback.tb_lineno},error:{e}\n" # type: ignore
             self.logger.error(msg_data.error_info)
         else:
             if not msg_data.error_info or msg_data.status:

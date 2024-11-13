@@ -257,9 +257,17 @@ class AsyncAuth0:
 
                 elif self.mode == "google":
                     # enter google email
-                    await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-                    await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
-                    # await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state('networkidle')
+                    google_login_history = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div/div/div[2]/div/div/div[1]/form/span/section/div/div/div/div/ul/li[1]/div')
+                    await self.login_page.wait_for_load_state('networkidle')
+                    if await google_login_history.count() > 0:
+                        await google_login_history.click()
+                        await self.login_page.wait_for_load_state('networkidle')
+                    else:
+                    
+                        await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
+                        await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
+                        # await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
                     # enter passwd
                     await self.login_page.locator(
