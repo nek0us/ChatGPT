@@ -106,7 +106,8 @@ personality_definition = Personality(
 
 chat = chatgpt(sessions=sessions, begin_sleep_time=False, headless=True, stdout_flush=True)
 # "begin_sleep_time=False" for testing only
-# Make sure "headless=True" when using 
+# When using for the first time, if cloudflare exists, use headless=False and manually click Verify. After the session file is generated, switch it to True
+# 初次使用时，如果存在cloudflare，请使用headless=False，并手动点击验证。在session文件生成后，再将其切换为True
 
 async def main():
     c_id = await aioconsole.ainput("your conversation_id if you have:")
@@ -214,6 +215,10 @@ logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 stdout_flush: bool = False
 # shell流式传输
 # command shell refresh output
+
+save_screen: bool = False
+# 发送消息与刷新cookie失败时保存异常截图到文件（登录失败的截图会一直保持开启）
+# Save exception screenshots to files when sending messages and refreshing cookies fail (screenshots of login failures will always remain open)
 
 ```
 
@@ -334,3 +339,8 @@ Please log in to chatgpt manually using Google from your browser once, then visi
 When the "\{email_address\}_google_cookie.txt" file appears, paste the copied json into it and save it.
 
 请先从你的浏览器手动使用google登录chatgpt一次，然后访问`https://myaccount.google.com/`，使用浏览器插件Cookie-Editor导出该页面的Cookie为json格式。 当"\{email_address\}_google_cookie.txt"文件出现时，将复制的json粘贴进去并保存。
+
+### cloudflare checkbox 验证挑战
+When using for the first time, if cloudflare exists, use headless=False and manually click Verify. After the session file is generated, switch it to True
+
+初次使用时，如果存在cloudflare，请使用headless=False，并手动点击验证。在session文件生成后，再将其切换为True

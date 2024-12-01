@@ -12,7 +12,6 @@ from aiohttp import ClientSession
 from playwright.async_api import async_playwright, Route, Request, Page
 from typing import Optional,Literal,List
 from urllib.parse import urlparse
-
 from .config import (
     Payload,
     Personality,
@@ -34,12 +33,10 @@ from .api import (
     retry_keep_alive,
     Auth,
     get_session_token,
-    get_paid,
-    get_paid_by_httpx,
-    get_wss,
     try_wss,
     flush_page,
     upload_file,
+    save_screen,
 )
 
 class chatgpt:
@@ -56,7 +53,8 @@ class chatgpt:
                  httpx_status: bool = False,
                  logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO",
                  stdout_flush: bool = False,
-                 local_js: bool = False
+                 local_js: bool = False,
+                 save_screen: bool = False
                 
                  ) -> None:
         """
@@ -102,6 +100,7 @@ class chatgpt:
         self.stdout_flush = stdout_flush
         self.local_js = local_js
         self.js_used = 0
+        self.save_screen = save_screen
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -172,7 +171,9 @@ class chatgpt:
             playwright = await playwright_manager.start()
             browser = await playwright.firefox.launch(
             headless=self.headless,
-            slow_mo=50, proxy=self.proxy)
+            slow_mo=50, proxy=self.proxy,
+            
+            )
             await browser.close()
             return True
         except Exception as e:
@@ -206,7 +207,7 @@ class chatgpt:
     async def __keep_alive__(self, session: Session):
         url = url_check
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
-        session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.logger)
+        session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
         # check session_token need update
         if session.status == Status.Update.value:
             # yes,we should update it
@@ -232,8 +233,14 @@ class chatgpt:
                     tasks.append(self.__keep_alive__(session))
                 except Exception as e:
                     self.logger.error(f"add {context_index} flush cf task error! {e}")
-
-            await asyncio.gather(*tasks)
+            try:
+                self.logger.debug(f"{session.email} will flush alive tasks")
+                await asyncio.wait_for(asyncio.gather(*tasks),timeout=150)
+            except TimeoutError:
+                self.logger.warning(f"{session.email} flush alive tasks timeout")
+            except Exception as e:
+                a, b, exc_traceback = sys.exc_info()
+                self.logger.warning(f"{session.email} flush alive tasks error:{e},line: {exc_traceback.tb_lineno}") # type: ignore
             self.logger.debug("flush over,wait next...")
 
             await asyncio.sleep(60 if len(self.Sessions) < 10 else 6 * len(self.Sessions))
@@ -262,12 +269,10 @@ class chatgpt:
             token = session.session_token
             await session.browser_contexts.add_cookies([token]) # type: ignore
             session.page = await session.browser_contexts.new_page()
-            # await stealth_async(session.page)
             session.status = Status.Login.value
 
         elif session.email and session.password and session.browser_contexts:
             session.page = await session.browser_contexts.new_page()
-            # await stealth_async(session.page)
             await Auth(session,self.logger)
         else:
             # TODO:
@@ -291,7 +296,8 @@ class chatgpt:
         self.playwright = await self.playwright_manager.start()
         self.browser = await self.playwright.firefox.launch(
             headless=self.headless,
-            slow_mo=50, proxy=self.proxy)
+            slow_mo=50, proxy=self.proxy,
+            )
         
         # arkose context
         load_tasks = []
@@ -307,10 +313,19 @@ class chatgpt:
         for session in self.Sessions:
             auth_tasks.append(self.__login(session))
         # auth login
-        await asyncio.gather(*auth_tasks)
-        # load page
-        load_tasks += [self.load_page(session) for session in self.Sessions if session.status == Status.Login.value]
-        await asyncio.gather(*load_tasks)
+        
+        load_tasks += [self.load_page(session) for session in self.Sessions] #  if session.status == Status.Login.value or session.status == Status.Update.value
+        try:
+            self.logger.debug(f"{session.email} will auth_task")
+            await asyncio.wait_for(asyncio.gather(*auth_tasks),timeout=150)
+            # load page
+            self.logger.debug(f"{session.email} will load_task")
+            await asyncio.wait_for(asyncio.gather(*load_tasks),timeout=150)
+        except TimeoutError:
+            self.logger.warning(f"{session.email} auth and load_page timeout")
+        except Exception as e:
+            a, b, exc_traceback = sys.exc_info()
+            self.logger.warning(f"{session.email} auth and load_page error:{e},line: {exc_traceback.tb_lineno}") # type: ignore
 
         self.manage["browser_contexts"] = self.browser.contexts
 
@@ -326,12 +341,12 @@ class chatgpt:
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-            session = await retry_keep_alive(session,url_check,self.chat_file,self.js,self.js_used,self.logger)
-            await page.goto("https://chatgpt.com/",timeout=30000)
-            await page.wait_for_load_state()
-            current_url = page.url
-            await page.wait_for_url(current_url)
-            current_url = page.url 
+            session = await retry_keep_alive(session,url_check,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
+            await page.goto("https://chatgpt.com/",timeout=30000,wait_until='networkidle')
+            # await page.wait_for_load_state()
+            # current_url = page.url
+            # await page.wait_for_url(current_url)
+            # current_url = page.url 
             
             while session.status == Status.Update.value:
                 self.logger.debug(f"context {session.email} begin relogin")
@@ -350,7 +365,8 @@ class chatgpt:
             else:
                 session.login_state = False
                 session.login_state_first = False
-                await page.screenshot(path=f"context {session.email} faild!.png")
+                # await page.screenshot(path=f"context {session.email} faild!.png")
+                await save_screen(save_screen_status=self.save_screen,path=f"context_{session.email}_faild!",page=page)
                 self.logger.warning(f"context {session.email} faild!")
             if self.httpx_status:
                 self.logger.debug("load page over,http_status true,close page")
@@ -441,6 +457,9 @@ class chatgpt:
                             self.logger.debug(f"{session.email} wait networkidle meet error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
                             pass
                         # self.logger.debug(f"{session.email} wait networkidle ：{e}")
+                        else:
+                            self.logger.warning(f"route_handle try else error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
+                            await save_screen(save_screen_status=self.save_screen,path=f"context_{session.email}_page_send_faild!",page=session.page) # type: ignore
                         
                         
                     self.logger.debug(f"{session.email} will run _proof")
@@ -581,6 +600,8 @@ class chatgpt:
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:
+            if session.login_state is False:
+                session.login_state = True
             await self.save_chat(msg_data, context_num)
         return msg_data
 
