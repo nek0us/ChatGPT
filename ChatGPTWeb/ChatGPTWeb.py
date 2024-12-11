@@ -458,20 +458,21 @@ class chatgpt:
                         self.logger.debug(f"{session.email} get turnstile token")
                         header['OpenAI-Sentinel-turnstile-Token'] = turnstile
                     self.logger.debug(f"{session.email} check chatp's arkose")
-                    if json_result['arkose']:
-                        # self.logger.debug(f"{session.email} get a arkose token")
-                        # async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
-                        #     self.logger.debug(f"{session.email} will handle arkose")
-                        #     await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
-                        #     res_ark = await arkose_info.value
-                        #     arkose = await res_ark.json()
-                        #     header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
-                        #     self.logger.debug(f"{session.email} handle arkose success")
-                        
-                        self.logger.debug(f"{session.email} will handle arkose")
-                        arkose = await page.evaluate(f"() => window._ark.startEnforcement({json.dumps(json_result)})")
-                        header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
-                        self.logger.debug(f"{session.email} handle arkose success")
+                    if 'arkose' in json_result:
+                        if json_result['arkose']:
+                            # self.logger.debug(f"{session.email} get a arkose token")
+                            # async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
+                            #     self.logger.debug(f"{session.email} will handle arkose")
+                            #     await page.evaluate(f"() => window._ark.ZP.startEnforcement({json.dumps(json_result)})")
+                            #     res_ark = await arkose_info.value
+                            #     arkose = await res_ark.json()
+                            #     header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
+                            #     self.logger.debug(f"{session.email} handle arkose success")
+                            
+                            self.logger.debug(f"{session.email} will handle arkose")
+                            arkose = await page.evaluate(f"() => window._ark.startEnforcement({json.dumps(json_result)})")
+                            header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
+                            self.logger.debug(f"{session.email} handle arkose success")
                         
                     header['Sec-Fetch-Dest'] = 'empty'
                     header['Sec-Fetch-Mode'] = 'cors'
