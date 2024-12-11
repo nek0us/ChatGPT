@@ -8,6 +8,7 @@ import asyncio
 
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 from httpx import AsyncClient
 from aiohttp import ClientSession,ClientWebSocketResponse
 from playwright.async_api import Page
@@ -184,7 +185,7 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
         msg_data.msg_recv = markdown_to_text(tmp)
         try:
             msg_data.conversation_id = msg["conversation_id"]
-        except KeyError as e:
+        except KeyError:
             pass
         except Exception as e:
             raise e
@@ -204,7 +205,7 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
     text_list = []
     for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
         if x != "":
-            tmp1 = repr(x.strip())[1:-1]
+            tmp1 = x.strip() # repr(x.strip())[1:-1]
             tmp2 = tmp1.replace(r"\\",r"\\").replace("\\\\","\\")
             text_list.append(json.loads(tmp2))
     first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
@@ -271,7 +272,7 @@ def create_session(**kwargs) -> Session:
         )
     return Session(**kwargs)
 
-async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,js_num: int,logger,retry:int = 2) -> Session:
+async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,js_num: int,save_screen_status: bool,logger,retry:int = 2) -> Session:
     if retry != 2:
         logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
@@ -281,14 +282,13 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
     
     if session.page:
         page = await session.browser_contexts.new_page() # type: ignore
-        # await stealth_async(page)
         try:
             async with page.expect_response(url, timeout=40000) as a:
                 res = await page.goto(url, timeout=40000)
             res = await a.value
 
             if res.status == 403 and res.url == url:
-                session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
+                session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
             elif (res.status == 200 or res.status == 307) and res.url == url:
                 if await res.json():
                     await page.wait_for_timeout(1000)
@@ -313,9 +313,36 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                         
                         if session.status == Status.Login.value:
                             session.status = Status.Ready.value
-                            if session.login_state_first == False:
+                            if session.login_state_first is False:
                                 await flush_page(session.page,js,js_num)
-                            logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
+                                if session.login_state is False:
+                                    token = await page.evaluate(
+                                        '() => JSON.parse(document.querySelector("body").innerText)')
+                                    logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
+                                    if "error" in token and session.status != Status.Login.value:
+                                        session.status = Status.Update.value
+                                        logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
+                                    else:
+                                        await flush_page(session.page,js,js_num)
+                                        js_test = await session.page.evaluate("window._chatp")
+                                        if js_test:
+                                            session.login_state = True
+                                            session.login_state_first = True
+                        elif session.status == Status.Ready.value:
+                            if session.login_state_first is False or session.login_state is False:
+                                token = await page.evaluate(
+                                        '() => JSON.parse(document.querySelector("body").innerText)')
+                                logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
+                                if "error" in token and session.status != Status.Login.value:
+                                    session.status = Status.Update.value
+                                    logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
+                                else:
+                                    await flush_page(session.page,js,js_num)
+                                    js_test = await session.page.evaluate("window._chatp")
+                                    if js_test:
+                                        session.login_state = True
+                                        session.login_state_first = True
+
                         
                     else:
                         # no session-token,re login
@@ -334,11 +361,12 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
                 # await page.screenshot(path=f"flush error {session.email}.jpg")
-                session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
+                session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
         except Exception as e:
             logger.warning(f"retry_keep_alive {retry},error:{e}")
             # await page.screenshot(path=f"flush error {session.email}.jpg")
-            session = await retry_keep_alive(session,url,chat_file,js,js_num,logger,retry)
+            await save_screen(save_screen_status=save_screen_status,path=f"context_{session.email}_page_flush_faild!",page=page)
+            session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
         finally:
             await page.close()
     else:
@@ -610,3 +638,20 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
     finally:
         await page.close()
         return msg_data
+    
+async def save_screen(save_screen_status: bool, path: str,page: Page):
+    if save_screen_status:
+        screen_path = Path("screen")
+        screen_path.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        time_str = now.strftime("%Y_%m_%d_%H_%M_%S") 
+        screenshot_path = screen_path / f"{path}_{time_str}.png"
+        await page.screenshot(path=screenshot_path)
+        screenshots = list(screen_path.glob(f"{path}_*.png"))
+        max_files = 10
+        if len(screenshots) > max_files:
+            screenshots.sort(key=lambda f: f.stat().st_ctime)
+            files_to_delete = screenshots[:len(screenshots) - max_files]
+            for file in files_to_delete:
+                print(f"Deleting old screenshot: {file}")
+                file.unlink()
