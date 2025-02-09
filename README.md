@@ -332,7 +332,12 @@ After opening chat.openai.com and logging in, press F12 on the browser to open t
 ### 微软登录辅助邮箱验证 | microsoft email verify code
 A file will be generated in the startup directory. Please put the verification code into it and save it. Pay attention to the log prompts.
 
-启动目录下会生成文件，请将验证码放入其中并保存，注意日志提示
+启动目录下会生成文件，请将验证码填入其中并保存，注意日志提示
+
+### openai登录辅助邮箱验证 | openai email verify code
+Same microsoft.A file will be generated in the startup directory. Please put the verification code into it and save it. Pay attention to the log prompts.
+
+和上面微软邮箱一样。启动目录下会生成文件，请将验证码填入其中并保存，注意日志提示
 
 ### 谷歌登录 | google login 
 Please log in to chatgpt manually using Google from your browser once, then visit `https://myaccount.google.com/` and use the browser plug-in Cookie-Editor to export the cookies of this page in json format.

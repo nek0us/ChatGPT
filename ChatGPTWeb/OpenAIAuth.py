@@ -272,23 +272,29 @@ class AsyncAuth0:
                         await asyncio.sleep(1)
                         await self.login_page.click('//*[@id="idSIButton9"]')
                         await self.login_page.wait_for_load_state()
+                    else:
+                        self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     await asyncio.sleep(1)
                     # enter passwd
-                    self.logger.debug(f"{self.email_address} microsoft new login,will set password")
-                    await self.login_page.fill('//*[@id="i0118"]', self.password)
-                    await asyncio.sleep(1)
-                    await self.login_page.click('//*[@id="idSIButton9"]')
-                    await self.login_page.wait_for_load_state()
+                    mc_password = self.login_page.locator('//*[@id="i0118"]')
+                    if await mc_password.count() > 0:
+                        self.logger.debug(f"{self.email_address} microsoft new login,will set password")
+                        await self.login_page.fill('//*[@id="i0118"]', self.password)
+                        await asyncio.sleep(1)
+                        await self.login_page.click('//*[@id="idSIButton9"]')
+                        await self.login_page.wait_for_load_state()
+                    else:
+                        self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     # verify code 
                     await self.login_page.wait_for_timeout(1000)
                     try:
                         await self.login_page.wait_for_url("https://login.live.com/**")
                         # await self.login_page.wait_for_url("https://account.live.com/identity/**")
-                        locator = self.login_page.locator('//*[@id="iProof0"]')
+                        locator = self.login_page.locator('//*[@id="proofConfirmationText"]')
                         if await locator.count() > 0:
                             if self.help_email != "":
-                                await self.login_page.click('//*[@id="iProof0"]')
-                                await self.login_page.fill('//*[@id="iProofEmail"]', self.help_email.split("@")[0])
+                                await self.login_page.click('//*[@id="proofConfirmationText"]')
+                                await self.login_page.fill('//*[@id="proofConfirmationText"]', self.help_email)
                                 await self.login_page.keyboard.press(EnterKey)
                                 await self.login_page.wait_for_load_state()
                                 await self.login_page.wait_for_timeout(1000)
@@ -301,7 +307,7 @@ class AsyncAuth0:
                                         code = code_file.read()
                                         if code != "":
                                             logger.info(f"get {self.email_address} verify code {code}")
-                                            await self.login_page.fill('//*[@id="iOttText"]', code)
+                                            await self.login_page.fill('//*[@id="idTxtBx_OTC_Password"]', code)
                                             await self.login_page.keyboard.press(EnterKey)
                                             await self.login_page.wait_for_load_state()
                                             await self.login_page.wait_for_timeout(1000)
@@ -315,7 +321,10 @@ class AsyncAuth0:
                     # don't stay
                     self.logger.debug(f"{self.email_address} microsoft login,will point enter")
                     await self.login_page.wait_for_timeout(1000)
-                    await self.login_page.wait_for_url("https://login.live.com/**")
+                    try:
+                        await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
+                    except:
+                        pass
                     # await self.page.click('//*[@id="idBtn_Back"]')
                     await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
@@ -380,12 +389,36 @@ class AsyncAuth0:
                     await self.login_page.click('button[type="submit"]._button-login-password')
                     await self.login_page.wait_for_load_state()
                     await self.login_page.wait_for_load_state('networkidle')
+                    
+                    try:
+                        verification_code_locator = self.login_page.locator('//html/body/div/h1')
+                        await self.login_page.wait_for_load_state('networkidle')
+                        if await verification_code_locator.count() > 0:
+                            self.logger.debug(f"{self.email_address} openai Check your inbox,please input your code to {self.email_address}_openai_code.txt by your email")
+                            with open(f"{self.email_address}_openai_code.txt","w") as code_file:
+                                code_file.write("")
+                            with open(f"{self.email_address}_openai_code.txt","r") as code_file:
+                                while 1:
+                                    await asyncio.sleep(1)
+                                    code = code_file.read()
+                                    if code != "":
+                                        logger.info(f"get {self.email_address} verify code openai {code}")
+                                        await self.login_page.fill('//html/body/div/form/input', code)
+                                        await self.login_page.click('//html/body/div/form/button')
+                                        await self.login_page.wait_for_load_state()
+                                        await self.login_page.wait_for_timeout(1000)
+                                        break
+                            os.unlink(f"{self.email_address}_openai_code.txt")
+                    except Exception as e:
+                        logger.info(f"{self.email_address} verify code openai exception: {e}")
+                        raise e
+                        
 
                 
                 # go chatgpt
                 try:
                     self.logger.debug(f"{self.email_address} wait goto chatgpt homepage ")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
                     await self.login_page.wait_for_load_state('networkidle')
                     try:
                         self.logger.debug(f"{self.email_address} will waitfor chatgpt homepage ")

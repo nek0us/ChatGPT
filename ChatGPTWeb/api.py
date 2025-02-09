@@ -198,6 +198,7 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
 async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData) -> MsgData:
     stream_text = await response.text()
     text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
+    text_tmp1 = text_tmp1[7:] if text_tmp1.startswith("\ndata: ") else text_tmp1
     if text_tmp1.endswith("\n\ndata: [DONE]\n\n"):
         text_tmp2 = text_tmp1[:-16] 
     else:
@@ -206,8 +207,20 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
     for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
         if x != "":
             tmp1 = x.strip() # repr(x.strip())[1:-1]
-            tmp2 = tmp1.replace(r"\\",r"\\").replace("\\\\","\\")
-            text_list.append(json.loads(tmp2))
+            if not tmp1.startswith("{"):
+                start_index = tmp1.find("{")
+                tmp1 = tmp1[start_index:]
+            if not tmp1.endswith("}"):
+                end_index = tmp1.rfind("}")
+                tmp1 = tmp1[:end_index + 1]
+                
+            try:
+                tmp = json.loads(tmp1)
+            except:
+                print(tmp1)
+                tmp2 = tmp1.replace(r"\\",r"\\").replace("\\\\","\\")
+                tmp = json.loads(tmp2)
+            text_list.append(tmp)
     first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
     first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
     msg_list = ""
@@ -384,7 +397,8 @@ async def Auth(session: Session,logger):
                             help_email=session.help_email
                             # loop=self.browser_event_loop
                             )
-        session.status = Status.Login.value
+        if session.status != Status.Update.value:
+            session.status = Status.Login.value
         cookie, access_token = await auth.get_session_token(logger)
         if cookie and access_token:
             session.session_token = cookie
