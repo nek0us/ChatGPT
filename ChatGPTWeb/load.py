@@ -9,7 +9,7 @@ async def load_js(httpx_proxy,local_js:bool = False) -> tuple[str,str]:
         js2 = os.path.join(current_dir, 'load2.js')
         return Path(js).read_text(),Path(js2).read_text()
     else:
-        async with AsyncClient(proxies=httpx_proxy) as client:
+        async with AsyncClient(proxies=httpx_proxy, verify=False) as client:
             res = await client.get(url="https://raw.githubusercontent.com/nek0us/ChatGPT/main/ChatGPTWeb/load.js")
             res2 = await client.get(url="https://raw.githubusercontent.com/nek0us/ChatGPT/main/ChatGPTWeb/load2.js")
         return res.text,res2.text
