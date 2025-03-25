@@ -280,7 +280,7 @@ def create_session(**kwargs) -> Session:
     if session_token and isinstance(session_token, str):
         kwargs["session_token"] = SetCookieParam(
             url="https://chatgpt.com",
-            name="__Secure-next-auth.session-token",
+            name="__Secure-next-auth.session-token.0",
             value=session_token
         )
     return Session(**kwargs)
@@ -308,13 +308,29 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                     cookies = await session.page.context.cookies()
                     # cookies = [cookie for cookie in cookies if (cookie["name"] != '__Secure-next-auth.session-token') or (cookie["name"] == '__Secure-next-auth.session-token' and cookie["domain"] == 'chatgpt.com')]
                     cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
+                    cookie0 = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token.0", cookies), None)
 
-                    if cookie:
-                        session.session_token = SetCookieParam(
-                            url="https://chatgpt.com",
-                            name="__Secure-next-auth.session-token",
-                            value=cookie["value"] # type: ignore
-                        ) # type: ignore
+                    if cookie or cookie0:
+                        if cookie:
+                            session.session_token = SetCookieParam(
+                                url="https://chatgpt.com",
+                                name="__Secure-next-auth.session-token",
+                                value=cookie["value"] # type: ignore
+                            ) # type: ignore
+                            if cookie0:
+                                cookies.remove(cookie0)
+                                await session.page.context.clear_cookies()
+                                await session.page.context.add_cookies(cookies)
+                        else:
+                            session.session_token = SetCookieParam(
+                                url="https://chatgpt.com",
+                                name="__Secure-next-auth.session-token.0",
+                                value=cookie0["value"] # type: ignore
+                            ) # type: ignore
+                            if cookie:
+                                cookies.remove(cookie)
+                                await session.page.context.clear_cookies()
+                                await session.page.context.add_cookies(cookies)
                         cookie_str = ''
                         for cookie in cookies:
                             if "chatgpt.com" in cookie["domain"]: # type: ignore

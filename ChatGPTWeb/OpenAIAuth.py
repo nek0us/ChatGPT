@@ -113,7 +113,7 @@ class AsyncAuth0:
         access_token = None
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
-        cookies = [cookie for cookie in cookies if cookie['name'] != '__Secure-next-auth.session-token'] # type: ignore
+        cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
         await self.browser_contexts.clear_cookies()
         await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
@@ -129,7 +129,7 @@ class AsyncAuth0:
             self.logger.warning(f"cf checkbox in {self.email_address}")
         await self.find_cf(self.login_page)
         await asyncio.sleep(5)
-        check_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/main/div[1]/div[1]/div/div[1]/div/div[3]/button/div/div/img')
+        check_login = self.login_page.locator('//html/body/div[1]/div/div[1]/div[2]/main/div[1]/div/div[1]/div[3]/button/div/div/div/img')
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} goto auth and relogin homepage check")
         if await check_login.count() == 0:
@@ -257,7 +257,7 @@ class AsyncAuth0:
             await asyncio.sleep(2)
             await self.login_page.wait_for_load_state('networkidle')
             cookies = await self.browser_contexts.cookies()
-            cookies = [cookie for cookie in cookies if cookie['name'] == '__Secure-next-auth.session-token'] # type: ignore
+            cookies = [cookie for cookie in cookies if cookie['name'] in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
             if cookies == []:
                 # Start Fill
                 # TODO: SPlit Parts from select mode
@@ -500,7 +500,7 @@ class AsyncAuth0:
             await self.login_page.close()
             
         try:
-            return next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None),access_token
+            return next(filter(lambda x: x.get("name") in ("__Secure-next-auth.session-token.0", '__Secure-next-auth.session-token'), cookies), None),access_token
         except Exception as e:
             self.logger.warning(f"get cookie error:{e}")
         
