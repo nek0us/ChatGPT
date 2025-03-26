@@ -280,7 +280,7 @@ def create_session(**kwargs) -> Session:
     if session_token and isinstance(session_token, str):
         kwargs["session_token"] = SetCookieParam(
             url="https://chatgpt.com",
-            name="__Secure-next-auth.session-token.0",
+            name="__Secure-next-auth.session-token",
             value=session_token
         )
     return Session(**kwargs)
