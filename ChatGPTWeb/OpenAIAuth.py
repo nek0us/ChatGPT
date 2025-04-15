@@ -386,7 +386,8 @@ class AsyncAuth0:
                     await self.login_page.locator('[name="password"]').first.fill(self.password)
                     await asyncio.sleep(1)
                     self.logger.debug(f"{self.email_address} openai will point password button ")
-                    await self.login_page.click('button[type="submit"]._button-login-password')
+                    # await self.login_page.click('button[type="submit"]._button-login-password')
+                    await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
                     await self.login_page.wait_for_load_state('networkidle')
                     
