@@ -375,10 +375,10 @@ class AsyncAuth0:
                     
                     else:
                         self.logger.debug(f"{self.email_address} openai will set email")
-                        await self.login_page.fill('//*[@id="email-input"]', self.email_address)
+                        await self.login_page.fill('//*[@id=":r1:-email"]', self.email_address)
                         await asyncio.sleep(1)
                         self.logger.debug(f"{self.email_address} openai will point email button ")
-                        await self.login_page.click('//html/body/div/main/section/div[2]/div[1]/form/div/input')
+                        await self.login_page.click('//html/body/div/fieldset/form/div[2]/button')
                     
                     
                     await self.login_page.wait_for_load_state(state="domcontentloaded")
