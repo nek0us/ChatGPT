@@ -275,7 +275,7 @@ class Payload():
         return json.dumps({
             "action": "next",
             "messages": [{
-                "id": "aaa" + str(uuid.uuid4())[3:],
+                "id": str(uuid.uuid4()),
                 "author": {
                     "role": "user"
                 },
@@ -286,29 +286,36 @@ class Payload():
                 "create_time": create_time,
                 "metadata": {
                     "attachments": attachments
-                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}}
+                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}},
+                "selected_github_repos": [],
+                "selected_all_github_repos": False,
+                "dictation": False,
             }],
-            "parent_message_id": "aaa" + str(uuid.uuid4())[3:],
+            "parent_message_id": "client-created-root",# "aaa" + str(uuid.uuid4())[3:],
             "model": gpt_model,
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
-            "suggestions": [],
-            "history_and_training_disabled": False,
+            # "suggestions": [],
+            # "history_and_training_disabled": False,
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
-            "conversation_origin": None,
-            "force_paragen": False,
-            "force_nulligen":False,
-            "force_rate_limit": False,
-            "force_paragen_model_slug": "",
-            "force_use_sse": True,
-            "reset_rate_limits": False,
+            "enable_message_followups": True,
             "system_hints": [],
+            "supports_buffering": True,
             "supported_encodings": [
                 "v1"
             ],
-            "websocket_request_id": str(uuid.uuid4()),
+            "force_use_search": True,
+            "client_reported_search_source": "conversation_composer_web_icon",
+            # "conversation_origin": None,
+            # "force_paragen": False,
+            # "force_nulligen":False,
+            # "force_rate_limit": False,
+            # "force_paragen_model_slug": "",
+            # "force_use_sse": True,
+            # "reset_rate_limits": False,
+            # "websocket_request_id": str(uuid.uuid4()),
             "client_contextual_info": {
                 "is_dark_mode": False,
                 "time_since_loaded": 19,
@@ -318,9 +325,8 @@ class Payload():
                 "screen_height": 1152,
                 "screen_width": 2048
             },
-            "paragen_stream_type_override": None,
+            # "paragen_stream_type_override": None,
             "paragen_cot_summary_display_override": "allow",
-            "supports_buffering": True
             
         })
 
@@ -335,9 +341,9 @@ class Payload():
         return json.dumps({
             "action":
                 "next",
-            "history_and_training_disabled": False,
+            # "history_and_training_disabled": False,
             "messages": [{
-                "id": "aaa" + str(uuid.uuid4())[3:],
+                "id": str(uuid.uuid4()),
                 "author": {
                     "role": "user"
                 },
@@ -348,7 +354,10 @@ class Payload():
                 "create_time": create_time,
                 "metadata": {
                     "attachments": attachments
-                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}}
+                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}},
+                "selected_github_repos": [],
+                "selected_all_github_repos": False,
+                "dictation": False,
             }],
             "conversation_id":
                 conversation_id,
@@ -363,16 +372,19 @@ class Payload():
             "conversation_mode": {
                 "kind": "primary_assistant",
             },
-            "force_paragen": False,
-            "force_paragen_model_slug": "",
-            "force_rate_limit": False,
-            "reset_rate_limits": False,
-            "websocket_request_id": str(uuid.uuid4()),
+            # "force_paragen": False,
+            # "force_paragen_model_slug": "",
+            # "force_rate_limit": False,
+            # "reset_rate_limits": False,
+            # "websocket_request_id": str(uuid.uuid4()),
+            "enable_message_followups": True,
             "system_hints": [],
             "supported_encodings": [
                 "v1"
             ],
-            "conversation_origin": None,
+            "force_use_search": True,
+            "client_reported_search_source": "conversation_composer_web_icon",
+            # "conversation_origin": None,
             "client_contextual_info": {
                 "is_dark_mode": False,
                 "time_since_loaded": 19,
@@ -382,7 +394,7 @@ class Payload():
                 "screen_height": 1152,
                 "screen_width": 2048
             },
-            "paragen_stream_type_override": None,
+            # "paragen_stream_type_override": None,
             "paragen_cot_summary_display_override": "allow",
             "supports_buffering": True
         })
