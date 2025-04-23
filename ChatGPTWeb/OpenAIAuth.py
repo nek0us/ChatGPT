@@ -103,7 +103,60 @@ class AsyncAuth0:
         pass
         
         # self.login_page.locator('//html/body/div[5]/div/div/div/div/div/button[1]/div')
+
+    async def point_login_button(self):
+        self.logger.debug(f"{self.email_address} login with {self.mode}")
+        await self.find_cf(self.login_page)
+        try:
+            await self.login_page.wait_for_load_state('networkidle')
+        except Exception as e:
+            self.logger.warning(f"get auth page by {self.mode} error,will pass:{e}")
+            await self.save_screen(path=f"{self.email_address}_get_auth0__{self.mode}_error",page=self.login_page)
+        await asyncio.sleep(2)
+        await self.find_cf(self.login_page)
+        self.logger.debug(f"{self.email_address} will point {self.mode} button")
+        try:
+            button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != "microsoft" else 'Microsoft Account'}", exact=True)
+            await button.wait_for(state="visible")
+            await button.click()
+        except Exception as e:
+            self.logger.warning(f"{self.email_address} point button {self.mode} error:{e}")
+            await self.save_screen(path=f"{self.email_address}_ point_login_button_{self.mode}_error",page=self.login_page)
+            raise e
         
+    async def make_google_cookie_file(self):
+        with open(f"{self.email_address}_google_cookie.txt","w") as code_file:
+            code_file.write("")
+            self.logger.info(f"please input google cookie to {self.email_address}_google_cookie.txt,this file will exist for 5 minutes.")
+        with open(f"{self.email_address}_google_cookie.txt","r") as code_file:
+            while 1:
+                await asyncio.sleep(1)
+                code = code_file.read()
+                if code != "":
+                    tmp = json.loads(code)
+                    tmp1 = []
+                    for cookie in tmp:
+                        if "sameSite" in cookie:
+                            del cookie["sameSite"]
+                        if 'firstPartyDomain' in cookie:
+                            del cookie['firstPartyDomain']
+                        if 'partitionKey' in cookie:
+                            del cookie['partitionKey']
+                        if 'storeId' in cookie:
+                            del cookie['storeId']
+                        tmp1.append(cookie)
+                    await self.browser_contexts.add_cookies(tmp1)
+                    break
+
+    async def google_cookie(self):
+        try:
+            await asyncio.wait_for(self.make_google_cookie_file(),timeout=300)
+        except TimeoutError:
+            self.logger.debug(f"{self.email_address}_google_cookie.txt timout,it will be closed")
+        except Exception:
+            pass
+        finally:
+            os.unlink(f"{self.email_address}_google_cookie.txt")
     
 
     async def normal_begin(self,logger,retry: int = 1):
@@ -129,7 +182,7 @@ class AsyncAuth0:
             self.logger.warning(f"cf checkbox in {self.email_address}")
         await self.find_cf(self.login_page)
         await asyncio.sleep(5)
-        check_login = self.login_page.locator('//html/body/div[1]/div/div[1]/div[2]/main/div[1]/div/div[1]/div[3]/button/div/div/div/img')
+        check_login = self.login_page.locator('img[alt="User"]')
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} goto auth and relogin homepage check")
         if await check_login.count() == 0:
@@ -175,17 +228,10 @@ class AsyncAuth0:
                 use_url = "chatgpt.com"
             self.logger.debug(f"{self.email_address} check current_url ")
             await self.find_cf(self.login_page)
-            try:
-                if "auth0" in current_url:
-                    await self.login_page.wait_for_url("https://auth0.openai.com/**",wait_until='networkidle')
-                else:
-                    await self.login_page.wait_for_url("https://auth.openai.com/**",wait_until='networkidle')
-            except Exception as e:
-                self.logger.warning(f"{self.email_address} get auth0 page error,will pass:{e}")
-                await self.save_screen(path=f"{self.email_address}_get_auth0_error",page=self.login_page)
-            self.logger.debug(f"{self.email_address} check auth0 url")
-            await self.find_cf(self.login_page)
+            
             # Select Mode
+            if self.mode != "openai":
+                await self.point_login_button()
             await asyncio.sleep(2)
             if self.mode == "google":
                 self.logger.debug(f"{self.email_address} login with google")
@@ -196,63 +242,12 @@ class AsyncAuth0:
                         break
                 
                 if new_login:
-                    self.logger.debug(f"{self.email_address} google new login,will set cookies json")
-                    with open(f"{self.email_address}_google_cookie.txt","w") as code_file:
-                        code_file.write("")
-                        logger.info(f"please input google cookie to {self.email_address}_google_cookie.txt")
-                    with open(f"{self.email_address}_google_cookie.txt","r") as code_file:
-                        while 1:
-                            await asyncio.sleep(1)
-                            code = code_file.read()
-                            if code != "":
-                                tmp = json.loads(code)
-                                tmp1 = []
-                                for cookie in tmp:
-                                    if "sameSite" in cookie:
-                                        del cookie["sameSite"]
-                                    if 'firstPartyDomain' in cookie:
-                                        del cookie['firstPartyDomain']
-                                    if 'partitionKey' in cookie:
-                                        del cookie['partitionKey']
-                                    if 'storeId' in cookie:
-                                        del cookie['storeId']
-                                    tmp1.append(cookie)
-                                await self.browser_contexts.add_cookies(tmp1)
-                                break
-                    os.unlink(f"{self.email_address}_google_cookie.txt")
+                    self.logger.debug(f"{self.email_address} google new login,a new Google cookie file will be created. Please fill in the cookie according to the instructions. At the same time, you will try to log in directly with your account.")
+                    loop = asyncio.get_event_loop()
+                    asyncio.run_coroutine_threadsafe(self.google_cookie(),loop)
+                    # await asyncio.wait_for(self.google_cookie(),timeout=10)
+                    
                 
-                
-                try:
-                    self.logger.debug(f"{self.email_address} google login will point google button")
-                    if "auth0" in self.login_page.url:
-                        await self.login_page.click('[data-provider="google"] button')
-                    else:
-                        await self.login_page.click('//html/body/div/main/section/div[2]/div[3]/button[1]')
-                        
-                except Exception as e:
-                    self.logger.warning(f"{self.email_address} google point error:{e}")
-                    raise e
-
-            elif self.mode == "microsoft":
-                try:
-                    self.logger.debug(f"{self.email_address} login with microsoft")
-                    await self.find_cf(self.login_page)
-                    try:
-                        await self.login_page.wait_for_load_state('networkidle')
-                    except Exception as e:
-                        self.logger.warning(f"get auth0 page by microsoft error,will pass:{e}")
-                        await self.save_screen(path=f"{self.email_address}_get_auth0__microsoft_error",page=self.login_page)
-                    await asyncio.sleep(2)
-                    await self.find_cf(self.login_page)
-                    self.logger.debug(f"{self.email_address} will point microsoft button")
-                    if "auth0" in current_url:
-                        await self.login_page.click('//html/body/div/main/section/div/div/div/div[4]/form[1]/button')
-                    else:
-                        
-                        await self.login_page.click('//html/body/div/main/section/div[2]/div[3]/button[2]')
-                except Exception as e:
-                    self.logger.warning(f"microsoft point error:{e}")
-                    raise e
             await self.find_cf(self.login_page)
             await asyncio.sleep(2)
             await self.login_page.wait_for_load_state('networkidle')
@@ -266,22 +261,25 @@ class AsyncAuth0:
                     await self.find_cf(self.login_page)
                     await asyncio.sleep(5)
                     self.logger.debug(f"{self.email_address} microsoft new login,will set email")
-                    mc_username = self.login_page.locator('//*[@id="i0116"]')
+                    mc_username = self.login_page.locator("input[type='email']")
                     if await mc_username.count() > 0:
-                        await self.login_page.fill('//*[@id="i0116"]', self.email_address)
+                        await mc_username.wait_for(state="visible")
+                        await mc_username.fill(self.email_address)
                         await asyncio.sleep(1)
-                        await self.login_page.click('//*[@id="idSIButton9"]')
+                        await self.login_page.keyboard.press(EnterKey)
                         await self.login_page.wait_for_load_state()
                     else:
                         self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     await asyncio.sleep(1)
                     # enter passwd
-                    mc_password = self.login_page.locator('//*[@id="i0118"]')
+                    
+                    mc_password = self.login_page.locator("input[type='password']")
                     if await mc_password.count() > 0:
                         self.logger.debug(f"{self.email_address} microsoft new login,will set password")
-                        await self.login_page.fill('//*[@id="i0118"]', self.password)
+                        await mc_password.wait_for(state="visible")
+                        await mc_password.fill(self.password)
                         await asyncio.sleep(1)
-                        await self.login_page.click('//*[@id="idSIButton9"]')
+                        await self.login_page.keyboard.press(EnterKey)
                         await self.login_page.wait_for_load_state()
                     else:
                         self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
@@ -318,15 +316,16 @@ class AsyncAuth0:
                     except Exception as e:
                         if "Timeout" not in e.args[0]:
                             raise e
-                    # don't stay
-                    self.logger.debug(f"{self.email_address} microsoft login,will point enter")
+                    # stay
+                    self.logger.debug(f"{self.email_address} microsoft login,will point enter Yes")
                     await self.login_page.wait_for_timeout(1000)
                     try:
                         await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
+                        stay_button = self.login_page.get_by_text("Yes")
+                        if await stay_button.count() > 0:
+                            await stay_button.click()
                     except:
                         pass
-                    # await self.page.click('//*[@id="idBtn_Back"]')
-                    await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
 
 
@@ -342,16 +341,22 @@ class AsyncAuth0:
                     else:
                     
                         self.logger.debug(f"{self.email_address} google new login,will set email")
-                        await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-                        await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
+                        google_email_input = self.login_page.locator("input[type='email']")
+                        await google_email_input.fill(self.email_address)
+                        await self.login_page.keyboard.press(EnterKey)
+                        await self.login_page.wait_for_load_state('networkidle')
+                        # await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
+                        # await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
                         # await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
                     try:
                         # enter passwd
                         self.logger.debug(f"{self.email_address} google login,will set password")
-                        await self.login_page.locator(
-                            "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
-                            self.password)
+                        # await self.login_page.locator(
+                        #     "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
+                        #     self.password)
+                        google_password_input = self.login_page.locator("input[type='password']")
+                        await google_password_input.fill(self.password)
                     except Exception as e:
                         self.logger.warning(f"{self.email_address} google set password error{e}")
                         await self.save_screen(path=f"{self.email_address}_google_set_password_error",page=self.login_page)
@@ -365,30 +370,19 @@ class AsyncAuth0:
                 else:
                     await asyncio.sleep(1)
                     await self.login_page.wait_for_load_state('networkidle')
-                    self.logger.debug(f"{self.email_address} openai login,will check auth url")
-                    if "auth0" in current_url:
-                        self.logger.debug(f"{self.email_address} openai auth0 will set email")
-                        await self.login_page.fill('[name="username"]', self.email_address)
-                        await asyncio.sleep(1)
-                        self.logger.debug(f"{self.email_address} openai auth0 will point email button ")
-                        await self.login_page.click('button[type="submit"]._button-login-id')
-                    
-                    else:
-                        self.logger.debug(f"{self.email_address} openai will set email")
-                        await self.login_page.fill('//*[@id=":r1:-email"]', self.email_address)
-                        await asyncio.sleep(1)
-                        self.logger.debug(f"{self.email_address} openai will point email button ")
-                        await self.login_page.click('//html/body/div/fieldset/form/div[2]/button')
-                    
-                    
-                    await self.login_page.wait_for_load_state(state="domcontentloaded")
-                    self.logger.debug(f"{self.email_address} openai will set password")
-                    await self.login_page.locator('[name="password"]').first.fill(self.password)
-                    await asyncio.sleep(1)
-                    self.logger.debug(f"{self.email_address} openai will point password button ")
-                    # await self.login_page.click('button[type="submit"]._button-login-password')
+                    self.logger.debug(f"{self.email_address} openai login,will find email input")
+                    openai_email_input = self.login_page.locator("input[type='email']")
+                    await openai_email_input.fill(self.email_address)
+                    self.logger.debug(f"{self.email_address} openai login,will point email continue")
                     await self.login_page.keyboard.press(EnterKey)
-                    await self.login_page.wait_for_load_state()
+
+                    openai_password_input = self.login_page.locator("input[type='password']")
+                    self.logger.debug(f"{self.email_address} openai login,will set password")
+                    await openai_password_input.wait_for(state="visible")
+                    await openai_password_input.fill(self.password)
+                    self.logger.debug(f"{self.email_address} openai login,will point enter")
+                    await self.login_page.keyboard.press(EnterKey)
+
                     await self.login_page.wait_for_load_state('networkidle')
                     
                     try:
