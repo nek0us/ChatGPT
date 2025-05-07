@@ -157,6 +157,64 @@ class AsyncAuth0:
             pass
         finally:
             os.unlink(f"{self.email_address}_google_cookie.txt")
+
+    async def mc_help_email_verify(self):
+        EnterKey = "Enter"
+        verify_locator = self.login_page.get_by_text("Help us secure your account") # Help us secure your account # //*[@id="proofConfirmationText"]
+        if await verify_locator.count() > 0:
+            self.logger.debug(f"{self.email_address} need help_email code")
+            if self.help_email != "":
+                # await verify_locator.click()
+                await self.login_page.keyboard.press(EnterKey)
+                verify_email_locator = self.login_page.locator("input[id='iProof0']")
+                if await verify_email_locator.count() > 0:
+                    await verify_email_locator.click()
+                    self.logger.debug(f"{self.email_address} set help_email checkbox true")
+
+                verify_email_input_locator = self.login_page.locator("input[id='iProofEmail']")
+                if await verify_email_input_locator.count() > 0:
+                    await verify_email_input_locator.fill(self.help_email.split("@")[0])
+                    self.logger.debug(f"{self.email_address} fill help_email")
+                
+                # verify_email_submit_locator = self.login_page.locator("input[id='iSelectProofAction']")
+                # if await verify_email_submit_locator.count() > 0:
+                #     await verify_email_submit_locator.click()
+
+                # await self.login_page.click('//*[@id="proofConfirmationText"]')
+                # await self.login_page.fill('//*[@id="proofConfirmationText"]', self.help_email)
+                await self.login_page.keyboard.press(EnterKey)
+                await self.login_page.wait_for_load_state()
+                await self.login_page.wait_for_timeout(1000)
+                self.logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
+                with open(f"{self.email_address}_code.txt","w") as code_file:
+                    code_file.write("")
+                with open(f"{self.email_address}_code.txt","r") as code_file:
+                    try:
+                        while 1:
+                            await asyncio.sleep(1)
+                            code = code_file.read()
+                            if code != "":
+                                self.logger.info(f"get {self.email_address} verify code {code}")
+                                verify_email_code_locator = self.login_page.locator("input[aria-label='Enter your security code']")
+                                if await verify_email_code_locator.count() > 0:
+                                    await verify_email_code_locator.fill(code)
+                                # await self.login_page.fill('//*[@id="idTxtBx_OTC_Password"]', code)
+                                await self.login_page.keyboard.press(EnterKey)
+                                await self.login_page.wait_for_load_state()
+                                await self.login_page.wait_for_timeout(2000)
+                                verify_new_password_locator = self.login_page.locator("input[aria-label='New password']")
+                                if await verify_new_password_locator.count() > 0:
+                                    self.logger.error(f"{self.email_address} Microsoft login requires you to change your password. Please change it manually and try again.")
+                                    raise Error(
+                                        "Microsoft login error",
+                                        1,
+                                        f"{self.email_address} Microsoft login requires you to change your password. Please change it manually and try again.")
+                                
+                                break
+                    finally:
+                        os.unlink(f"{self.email_address}_code.txt")
+            else:
+                self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
     
 
     async def normal_begin(self,logger,retry: int = 1):
@@ -260,6 +318,10 @@ class AsyncAuth0:
                     # enter email_address
                     await self.find_cf(self.login_page)
                     await asyncio.sleep(5)
+                    
+                    self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
+                    await self.mc_help_email_verify()
+                    
                     self.logger.debug(f"{self.email_address} microsoft new login,will set email")
                     mc_username = self.login_page.locator("input[type='email']")
                     if await mc_username.count() > 0:
@@ -288,31 +350,8 @@ class AsyncAuth0:
                     try:
                         await self.login_page.wait_for_url("https://login.live.com/**")
                         # await self.login_page.wait_for_url("https://account.live.com/identity/**")
-                        locator = self.login_page.locator('//*[@id="proofConfirmationText"]')
-                        if await locator.count() > 0:
-                            if self.help_email != "":
-                                await self.login_page.click('//*[@id="proofConfirmationText"]')
-                                await self.login_page.fill('//*[@id="proofConfirmationText"]', self.help_email)
-                                await self.login_page.keyboard.press(EnterKey)
-                                await self.login_page.wait_for_load_state()
-                                await self.login_page.wait_for_timeout(1000)
-                                logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
-                                with open(f"{self.email_address}_code.txt","w") as code_file:
-                                    code_file.write("")
-                                with open(f"{self.email_address}_code.txt","r") as code_file:
-                                    while 1:
-                                        await asyncio.sleep(1)
-                                        code = code_file.read()
-                                        if code != "":
-                                            logger.info(f"get {self.email_address} verify code {code}")
-                                            await self.login_page.fill('//*[@id="idTxtBx_OTC_Password"]', code)
-                                            await self.login_page.keyboard.press(EnterKey)
-                                            await self.login_page.wait_for_load_state()
-                                            await self.login_page.wait_for_timeout(1000)
-                                            break
-                                os.unlink(f"{self.email_address}_code.txt")
-                            else:
-                                self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
+                        self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
+                        await self.mc_help_email_verify()
                     except Exception as e:
                         if "Timeout" not in e.args[0]:
                             raise e
