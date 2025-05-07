@@ -197,13 +197,16 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
 
 async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData) -> MsgData:
     stream_text = await response.text()
+    # remove startswith("event: delta_encoding")
     text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
     text_tmp1 = text_tmp1[7:] if text_tmp1.startswith("\ndata: ") else text_tmp1
+    # remove endswith("\n\ndata: [DONE]\n\n")
     if text_tmp1.endswith("\n\ndata: [DONE]\n\n"):
         text_tmp2 = text_tmp1[:-16] 
     else:
         text_tmp2 = text_tmp1
     text_list = []
+    # remove "event: delta" and "data"
     for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
         if x != "":
             tmp1 = x.strip() # repr(x.strip())[1:-1]
@@ -213,15 +216,17 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
             if not tmp1.endswith("}"):
                 end_index = tmp1.rfind("}")
                 tmp1 = tmp1[:end_index + 1]
-                
+            # try json loads
             try:
                 tmp = json.loads(tmp1)
             except:
                 print(tmp1)
-                tmp2 = tmp1.replace(r"\\",r"\\").replace("\\\\","\\")
+                tmp2 = tmp1.replace("\\\\","\\")
                 tmp = json.loads(tmp2)
             text_list.append(tmp)
+    # index of : data: {"p": "/message/content/parts/0", "o": "append", "v": "\u662f\u4e00"}   
     first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
+    # index of : data: {"type": "title_generation"}
     first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
     msg_list = ""
     msg_id = ""
@@ -231,21 +236,28 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
         begin = first_msg_list_begin[0]
         end = first_msg_list_end[0]
         for index,msg in enumerate(text_list):
+            # word
             if index >= begin and index <= end:
-                if "v" in msg and isinstance(msg["v"],str):
+                if "v" in msg and isinstance(msg["v"], str):
                     msg_list += msg["v"]
-                elif "v" in msg and isinstance(msg["v"],list):
+                elif "v" in msg and isinstance(msg["v"], list):
                     for x in msg["v"]:
                         if "p" in x and x["p"] == "/message/content/parts/0":
                             msg_list += x["v"]
                         elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
                             break
-            elif "v" in msg and isinstance(msg["v"],dict):
+            # msg id..
+            elif "v" in msg and isinstance(msg["v"], dict):
                 if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
                     if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
                         if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
                             msg_id = msg["v"]["message"]["id"]
                             msg_data.conversation_id = msg["v"]['conversation_id']
+            # image url
+            elif "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
+                if "full_url" in msg["url_moderation_result"]:
+                    pic_url = msg["url_moderation_result"]["full_url"]
+
     if msg_list:
         msg_data.status = True
         msg_data.msg_type = "old_session"
