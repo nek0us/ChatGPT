@@ -47,7 +47,7 @@ async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,
     else:
         header['Referer'] = f"https://chat.openai.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chat.openai.com/"
         try:
-            async with AsyncClient(proxies=httpx_proxy) as client: 
+            async with AsyncClient(proxy=httpx_proxy) as client: 
                 header_copy = header.copy()
                 header_copy['Content-Length'] = '0'
                 header_copy['Content-Type'] = 'application/json'
@@ -80,7 +80,7 @@ async def async_send_msg(session: Session,msg_data: MsgData,url: str,logger,http
             except Exception as e:
                 logger.warning(f"open last wss error:{e}")
     if httpx_status:
-        async with AsyncClient(proxies=httpx_proxy) as client:
+        async with AsyncClient(proxy=httpx_proxy) as client:
             # header["Content-Length"] = str(len(str()))
             res = await client.post(url=url,json=json.loads(msg_data.post_data),headers=msg_data.header)
             wss = res.json()
