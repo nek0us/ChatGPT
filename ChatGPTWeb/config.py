@@ -220,9 +220,12 @@ class MsgData():
                  header: dict = {},
                  sentinel: str = "",
                  error_info: str = "",
-                 gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini",
+                 gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini",
                  upload_file: List[IOFile] = [],
                  download_file: List[IOFile] = [],
+                 img_list: List = [],
+                 web_search: bool = False,
+                 deep_research: bool = False,
                  ) -> None:
         '''
         status ： 操作执行状态
@@ -256,15 +259,17 @@ class MsgData():
         self.header = header
         self.sentinel = sentinel
         self.error_info = error_info
-        self.gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
+        self.gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
         self.upload_file = upload_file
         self.download_file = download_file
+        self.img_list = img_list
+        self.web_search = web_search
 
 
 class Payload():
         
     @staticmethod
-    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini", files: Optional[List[IOFile]] = None) -> str:
+    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini", files: Optional[List[IOFile]] = None, search: bool = False) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
@@ -274,48 +279,6 @@ class Payload():
         
         return json.dumps({
             "action": "next",
-            "messages": [{
-                "id": str(uuid.uuid4()),
-                "author": {
-                    "role": "user"
-                },
-                "content": {
-                    "content_type": content_type,
-                    "parts": parts + ([prompt] if is_image else [])
-                },
-                "create_time": create_time,
-                "metadata": {
-                    "attachments": attachments
-                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}},
-                "selected_github_repos": [],
-                "selected_all_github_repos": False,
-                "dictation": False,
-            }],
-            "parent_message_id": "client-created-root",# "aaa" + str(uuid.uuid4())[3:],
-            "model": gpt_model,
-            "timezone_offset_min": -480,
-            "timezone": "Asia/Shanghai",
-            # "suggestions": [],
-            # "history_and_training_disabled": False,
-            "conversation_mode": {
-                "kind": "primary_assistant"
-            },
-            "enable_message_followups": True,
-            "system_hints": [],
-            "supports_buffering": True,
-            "supported_encodings": [
-                "v1"
-            ],
-            "force_use_search": True,
-            "client_reported_search_source": "conversation_composer_web_icon",
-            # "conversation_origin": None,
-            # "force_paragen": False,
-            # "force_nulligen":False,
-            # "force_rate_limit": False,
-            # "force_paragen_model_slug": "",
-            # "force_use_sse": True,
-            # "reset_rate_limits": False,
-            # "websocket_request_id": str(uuid.uuid4()),
             "client_contextual_info": {
                 "is_dark_mode": False,
                 "time_since_loaded": 19,
@@ -325,13 +288,57 @@ class Payload():
                 "screen_height": 1152,
                 "screen_width": 2048
             },
-            # "paragen_stream_type_override": None,
+            "client_reported_search_source": "conversation_composer_web_icon",
+            "conversation_mode": {
+                "kind": "primary_assistant"
+            },
+            "enable_message_followups": True,
+            "force_use_search": search,
+            "infer_debug_info": {},
+            "messages": [{
+                "author": {
+                    "role": "user"
+                },
+                "content": {
+                    "content_type": content_type,
+                    "parts": parts + ([prompt] if is_image else [])
+                },
+                "create_time": create_time,
+                "id": str(uuid.uuid4()),
+                "metadata": {
+                    "selected_all_github_repos": False,
+                    "selected_github_repos": [],
+                    "attachments": attachments,
+                    "system_hints": ["search"] if search else [],
+                } if attachments else {"selected_all_github_repos": False,"selected_github_repos": [],"serialization_metadata": {"custom_symbol_offsets": []},"system_hints": ["search"] if search else [],},
+            }],
+            "model": gpt_model,
             "paragen_cot_summary_display_override": "allow",
+            "parent_message_id": "client-created-root",# "aaa" + str(uuid.uuid4())[3:],
+            
+            "supported_encodings": [
+                "v1"
+            ],
+            "supports_buffering": True,
+            "system_hints": [],
+            "timezone": "Asia/Shanghai",
+            "timezone_offset_min": -480,
+            # "suggestions": [],
+            # "history_and_training_disabled": False,
+            # "conversation_origin": None,
+            # "force_paragen": False,
+            # "force_nulligen":False,
+            # "force_rate_limit": False,
+            # "force_paragen_model_slug": "",
+            # "force_use_sse": True,
+            # "reset_rate_limits": False,
+            # "websocket_request_id": str(uuid.uuid4()),
+            # "paragen_stream_type_override": None,
             
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: typing.Literal["gpt-4o-mini", "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4o-mini",files: Optional[List[IOFile]] = None ) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini",files: Optional[List[IOFile]] = None, search: bool = False ) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
@@ -341,7 +348,22 @@ class Payload():
         return json.dumps({
             "action":
                 "next",
-            # "history_and_training_disabled": False,
+            "client_contextual_info": {
+                "is_dark_mode": False,
+                "time_since_loaded": 19,
+                "page_height": 992,
+                "page_width": 1100,
+                "pixel_ratio": 1.25,
+                "screen_height": 1152,
+                "screen_width": 2048
+            },
+            "client_reported_search_source": "conversation_composer_web_icon",
+            "conversation_mode": {
+                "kind": "primary_assistant",
+            },
+            "enable_message_followups": True,
+            "force_use_search": search,
+            "infer_debug_info": {},
             "messages": [{
                 "id": str(uuid.uuid4()),
                 "author": {
@@ -353,11 +375,11 @@ class Payload():
                 },
                 "create_time": create_time,
                 "metadata": {
-                    "attachments": attachments
-                } if attachments else {"serialization_metadata": {"custom_symbol_offsets": []}},
-                "selected_github_repos": [],
-                "selected_all_github_repos": False,
-                "dictation": False,
+                    "selected_all_github_repos": False,
+                    "selected_github_repos": [],
+                    "attachments": attachments,
+                    "system_hints": ["search"] if search else [],
+                } if attachments else {"selected_all_github_repos": False,"selected_github_repos": [],"serialization_metadata": {"custom_symbol_offsets": []},"system_hints": ["search"] if search else [],},
             }],
             "conversation_id":
                 conversation_id,
@@ -368,32 +390,17 @@ class Payload():
             "timezone_offset_min":
                 -480,
             "timezone": "Asia/Shanghai",
-            "suggestions": [],
-            "conversation_mode": {
-                "kind": "primary_assistant",
-            },
+            # "suggestions": [],
             # "force_paragen": False,
             # "force_paragen_model_slug": "",
             # "force_rate_limit": False,
             # "reset_rate_limits": False,
             # "websocket_request_id": str(uuid.uuid4()),
-            "enable_message_followups": True,
             "system_hints": [],
             "supported_encodings": [
                 "v1"
             ],
-            "force_use_search": True,
-            "client_reported_search_source": "conversation_composer_web_icon",
             # "conversation_origin": None,
-            "client_contextual_info": {
-                "is_dark_mode": False,
-                "time_since_loaded": 19,
-                "page_height": 992,
-                "page_width": 1100,
-                "pixel_ratio": 1.25,
-                "screen_height": 1152,
-                "screen_width": 2048
-            },
             # "paragen_stream_type_override": None,
             "paragen_cot_summary_display_override": "allow",
             "supports_buffering": True

@@ -1,3 +1,4 @@
+import re
 import sys
 import time
 import uuid
@@ -220,7 +221,7 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
             try:
                 tmp = json.loads(tmp1)
             except:
-                print(tmp1)
+                # print(tmp1)
                 tmp2 = tmp1.replace("\\\\","\\")
                 tmp = json.loads(tmp2)
             text_list.append(tmp)
@@ -230,39 +231,52 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
     first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
     msg_list = ""
     msg_id = ""
-    if first_msg_list_begin and not first_msg_list_end:
-        first_msg_list_end = [len(text_list)]
-    if first_msg_list_begin and first_msg_list_end:
-        begin = first_msg_list_begin[0]
-        end = first_msg_list_end[0]
-        for index,msg in enumerate(text_list):
-            # word
-            if index >= begin and index <= end:
-                if "v" in msg and isinstance(msg["v"], str):
-                    msg_list += msg["v"]
-                elif "v" in msg and isinstance(msg["v"], list):
-                    for x in msg["v"]:
-                        if "p" in x and x["p"] == "/message/content/parts/0":
-                            msg_list += x["v"]
-                        elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
-                            break
-            # msg id..
-            elif "v" in msg and isinstance(msg["v"], dict):
-                if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
-                    if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
-                        if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
-                            msg_id = msg["v"]["message"]["id"]
-                            msg_data.conversation_id = msg["v"]['conversation_id']
-            # image url
-            elif "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
-                if "full_url" in msg["url_moderation_result"]:
-                    pic_url = msg["url_moderation_result"]["full_url"]
+    url_list = []
+    begin = first_msg_list_begin[0] if first_msg_list_begin else 0
+    end = first_msg_list_end[0] if first_msg_list_end else len(text_list)
+    for index,msg in enumerate(text_list):
+        # word
+        if index >= begin and index <= end:
+            if "v" in msg and isinstance(msg["v"], str):
+                msg_list += msg["v"]
+            elif "v" in msg and isinstance(msg["v"], list):
+                for x in msg["v"]:
+                    if "p" in x and x["p"] == "/message/content/parts/0":
+                        msg_list += x["v"]
+                    elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
+                        break
+        # msg id..
+        elif "v" in msg and isinstance(msg["v"], dict):
+            if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
+                if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
+                    if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
+                        msg_id = msg["v"]["message"]["id"]
+                        msg_data.conversation_id = msg["v"]['conversation_id']
+            
+                # if "content" in msg["v"]["message"] and isinstance(msg["v"]["message"]["content"],dict):
+                    
+        # image url
+        if "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
+            if "full_url" in msg["url_moderation_result"]:
+                url_list.append(msg["url_moderation_result"]["full_url"])
+                    
+
 
     if msg_list:
+        if "turn0" in msg_list or "city" in msg_list: 
+            re_image = r"\\ue20[0-2]turn[0-9]image[0-9]"
+            re_search = r"\\ue20[0-2]turn[0-9]search[0-9]"
+            re_city = r"\\ue20[0-2]city"
+            pattern = f"(?:{re_image}|{re_search}|{re_city})"
+            msg_list_str_re = re.sub(pattern, '', msg_list)
+            print(f"进行了turn替换，\n{msg_list}\n\n{msg_list_str_re}")
+            msg_list = msg_list_str_re
+        
         msg_data.status = True
         msg_data.msg_type = "old_session"
         msg_data.next_msg_id = msg_id
         msg_data.msg_recv = msg_list
+        msg_data.img_list = url_list
         
     return msg_data
 
@@ -332,7 +346,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                             if cookie0:
                                 cookies.remove(cookie0)
                                 await session.page.context.clear_cookies()
-                                await session.page.context.add_cookies(cookies)
+                                await session.page.context.add_cookies(cookies) # type: ignore
                         else:
                             session.session_token = SetCookieParam(
                                 url="https://chatgpt.com",
@@ -342,7 +356,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                             if cookie:
                                 cookies.remove(cookie)
                                 await session.page.context.clear_cookies()
-                                await session.page.context.add_cookies(cookies)
+                                await session.page.context.add_cookies(cookies) # type: ignore
                         cookie_str = ''
                         for cookie in cookies:
                             if "chatgpt.com" in cookie["domain"]: # type: ignore
