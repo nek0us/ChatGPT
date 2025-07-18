@@ -1,9 +1,8 @@
-# Credits to github.com/rawandahmad698/PyChatGPT
 import json
 from logging import Logger
 from typing import Literal
-from playwright.async_api import Page
-from playwright.async_api import Response,BrowserContext
+from playwright_firefox.async_api import Page
+from playwright_firefox.async_api import Response,BrowserContext
 from datetime import datetime
 from .config import url_check
 from pathlib import Path

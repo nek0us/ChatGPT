@@ -9,7 +9,7 @@ import asyncio
 import threading
 from pathlib import Path
 from aiohttp import ClientSession
-from playwright.async_api import async_playwright, Route, Request, Page
+from playwright_firefox.async_api import async_playwright, Route, Request, Page
 from typing import Optional,Literal,List
 from urllib.parse import urlparse
 from .config import (
@@ -182,7 +182,7 @@ class chatgpt:
 
     # 安装Firefox
     def install_firefox(self):
-        os.system('playwright install firefox')
+        os.system('playwright_firefox install firefox')
     
     def set_chat_file(self):
         """
@@ -317,10 +317,10 @@ class chatgpt:
         load_tasks += [self.load_page(session) for session in self.Sessions] #  if session.status == Status.Login.value or session.status == Status.Update.value
         try:
             self.logger.debug(f"{session.email} will auth_task")
-            await asyncio.wait_for(asyncio.gather(*auth_tasks),timeout=150)
+            await asyncio.wait_for(asyncio.gather(*auth_tasks),timeout=200)
             # load page
             self.logger.debug(f"{session.email} will load_task")
-            await asyncio.wait_for(asyncio.gather(*load_tasks),timeout=150)
+            await asyncio.wait_for(asyncio.gather(*load_tasks),timeout=200)
         except TimeoutError:
             self.logger.warning(f"{session.email} auth and load_page timeout")
         except Exception as e:
@@ -342,7 +342,11 @@ class chatgpt:
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
             session = await retry_keep_alive(session,url_check,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
-            await page.goto("https://chatgpt.com/",timeout=30000,wait_until='networkidle')
+            try:
+                await page.goto("https://chatgpt.com/",timeout=20000,wait_until='load')
+            except Exception as e:
+                self.logger.warning(e)
+                await save_screen(save_screen_status=self.save_screen,path=f"context_{session.email}_goto_chatgpt.com_faild!",page=page)
             # await page.wait_for_load_state()
             # current_url = page.url
             # await page.wait_for_url(current_url)
@@ -696,11 +700,11 @@ class chatgpt:
             # new chat
             # gpt4 ready
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
-            if gpt4_list == [] and msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"]:
+            if gpt4_list == [] and msg_data.gpt_model not in ["gpt-4o-mini","gpt-4o", "gpt-4-1", "gpt-4-1-mini","text-davinci-002-render-sha"]:
                 msg_data.error_info = "you use gptplus,but gptplus account not found"
                 self.logger.error(msg_data.error_info)
                 return msg_data
-            session_list = gpt4_list if msg_data.gpt_model not in ["gpt-4o-mini", "text-davinci-002-render-sha"] else self.Sessions
+            session_list = gpt4_list if msg_data.gpt_model not in ["gpt-4o-mini","gpt-4o", "gpt-4-1", "gpt-4-1-mini", "text-davinci-002-render-sha"] else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [

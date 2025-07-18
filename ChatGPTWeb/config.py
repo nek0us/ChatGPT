@@ -16,8 +16,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from aiohttp import ClientSession,ClientWebSocketResponse
 from typing import TypedDict, Optional, Literal, List, Dict, Any
-from playwright._impl._api_structures import Cookie
-from playwright.async_api import Page, BrowserContext
+from playwright_firefox._impl._api_structures import Cookie
+from playwright_firefox.async_api import Page, BrowserContext
 
 url_session = "https://chatgpt.com/api/auth/session"
 url_chatgpt = "https://chatgpt.com/backend-api/conversation"

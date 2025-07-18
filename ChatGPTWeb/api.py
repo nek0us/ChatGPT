@@ -11,8 +11,8 @@ from typing import Optional
 from datetime import datetime
 from httpx import AsyncClient
 from aiohttp import ClientSession,ClientWebSocketResponse
-from playwright.async_api import Page
-from playwright.async_api import Response,Route, Request
+from playwright_firefox.async_api import Page
+from playwright_firefox.async_api import Response,Route, Request
 
 from .OpenAIAuth import AsyncAuth0
 from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload
@@ -316,7 +316,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                 session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
             elif (res.status == 200 or res.status == 307) and res.url == url:
                 if await res.json():
-                    await page.wait_for_timeout(1000)
+                    # await page.wait_for_timeout(1000)
                     cookies = await session.page.context.cookies()
                     # cookies = [cookie for cookie in cookies if (cookie["name"] != '__Secure-next-auth.session-token') or (cookie["name"] == '__Secure-next-auth.session-token' and cookie["domain"] == 'chatgpt.com')]
                     cookie = next(filter(lambda x: x.get("name") == "__Secure-next-auth.session-token", cookies), None)
@@ -537,16 +537,12 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
     except Exception as e:
         logger.error(f"get chat-requirements exception:{e}")
         raise e
-        
+
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
-    await page.goto("https://chatgpt.com/",timeout=30000,wait_until='networkidle')
-    # await asyncio.sleep(4)
-    # await page.wait_for_load_state()
-    # await asyncio.sleep(4)
+    await page.reload()
     res = await page.evaluate_handle(js[0])
     await res.json_value()
     await page.wait_for_load_state('networkidle')
-    # await asyncio.sleep(4)
     js_test = await page.evaluate("window._chatp")
     if not js_test:
         js_res = await page.evaluate_handle(js[1])
