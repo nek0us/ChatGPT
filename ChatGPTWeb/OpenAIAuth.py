@@ -115,7 +115,7 @@ class AsyncAuth0:
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} will point {self.mode} button")
         try:
-            button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != "microsoft" else 'Microsoft Account'}", exact=True)
+            button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}", exact=True)
             await button.wait_for(state="visible")
             await button.click()
         except Exception as e:
