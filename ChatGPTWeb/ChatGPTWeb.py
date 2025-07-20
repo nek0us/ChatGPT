@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from aiohttp import ClientSession
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
-from typing import Optional,Literal,List
+from typing import Dict, Optional,Literal,List
 from urllib.parse import urlparse
 from .config import (
     Payload,
@@ -24,6 +24,7 @@ from .config import (
     url_check,
     url_session,
     Status,
+    all_models_values
 )
 from .load import load_js
 from .api import (
@@ -37,6 +38,7 @@ from .api import (
     flush_page,
     upload_file,
     save_screen,
+    get_json_url
 )
 
 class chatgpt:
@@ -407,23 +409,31 @@ class chatgpt:
         page = session.page
         token = session.access_token
         context_num = session.email
+        self.logger.debug(f"{session.email} begin create send msg cookie and header")
+        header = {}
+        header['authorization'] = 'Bearer ' + token
+        header['Content-Type'] = 'application/json'
+        header["User-Agent"] = session.user_agent
+        header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
+        header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
+        header['Accept'] = 'text/event-stream'
+        header['Accept-Encoding'] = 'gzip, deflate, zstd'
+        header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
+        header['Host'] = 'chatgpt.com'
+        header['Sec-Fetch-Dest'] = 'empty'
+        header['Sec-Fetch-Mode'] = 'cors'
+        header['Sec-Fetch-Site'] = 'same-origin'
+        header['Sec-GPC'] = '1'
+        header['Connection'] = 'keep-alive'
+        header['DNT'] = '1'
+        # header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device()")
+        header['OAI-Language'] = 'en-US'
+        headers = header.copy()
         try:
             if page and not self.httpx_status:
                 send_page: Page = await session.browser_contexts.new_page() # type: ignore
                 self.logger.debug(f"{session.email} create new page to send msg")
                 async def route_handle(route: Route, request: Request):
-                    self.logger.debug(f"{session.email} begin create send msg cookie and header")
-                    header = {}
-                    header['authorization'] = 'Bearer ' + token
-                    header['Content-Type'] = 'application/json'
-                    header["User-Agent"] = request.headers["user-agent"]
-                    header['Origin'] = "https://chatgpt.com" if "chatgpt" in page.url else 'https://chat.openai.com' # page.url
-                    header['Referer'] = f"https://chatgpt.com/c/{msg_data.conversation_id}" if msg_data.conversation_id else "https://chatgpt.com"
-                    
-                    header['Accept'] = 'text/event-stream'
-                    header['Accept-Encoding'] = 'gzip, deflate, zstd'
-                    header['Accept-Language'] = 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
-                    header['Host'] = 'chatgpt.com'
                     self.logger.debug(f"{session.email} will use page's _chatp")
                     js_test = await page.evaluate("window._chatp")
                     if not js_test:
@@ -497,15 +507,9 @@ class chatgpt:
                             header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
                             self.logger.debug(f"{session.email} handle arkose success")
                         
-                    header['Sec-Fetch-Dest'] = 'empty'
-                    header['Sec-Fetch-Mode'] = 'cors'
-                    header['Sec-Fetch-Site'] = 'same-origin'
-                    header['Sec-GPC'] = '1'
-                    header['Connection'] = 'keep-alive'
-                    header['DNT'] = '1'
-                    self.logger.debug(f"{session.email} will run _device()")
-                    header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device()")
-                    header['OAI-Language'] = 'en-US'
+                    
+                    # self.logger.debug(f"{session.email} will run _device()")
+                    
                     msg_data.header = header
                     self.logger.debug(f"{session.email} will test wss alive")
                     # wss_test = await page.evaluate('() => window._wss.ut.activeSocketMap.entries().next().value')
@@ -543,6 +547,7 @@ class chatgpt:
                         self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
                     header['Content-Length'] = str(len(json.dumps(data).encode('utf-8')))
+                    self.logger.debug(f"{session.email} used model: {msg_data.gpt_model}")
                     self.logger.debug(f"{session.email} will continue_ send msg")
                     await route.continue_(method="POST", headers=header, post_data=data)
                 self.logger.debug(f"{session.email} will register conversation api route")
@@ -598,6 +603,60 @@ class chatgpt:
                             await session.wss_session.close()
                         session.wss = None
                         session.wss_session = None
+
+                # handle image_gen
+                if msg_data.image_gen:
+                    file_gpt_url = ""
+                    file_gpt_router = ""
+                    async def route_handle_image_gen(route: Route, request: Request):
+                        await route.continue_(headers=headers)
+                    await send_page.route("**/backend-api/images/bootstrap", route_handle_image_gen)  
+                    
+                    retry_get_img = 3
+                    while retry_get_img:
+                        res_json = await get_json_url(send_page,session,"https://chatgpt.com/backend-api/images/bootstrap",self.logger)
+                        if res_json and "thumbnail_url" in res_json:
+                            thumbnail_url: str = res_json["thumbnail_url"]
+                            if thumbnail_url == None:
+                                self.logger.debug(f"{session.email} get img thumbnail_url seems not ready,retry{retry_get_img}")
+                                await asyncio.sleep(5)
+                                retry_get_img -= 1
+                                continue
+                            else:
+                                file_id_tmp = thumbnail_url.split("_")[1] 
+                                file_id = file_id_tmp.split("/")[0]
+                                file_gpt_router = f"/backend-api/files/download/file_{file_id.replace("-","")}?conversation_id={msg_data.conversation_id}&inline=false"
+                                file_gpt_url = f"https://chatgpt.com{file_gpt_router}"
+                                self.logger.debug(f"{session.email} get img url seems not ready,retry{retry_get_img}")
+                                break
+                        else:
+                            self.logger.warning(f"{session.email} get gen thumbnail image:{res_json},retry{retry_get_img}")
+                            retry_get_img -= 1
+
+                    if file_gpt_url:
+                        async def route_handle_image_get(route: Route, request: Request):
+                            await route.continue_(headers=headers)
+                        await send_page.route(f"**{file_gpt_router}", route_handle_image_get)  
+                        res_json = await get_json_url(send_page,session,file_gpt_url,self.logger)
+                        if res_json and "status" in res_json and res_json["status"] == "success" and "download_url" in res_json:
+                            self.logger.debug(f"{session.email} get gen image url {file_gpt_url} :{res_json["download_url"]}")
+                            msg_data.img_list.append(res_json["download_url"])
+                        else:
+                            self.logger.warning(f"{session.email} get gen image url {file_gpt_url} :{res_json}")
+
+                if msg_data.title == "":
+                    # get title and email
+                    msg_data.from_email = session.email
+                    self.logger.info(f"{session.email} {msg_data.conversation_id} is new conversion,will get title")
+                    title_url_api = f"https://chatgpt.com/backend-api/conversation/{msg_data.conversation_id}"
+                    async def route_handle_title_url(route: Route, request: Request):
+                        await route.continue_(headers=headers)
+                    await send_page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_title_url)
+                    res_json = await get_json_url(page,session,title_url_api,self.logger)
+                    if "title" in res_json:
+                        msg_data.title = res_json["title"]
+                    
+
             
         except Exception as e:
             a, b, exc_traceback = sys.exc_info()
@@ -627,7 +686,7 @@ class chatgpt:
                     "input": msg_data.msg_send,
                     "output": msg_data.msg_recv,
                     "type": msg_data.msg_type,
-                    "next_msg_id": msg_data.next_msg_id
+                    "next_msg_id": msg_data.next_msg_id,
                 }]
             }
             path.write_text(json.dumps(tmp))
@@ -637,7 +696,8 @@ class chatgpt:
                 "input": msg_data.msg_send,
                 "output": msg_data.msg_recv,
                 "type": msg_data.msg_type,
-                "next_msg_id": msg_data.next_msg_id
+                "next_msg_id": msg_data.next_msg_id,
+                "p_msg_id": msg_data.p_msg_id,
             })
             path.write_text(json.dumps(tmp))
 
@@ -700,11 +760,22 @@ class chatgpt:
             # new chat
             # gpt4 ready
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
-            if gpt4_list == [] and msg_data.gpt_model not in ["gpt-4o-mini","gpt-4o", "gpt-4-1", "gpt-4-1-mini","text-davinci-002-render-sha"]:
-                msg_data.error_info = "you use gptplus,but gptplus account not found"
+            if gpt4_list == [] and msg_data.gpt_plus:
+                # no plus account
+                msg_data.error_info = "you use gptplus model,but gptplus account not found"
                 self.logger.error(msg_data.error_info)
                 return msg_data
-            session_list = gpt4_list if msg_data.gpt_model not in ["gpt-4o-mini","gpt-4o", "gpt-4-1", "gpt-4-1-mini", "text-davinci-002-render-sha"] else self.Sessions
+            elif msg_data.gpt_model in all_models_values():
+                # free model
+                pass
+            elif msg_data.gpt_plus:
+                # plus model 
+                pass
+            else:
+                # unknown model in this version, try it
+                self.logger.warning(f"unknown model: {msg_data.gpt_model} ,try to use it")
+                
+            session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
             
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
@@ -752,12 +823,16 @@ class chatgpt:
                 try:
                     msg_history = await self.load_chat(msg_data)
                     msg_data.p_msg_id = msg_history["message"][-1]["next_msg_id"]
+                    msg_data.msg_type = "old_session"
                 except Exception as e:
                     # Recovery failed | 恢复失败
                     a, b, exc_traceback = sys.exc_info()
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.") # type: ignore
                     msg_data.error_info += f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.\n" # type: ignore
                     return msg_data
+        if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
+            msg_data.msg_type = "old_session"
+
         if not session.email:
             msg_data.error_info += ("Not session found,please check your conversation_id input\n")
             self.logger.error(msg_data.error_info)
@@ -780,14 +855,165 @@ class chatgpt:
         self.logger.debug(f"session {session.email} finish work")
         return msg_data
 
-    async def show_chat_history(self, msg_data: MsgData) -> list:
+    async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, str]]:
         """show chat history
         展示聊天记录"""
         msg_history = await self.load_chat(msg_data)
         msg = []
         for i,x in enumerate(msg_history["message"]):
-            msg.append(f"Index:{i+1}\n\nQ:{x['input']}\n\nA:{x['output']}\n\np_msg_id:{x['next_msg_id']}")
+            msg.append({
+                "index": str(i+1),
+                "Q": x['input'],
+                "A": x['output'],
+                "next_msg_id": x['next_msg_id'],
+            })
         return msg
+    
+    async def show_history_tree_md(self, msg_data: MsgData, md: bool = True, end_num: int = 25) -> str:
+        """将聊天历史转换为树状Markdown格式，默认问答只显示25个字符"""
+        if end_num == 0:
+            end_num = None
+        msg_history = await self.load_chat(msg_data)
+        messages = msg_history["message"]
+        
+        # 1. 构建消息映射和索引映射
+        msg_map = {}
+        index_map = {}  # 存储消息ID到原始索引的映射
+        root_nodes = []
+        
+        # 创建ID到消息的映射，并识别根节点
+        for idx, msg in enumerate(messages):
+            msg_id = msg['next_msg_id']
+            msg_map[msg_id] = msg
+            index_map[msg_id] = idx  # 存储原始索引
+            
+            # 检查是否是根节点
+            if 'p_msg_id' not in msg or not msg['p_msg_id']:
+                root_nodes.append(msg_id)
+        
+        # 2. 构建树结构
+        tree = {}
+        for msg in messages:
+            msg_id = msg['next_msg_id']
+            
+            # 初始化当前节点的子树
+            if msg_id not in tree:
+                tree[msg_id] = []
+            
+            # 将当前节点添加到父节点的子树
+            parent_id = msg.get('p_msg_id', None)
+            if parent_id and parent_id in tree:
+                tree[parent_id].append(msg_id)
+        
+        # 3. 根据md参数选择输出格式
+        if md:
+            # Markdown列表格式（第一种方法）
+            def build_md_branch(node_id, level=0, parent_index=""):
+                """递归构建Markdown列表分支"""
+                msg = msg_map[node_id]
+                idx = index_map[node_id]
+                
+                # 当前节点的索引
+                if parent_index:
+                    current_index = f"{parent_index}.{level+1}"
+                else:
+                    current_index = f"{level+1}"
+                
+                # 构建问题行
+                indent = "    " * level
+                output = [f"{indent}- [{idx}] Q: {msg['input'][:end_num]}"]
+                
+                # 构建回答行
+                output.append(f"{indent}    A: {msg['output'][:end_num]}")
+                
+                # 处理子节点
+                children = tree.get(node_id, [])
+                for i, child_id in enumerate(children):
+                    output.extend(build_md_branch(child_id, level+1, current_index))
+                
+                return output
+            
+            # 构建完整Markdown树
+            lines = []
+            for i, root_id in enumerate(root_nodes):
+                root_msg = msg_map[root_id]
+                root_idx = index_map[root_id]
+                
+                # 根节点
+                lines.append(f"- [{root_idx}] Q: {root_msg['input'][:end_num]}")
+                lines.append(f"    A: {root_msg['output'][:end_num]}")
+                
+                # 添加根的子节点
+                children = tree.get(root_id, [])
+                for child_id in children:
+                    lines.extend(build_md_branch(child_id, 1, "1"))
+            
+            # 添加标题
+            header = "### 聊天历史树状图\n"
+            return header + "\n".join(lines)
+        
+        else:
+            # 原始树状ASCII格式
+            def build_branch(node_id, prefix="", is_last=False):
+                """递归构建分支"""
+                msg = msg_map[node_id]
+                idx = index_map[node_id]  # 获取原始索引
+                output = []
+                
+                # 当前节点前缀符号
+                connector = "└── " if is_last else "├── "
+                
+                # 添加问题行（带索引）
+                output.append(f"{prefix}{connector}[{idx}] Q: {msg['input'][:end_num]}")
+                
+                # 添加回答行（与问题行对齐）
+                answer_prefix = prefix + ("    " if is_last else "│   ")
+                output.append(f"{answer_prefix}    A: {msg['output'][:end_num]}")
+                
+                # 处理子节点
+                children = tree.get(node_id, [])
+                for i, child_id in enumerate(children):
+                    # 确定子节点前缀
+                    child_prefix = prefix + ("    " if is_last else "│   ")
+                    is_child_last = (i == len(children) - 1)
+                    
+                    # 递归添加子节点
+                    output.extend(build_branch(
+                        child_id, 
+                        child_prefix, 
+                        is_child_last
+                    ))
+                
+                return output
+            
+            # 构建完整树
+            lines = []
+            for i, root_id in enumerate(root_nodes):
+                root_msg = msg_map[root_id]
+                root_idx = index_map[root_id]  # 根节点索引
+                
+                is_last_root = (i == len(root_nodes) - 1)
+                
+                # 根节点特殊格式
+                root_connector = "└── " if is_last_root else "├── "
+                lines.append(f"{root_connector}[{root_idx}] Q: {root_msg['input'][:end_num]}")
+                lines.append(f"    A: {root_msg['output'][:end_num]}")
+                
+                # 添加根的子节点
+                children = tree.get(root_id, [])
+                for j, child_id in enumerate(children):
+                    is_last_child = (j == len(children) - 1)
+                    lines.extend(build_branch(
+                        child_id, 
+                        "    " if is_last_root else "│   ",
+                        is_last_child
+                    ))
+            
+            # 添加标题并返回
+            header = "### 聊天历史树状图\n```"
+            footer = "```"
+            return header + "\n" + "\n".join(lines) + "\n" + footer
+
 
     async def back_chat_from_input(self, msg_data: MsgData):
         """back chat from input

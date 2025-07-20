@@ -228,55 +228,75 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
     # index of : data: {"p": "/message/content/parts/0", "o": "append", "v": "\u662f\u4e00"}   
     first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
     # index of : data: {"type": "title_generation"}
-    first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
+    # first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
     msg_list = ""
     msg_id = ""
     url_list = []
     begin = first_msg_list_begin[0] if first_msg_list_begin else 0
-    end = first_msg_list_end[0] if first_msg_list_end else len(text_list)
+    # end = first_msg_list_end[0] if first_msg_list_end else len(text_list)
     for index,msg in enumerate(text_list):
+        # if "type" in msg and msg["type"] == "title_generation":
+        #     title = msg["title"]
+
         # word
-        if index >= begin and index <= end:
+        if index >= begin: # and index <= end:
             if "v" in msg and isinstance(msg["v"], str):
                 msg_list += msg["v"]
-            elif "v" in msg and isinstance(msg["v"], list):
+            if "v" in msg and isinstance(msg["v"], list):
                 for x in msg["v"]:
                     if "p" in x and x["p"] == "/message/content/parts/0":
                         msg_list += x["v"]
+                    elif "p" in x and x["p"] == "" and "o" in x and x["o"] == "patch" and "v" in x and isinstance(x["v"], list):
+                        for sub in x["v"]:
+                            if "p" in sub  and sub ["p"] == "/message/content/parts/0":
+                                msg_list += sub["v"]
+                            elif "p" in sub and sub["p"] == "/message/status" and sub["v"] == "finished_successfully":
+                                break
                     elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
-                        break
+                        # break
+                        pass
         # msg id..
-        elif "v" in msg and isinstance(msg["v"], dict):
+        if "v" in msg and isinstance(msg["v"], dict):
             if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
                 if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
                     if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
                         msg_id = msg["v"]["message"]["id"]
                         msg_data.conversation_id = msg["v"]['conversation_id']
+                    elif "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'tool':
+                        # image generation
+                        if "metadata" in msg["v"]["message"] and "ui_card_title" in msg["v"]["message"]["metadata"] and msg["v"]["message"]["metadata"]["ui_card_title"] == "Processing image":
+                            msg_data.image_gen = True
+                        elif "metadata" in msg["v"]["message"] and "command" in msg["v"]["message"]["metadata"] and msg["v"]["message"]["metadata"]["command"] == "search":
+                            # search img
+                            pass
             
                 # if "content" in msg["v"]["message"] and isinstance(msg["v"]["message"]["content"],dict):
                     
         # image url
-        if "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
-            if "full_url" in msg["url_moderation_result"]:
-                url_list.append(msg["url_moderation_result"]["full_url"])
+        # if "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
+        #     if "full_url" in msg["url_moderation_result"]:
+        if 'v' in msg and isinstance(msg['v'], list):
+            if 'p' in msg['v'] and msg['v']['p'] == "/message/metadata/image_results":
+                if 'v' in msg['v'] and isinstance(msg['v']['v'], list):
+                    for d in msg['v']['v']:
+                        if "content_url" in msg['v']['v']:
+                            url_list.append(msg['v']['v']["content_url"])
                     
 
 
-    if msg_list:
+    if msg_list or msg_data.image_gen:
         if "turn0" in msg_list or "city" in msg_list: 
-            re_image = r"\\ue20[0-2]turn[0-9]image[0-9]"
-            re_search = r"\\ue20[0-2]turn[0-9]search[0-9]"
-            re_city = r"\\ue20[0-2]city"
-            pattern = f"(?:{re_image}|{re_search}|{re_city})"
+            pattern = r'[\ue200-\ue202](?:turn\d+(?:image|search)\d+|city)'
             msg_list_str_re = re.sub(pattern, '', msg_list)
             print(f"进行了turn替换，\n{msg_list}\n\n{msg_list_str_re}")
             msg_list = msg_list_str_re
         
         msg_data.status = True
-        msg_data.msg_type = "old_session"
+        # msg_data.msg_type = "old_session"
         msg_data.next_msg_id = msg_id
         msg_data.msg_recv = msg_list
         msg_data.img_list = url_list
+        # msg_data.title = title
         
     return msg_data
 
@@ -287,13 +307,16 @@ async def recive_handle(session: Session,resp: Response|MockResponse,msg_data: M
     # stream_lines = stream_text.splitlines()
     # logger.debug(f"{session.email} get stream_lines ok")
     # msg_data = stream2msgdata(stream_lines,msg_data)
+    # logger.debug(f"{session.email} original msg:\n{await resp.text()}")
     msg_data = await handle_event_stream(resp,msg_data)
-    if msg_data.msg_recv == "":
+    if msg_data.msg_recv == "" and msg_data.image_gen:
         logger.warning(f"recive_handle error:msg_data.recv == None,This content may violate openai's content policy,error:{msg_data.error_info}")
         msg_data.error_info += f"recive_handle error:msg_data.recv == None, This content may violate openai's content policy,error:{msg_data.error_info}\n"
         raise Exception("recive_handle error:msg_data.recv == None")
     elif msg_data.msg_recv == msg_data.msg_send:
         pass
+    elif msg_data.msg_recv == "" and not msg_data.image_gen:
+        logger.info(f"{session.email} generation image,over recive_handle")
         
     if not msg_data.status:
         logger.warning(f"recive_handle error:,msg_data.status==false{msg_data.error_info}")
@@ -707,3 +730,16 @@ async def save_screen(save_screen_status: bool, path: str,page: Page):
             for file in files_to_delete:
                 print(f"Deleting old screenshot: {file}")
                 file.unlink()
+
+async def get_json_url(send_page: Page,session: Session,url: str,logger) -> dict:
+    async with send_page.expect_response(url,timeout=70000) as response_info: 
+        try:
+            logger.debug(f"{session.email} will get gen thumbnail image url:{url}")
+            await send_page.goto(url, timeout=60000,wait_until='networkidle') 
+            res_value = await response_info.value
+            res_json = await res_value.json()
+            return res_json
+        except Exception as e:
+            a, b, exc_traceback = sys.exc_info()
+            logger.warning(f"{session.email} get gen image error:{e},url:{url},line number {exc_traceback.tb_lineno}") # type: ignore
+    return {}

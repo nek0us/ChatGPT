@@ -10,14 +10,17 @@ import datetime
 import filetype
 import urllib.parse
 
+
 from enum import Enum
 from PIL import Image
 from pathlib import Path
 from dataclasses import dataclass
 from aiohttp import ClientSession,ClientWebSocketResponse
-from typing import TypedDict, Optional, Literal, List, Dict, Any
+from typing import TypedDict, Optional, Literal, List, Dict, Any, Tuple
 from playwright_firefox._impl._api_structures import Cookie
 from playwright_firefox.async_api import Page, BrowserContext
+
+from pydantic import BaseModel,Field,model_validator,validator,computed_field
 
 url_session = "https://chatgpt.com/api/auth/session"
 url_chatgpt = "https://chatgpt.com/backend-api/conversation"
@@ -28,6 +31,50 @@ url_requirements = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
 
 formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(message)s", datefmt="%Y/%m/%d %X")
 
+
+MODEL_DICT = {
+        "free":{
+            "41m":"gpt-4-1-mini",
+            "4om":"gpt-4o-mini",
+            "3.5":"text-davinci-002-render-sha",
+        },
+        "plus":{
+            "41m":"gpt-4-1-mini",
+
+            "4om":"gpt-4o-mini",
+            "4":"gpt-4",
+            "3.5":"text-davinci-002-render-sha",
+
+            "4o":"gpt-4o",
+            "o3":"o3",
+            "o4m":"o4-mini",
+            "o4mh":"o4-mini-high",
+            "45":"gpt-4-5",
+            "41":"gpt-4-1",
+
+        }
+    }
+
+def model_list(plus: bool = False) -> Dict[str, str]:
+    '''get model dict'''
+    return MODEL_DICT['plus'] if plus else MODEL_DICT["free"]
+
+def all_models_keys():
+    '''get all model keys'''
+    return list(MODEL_DICT['plus'].keys())
+
+def all_models_values():
+    '''get all model names(values)'''
+    return list(MODEL_DICT['plus'].values())
+
+def all_free_models_values():
+    '''get all model names(values)'''
+    return list(MODEL_DICT['free'].values())
+
+def get_model_by_key(key: str, plus: bool = False) -> Optional[str]:
+    """get model name by key"""
+    models = model_list(plus)
+    return models.get(key)
 
 class Status(Enum):
     Login = "Login"
@@ -139,40 +186,53 @@ class ProxySettings(TypedDict, total=False):
     username: Optional[str]
     password: Optional[str]
 
-class IOFile():
+class IOFile(BaseModel):
     '''### content: bytes
     ### name: str'''
     content: bytes
     name: str
-    file_id: Optional[str]
-    upload_url: Optional[str]
-    size = Optional[int]
-    mime_type = Optional[str]
-    content_type = Optional[str]
-    
-    def __init__(self, content: bytes, name: str, file_id: Optional[str] = None, upload_url: Optional[str] = None):
-        self.content = content
-        self.name = name
-        self.file_id = file_id
-        self.upload_url = upload_url
-        self.size = self.get_size()
-        self.mime_type = self.get_mime_type()
+    file_id: Optional[str] = Field(None, description="File identifier")
+    upload_url: Optional[str] = Field(None, description="Upload URL")
+    size: Optional[int] = Field(None, description="File size in bytes")
+    mime_type: Optional[str] = Field(None, description="Detected MIME type")
+    content_type: Optional[str] = Field(None, description="Content type")
+    width: Optional[int] = Field(None, description="Image width (if application)")
+    height: Optional[int] = Field(None, description="Image height (if application)")
+
+    @model_validator(mode="after")
+    def calculate_properties(self) -> "IOFile":
+        self.size = len(self.content)
+
+        kind = filetype.guess(self.content)
+        self.mime_type = kind.mime if kind else 'application/octet-stream'
+
         if self.mime_type and "image" in self.mime_type:
-            self.width, self.height = self.get_hw()
             self.content_type = "image_asset_pointer"
+
+            self.width, self.height = self._get_image_dimensions()
         else:
             self.content_type = None
+
+        return self
     
-    def get_size(self):
-        return len(self.content)
+    def _get_image_dimensions(self) -> Tuple[int, int]:
+        try:
+            image = Image.open(io.BytesIO(self.content))
+            return image.size
+        except Exception:
+            return (0, 0)
         
-    def get_mime_type(self):
-        kind = filetype.guess(self.content)
-        return kind.mime if kind else 'application/octet-stream'
+    
+    # def get_size(self):
+    #     return len(self.content)
         
-    def get_hw(self) -> tuple:
-        image = Image.open(io.BytesIO(self.content))
-        return image.size
+    # def get_mime_type(self):
+    #     kind = filetype.guess(self.content)
+    #     return kind.mime if kind else 'application/octet-stream'
+        
+    # def get_hw(self) -> tuple:
+    #     image = Image.open(io.BytesIO(self.content))
+    #     return image.size
     
     @property
     def to_dict(self) -> Dict[str, Any]:
@@ -202,74 +262,122 @@ class IOFile():
         return attachment
     
 
-class MsgData():
-    def __init__(self,
-                 status: bool = False,
-                 msg_type: typing.Optional[typing.Literal["old_session", "back_loop", "new_session"]] = "new_session",
-                 msg_send: str = "hi",
-                 msg_recv: str = "",
-                 conversation_id: str = "",
-                 p_msg_id: str = "",
-                 next_msg_id: str = "",
-                 last_id: str = "",
-                 last_wss: str = "",
-                 post_data: str = "",
-                 arkose_data: str = "",
-                 arkose_header: dict[str, str] = {},
-                 arkose: Optional[str] = "",
-                 header: dict = {},
-                 sentinel: str = "",
-                 error_info: str = "",
-                 gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini",
-                 upload_file: List[IOFile] = [],
-                 download_file: List[IOFile] = [],
-                 img_list: List = [],
-                 web_search: bool = False,
-                 deep_research: bool = False,
-                 ) -> None:
-        '''
-        status ： 操作执行状态
-        msg_type ：操作类型
-        msg_send ：待发送消息
-        msg_recv ：待接收消息
-        conversation_id ：会话id
-        p_msg_id ：待发送上下文id
-        next_msg_id ：待接收上下文id
-        arkose_data : arkose http data
-        arkose_header : arkose http header
-        arkose : arkose
-        error_info : error info
-        gpt4o: this msg used gpt40
-        upload_file: upload file in this msg
-        upload_file_name: the name of upload file in this msg
-        '''
-        self.status = status
-        self.msg_type = msg_type
-        self.msg_send = msg_send
-        self.msg_recv = msg_recv
-        self.conversation_id = conversation_id
-        self.p_msg_id = p_msg_id
-        self.next_msg_id = next_msg_id
-        self.last_id = last_id
-        self.last_wss = last_wss
-        self.post_data = post_data
-        self.arkose_data = arkose_data,
-        self.arkose_header = arkose_header,
-        self.arkose = arkose
-        self.header = header
-        self.sentinel = sentinel
-        self.error_info = error_info
-        self.gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = gpt_model
-        self.upload_file = upload_file
-        self.download_file = download_file
-        self.img_list = img_list
-        self.web_search = web_search
+class MsgData(BaseModel):
+    '''
+    status ： 操作执行状态
+    msg_type ：操作类型
+    msg_send ：待发送消息
+    msg_recv ：待接收消息
+    conversation_id ：会话id
+    p_msg_id ：待发送上下文id
+    next_msg_id ：待接收上下文id
+    arkose_data : arkose http data
+    arkose_header : arkose http header
+    arkose : arkose
+    error_info : error info
+    gpt4o: this msg used gpt40
+    upload_file: upload file in this msg
+    upload_file_name: the name of upload file in this msg
+    '''
+    # 状态字段
+    status: bool = Field(False, description="操作执行状态")
+    
+    # 消息类型
+    msg_type: Optional[Literal["old_session", "back_loop", "new_session"]] = Field(
+        "new_session", description="操作类型: old_session, back_loop, new_session"
+    )
+    
+    # 消息内容
+    msg_send: str = Field("hi", description="待发送消息")
+    msg_recv: str = Field("", description="待接收消息")
+    error_info: str = Field("", description="错误信息")
+    
+    # 会话标识
+    conversation_id: str = Field("", description="会话id")
+    p_msg_id: str = Field("", description="待发送上下文id")
+    next_msg_id: str = Field("", description="待接收上下文id")
+    last_id: str = Field("", description="最后消息ID")
+    last_wss: str = Field("", description="最后WebSocket地址")
+    title: str = Field("", description="conversation title")
+    image_gen: bool = Field(False, description="image generation")
+    from_email: str = Field("", description="from email")
+    # 请求数据
+    post_data: str = Field("", description="POST请求数据")
+    # Arkose 验证相关
+    arkose_data: str = Field("", description="Arkose验证数据")
+    arkose_header: Dict[str, str] = Field({}, description="Arkose验证头")
+    arkose: Optional[str] = Field(None, description="Arkose令牌")
+    sentinel: str = Field("", description="sentinel")
+    # 请求头
+    header: Dict[str, str] = Field({}, description="HTTP请求头")
+    # 模型选择
+    gpt_model: str = Field(
+        MODEL_DICT['free']['41m'], 
+        description="使用的GPT模型"
+    )
+    gpt_plus: bool = Field(False, description="use plus account")
+    # 文件处理
+    upload_file: List[IOFile] = Field(
+        [], 
+        description="上传文件列表"
+    )
+    
+    download_file: List[IOFile] = Field(
+        [], 
+        description="下载文件列表"
+    )
+    
+    # 图像处理
+    img_list: List[Dict] = Field(
+        [], 
+        description="图像列表"
+    )
+    
+    # 功能开关
+    web_search: bool = Field(
+        False, 
+        description="是否启用网页搜索"
+    )
+    
+    deep_research: bool = Field(
+        False, 
+        description="是否启用深度研究"
+    )
 
+    def is_plus_model(self) -> bool:
+        """检查当前模型是否属于Plus模型"""
+        return self.gpt_model in all_models_values() and self.gpt_model not in all_free_models_values()
+
+    @model_validator(mode="after")
+    def validate_plus(self) -> 'MsgData':
+        if self.is_plus_model():
+            self.gpt_plus = True
+        return self
+    
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name == "gpt_model":
+            self.gpt_plus = self.is_plus_model()
+
+    # @model_validator(mode="after")
+    # def validate_model(self):
+    #     """验证模型名称是否有效"""
+    #     # 获取所有可能的模型值
+    #     all_models = set()
+    #     for models in MODEL_DICT.values():
+    #         all_models.update(models.values())
+        
+    #     if value not in all_models:
+    #         raise ValueError(
+    #             f"无效的模型名称: '{value}'. "
+    #             f"有效模型包括: {', '.join(all_models)}"
+    #         )
+    #     return value
 
 class Payload():
         
     @staticmethod
-    def new_payload(prompt: str, gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini", files: Optional[List[IOFile]] = None, search: bool = False) -> str:
+    def new_payload(prompt: str, gpt_model: str = Field(MODEL_DICT['free']['41m'],description="used gpt model"), files: Optional[List[IOFile]] = None, search: bool = False) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
@@ -338,7 +446,7 @@ class Payload():
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: typing.Literal["gpt-4o-mini", "gpt-4-1-mini","gpt-4-1",  "text-davinci-002-render-sha", "gpt-4", "gpt-4o"] = "gpt-4-1-mini",files: Optional[List[IOFile]] = None, search: bool = False ) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: str = Field(MODEL_DICT['free']['41m'],description="used gpt model"),files: Optional[List[IOFile]] = None, search: bool = False ) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
