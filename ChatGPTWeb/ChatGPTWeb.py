@@ -652,7 +652,7 @@ class chatgpt:
                     async def route_handle_title_url(route: Route, request: Request):
                         await route.continue_(headers=headers)
                     await send_page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_title_url)
-                    res_json = await get_json_url(page,session,title_url_api,self.logger)
+                    res_json = await get_json_url(send_page,session,title_url_api,self.logger)
                     if "title" in res_json:
                         msg_data.title = res_json["title"]
                     
