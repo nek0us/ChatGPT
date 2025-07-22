@@ -24,7 +24,7 @@ linux & Windows
 
 ```bash
 pip install ChatGPTWeb
-playwright install firefox
+playwright_firefox install firefox
 ```
 
 

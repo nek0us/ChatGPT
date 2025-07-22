@@ -606,6 +606,7 @@ class chatgpt:
 
                 # handle image_gen
                 if msg_data.image_gen:
+                    await asyncio.sleep(10)
                     file_gpt_url = ""
                     file_gpt_router = ""
                     async def route_handle_image_gen(route: Route, request: Request):
@@ -625,7 +626,7 @@ class chatgpt:
                             else:
                                 file_id_tmp = thumbnail_url.split("_")[1] 
                                 file_id = file_id_tmp.split("/")[0]
-                                file_gpt_router = f"/backend-api/files/download/file_{file_id.replace("-","")}?conversation_id={msg_data.conversation_id}&inline=false"
+                                file_gpt_router = f"/backend-api/files/download/file_{file_id.replace('-','')}?conversation_id={msg_data.conversation_id}&inline=false"
                                 file_gpt_url = f"https://chatgpt.com{file_gpt_router}"
                                 self.logger.debug(f"{session.email} get img url seems not ready,retry{retry_get_img}")
                                 break
@@ -639,7 +640,7 @@ class chatgpt:
                         await send_page.route(f"**{file_gpt_router}", route_handle_image_get)  
                         res_json = await get_json_url(send_page,session,file_gpt_url,self.logger)
                         if res_json and "status" in res_json and res_json["status"] == "success" and "download_url" in res_json:
-                            self.logger.debug(f"{session.email} get gen image url {file_gpt_url} :{res_json["download_url"]}")
+                            self.logger.debug(f"{session.email} get gen image url {file_gpt_url} :{res_json['download_url']}")
                             msg_data.img_list.append(res_json["download_url"])
                         else:
                             self.logger.warning(f"{session.email} get gen image url {file_gpt_url} :{res_json}")

@@ -246,13 +246,13 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
                 for x in msg["v"]:
                     if "p" in x and x["p"] == "/message/content/parts/0":
                         msg_list += x["v"]
-                    elif "p" in x and x["p"] == "" and "o" in x and x["o"] == "patch" and "v" in x and isinstance(x["v"], list):
+                    if "p" in x and x["p"] == "" and "o" in x and x["o"] == "patch" and "v" in x and isinstance(x["v"], list):
                         for sub in x["v"]:
-                            if "p" in sub  and sub ["p"] == "/message/content/parts/0":
+                            if "p" in sub  and sub ["p"] == "/message/content/parts/0" and "v" in sub:
                                 msg_list += sub["v"]
-                            elif "p" in sub and sub["p"] == "/message/status" and sub["v"] == "finished_successfully":
-                                break
-                    elif "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
+                            # elif "p" in sub and sub["p"] == "/message/status" and sub["v"] == "finished_successfully":
+                            #     break
+                    if "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
                         # break
                         pass
         # msg id..
@@ -286,9 +286,9 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
 
     if msg_list or msg_data.image_gen:
         if "turn0" in msg_list or "city" in msg_list: 
-            pattern = r'[\ue200-\ue202](?:turn\d+(?:image|search)\d+|city)'
+            pattern = r'[\ue200-\ue203]?([a-z]+)?[\ue200-\ue203](?:turn\d+(?:image|search|fetch|forecast)\d+|city)'
             msg_list_str_re = re.sub(pattern, '', msg_list)
-            print(f"进行了turn替换，\n{msg_list}\n\n{msg_list_str_re}")
+            # print(f"进行了turn替换，\n{msg_list}\n\n{msg_list_str_re}")
             msg_list = msg_list_str_re
         
         msg_data.status = True
