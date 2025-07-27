@@ -38,7 +38,9 @@ from .api import (
     flush_page,
     upload_file,
     save_screen,
-    get_json_url
+    get_json_url,
+    get_all_msg,
+    markdown2image
 )
 
 class chatgpt:
@@ -626,7 +628,7 @@ class chatgpt:
                             else:
                                 file_id_tmp = thumbnail_url.split("_")[1] 
                                 file_id = file_id_tmp.split("/")[0]
-                                file_gpt_router = f"/backend-api/files/download/file_{file_id.replace('-','')}?conversation_id={msg_data.conversation_id}&inline=false"
+                                file_gpt_router = f"/backend-api/files/download/file_{file_id.replace("-","")}?conversation_id={msg_data.conversation_id}&inline=false"
                                 file_gpt_url = f"https://chatgpt.com{file_gpt_router}"
                                 self.logger.debug(f"{session.email} get img url seems not ready,retry{retry_get_img}")
                                 break
@@ -640,22 +642,33 @@ class chatgpt:
                         await send_page.route(f"**{file_gpt_router}", route_handle_image_get)  
                         res_json = await get_json_url(send_page,session,file_gpt_url,self.logger)
                         if res_json and "status" in res_json and res_json["status"] == "success" and "download_url" in res_json:
-                            self.logger.debug(f"{session.email} get gen image url {file_gpt_url} :{res_json['download_url']}")
+                            self.logger.debug(f"{session.email} get gen image url {file_gpt_url} :{res_json["download_url"]}")
                             msg_data.img_list.append(res_json["download_url"])
                         else:
                             self.logger.warning(f"{session.email} get gen image url {file_gpt_url} :{res_json}")
 
-                if msg_data.title == "":
-                    # get title and email
-                    msg_data.from_email = session.email
-                    self.logger.info(f"{session.email} {msg_data.conversation_id} is new conversion,will get title")
-                    title_url_api = f"https://chatgpt.com/backend-api/conversation/{msg_data.conversation_id}"
-                    async def route_handle_title_url(route: Route, request: Request):
-                        await route.continue_(headers=headers)
-                    await send_page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_title_url)
-                    res_json = await get_json_url(send_page,session,title_url_api,self.logger)
-                    if "title" in res_json:
-                        msg_data.title = res_json["title"]
+                # if msg_data.title == "":
+                    # get title and email and all_msg
+                msg_data.from_email = session.email
+                self.logger.info(f"{session.email} {msg_data.conversation_id} will get title")
+                title_url_api = f"https://chatgpt.com/backend-api/conversation/{msg_data.conversation_id}"
+                async def route_handle_title_url(route: Route, request: Request):
+                    await route.continue_(headers=headers)
+                await send_page.route(f"**/backend-api/conversation/{msg_data.conversation_id}", route_handle_title_url)
+                res_json = await get_json_url(send_page,session,title_url_api,self.logger)
+                if "title" in res_json:
+                    msg_data.title = res_json["title"]
+                self.logger.info(f"{session.email} {msg_data.conversation_id} will get end_msg")
+                end_msg: dict = res_json["mapping"][msg_data.next_msg_id]["message"]
+                msg = get_all_msg(end_msg)
+                msg_data.msg_raw = msg
+                if msg_data.msg_md2img:
+                    if len(msg_data.msg_raw) > 1:
+                        msg_data.msg_md_img = await markdown2image(''.join(msg_data.msg_raw),session)
+                    else:
+                        msg_data.msg_md_img = await markdown2image(msg_data.msg_raw[0],session)
+
+
                     
 
             
@@ -850,7 +863,10 @@ class chatgpt:
             self.logger.error(msg_data.error_info)
         else:
             if not msg_data.error_info or msg_data.status:
-                self.logger.info(f"receive message: {msg_data.msg_recv}")
+                if msg_data.msg_raw:
+                    self.logger.info(f"receive message: {msg_data.msg_raw}")
+                else:
+                    self.logger.info(f"receive message: {msg_data.msg_recv}")
         finally:
             session.status = Status.Ready.value
         self.logger.debug(f"session {session.email} finish work")
@@ -1108,3 +1124,6 @@ class chatgpt:
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
         }
 
+
+    async def md2img(self,md: str):
+        return await markdown2image(md,self.Sessions[0])

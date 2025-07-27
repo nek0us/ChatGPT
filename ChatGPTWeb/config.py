@@ -281,6 +281,7 @@ class MsgData(BaseModel):
     '''
     # 状态字段
     status: bool = Field(False, description="操作执行状态")
+    msg_md2img: bool = Field(False,description="markdown to image status")
     
     # 消息类型
     msg_type: Optional[Literal["old_session", "back_loop", "new_session"]] = Field(
@@ -290,6 +291,8 @@ class MsgData(BaseModel):
     # 消息内容
     msg_send: str = Field("hi", description="待发送消息")
     msg_recv: str = Field("", description="待接收消息")
+    msg_raw: List[str] = Field([],description="原始消息")
+    msg_md_img: bytes = Field(b"",description="markdown to image")
     error_info: str = Field("", description="错误信息")
     
     # 会话标识

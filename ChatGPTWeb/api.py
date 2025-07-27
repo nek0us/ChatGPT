@@ -8,9 +8,11 @@ import base64
 import asyncio
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional,List
 from datetime import datetime
 from httpx import AsyncClient
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from aiohttp import ClientSession,ClientWebSocketResponse
 from playwright_firefox.async_api import Page
 from playwright_firefox.async_api import Response,Route, Request
@@ -25,7 +27,67 @@ class MockResponse:
     
     async def text(self):
         return self.data
+
+@asynccontextmanager
+async def new_script_page(session: Session) -> AsyncIterator[Page]:
+    context = session.browser_contexts
+    md_page = await context.new_page()
+    await md_page.set_viewport_size({"width": 980, "height": 720})
+    async with md_page:
+        yield md_page
     
+async def markdown2image(md: str,session: Session) -> bytes:
+
+    async with new_script_page(session) as page:
+        await page.goto("https://markdown.lovejade.cn/", wait_until="networkidle")
+        # editor = page.locator("pre[class='vditor-sv vditor-reset']")
+        await asyncio.sleep(1)
+
+        # await page.screenshot(path="1.png")
+        # if await editor.count() > 0:
+        # await editor.fill(md)
+        await page.evaluate(f"""localStorage.setItem('vditorvditor', {repr(md)});""")
+        await page.goto("https://markdown.lovejade.cn/export/png",wait_until="networkidle")
+        await asyncio.sleep(2)
+        scr = page.locator("div[class='vditor-reset']")
+        # await page.screenshot(path="2.png")
+#         export_button = page.locator("button[class='el-button el-button--primary is-round']")
+#         hook_download = """
+# (function() {
+#     var oldClick = HTMLAnchorElement.prototype.click;
+#     HTMLAnchorElement.prototype.click = function() {
+#         if (this.href && this.href.startsWith('data:image/png;base64,')) {
+#             window.dd = this.href;
+#             return;
+#         }
+#         return oldClick.apply(this, arguments);
+#     };
+# })();
+# """     
+#         # run_download = "() =>  document.querySelector('.export-page').__vue__.exportAndDownloadImg(document.querySelectorAll('.vditor-preview')[1])"
+#         get_base64 = "window.dd"
+        
+#         await page.evaluate("""
+#     () => {
+#         const el = document.querySelector('.header-wrapper');
+#         if (el) el.remove();
+#     }
+# """)
+        # if await export_button.count() > 0:
+        #     await page.evaluate(hook_download)
+        #     await page.evaluate(run_download)
+        #     await export_button.click()
+        #     res = await page.evaluate(get_base64)
+            # return base64.b64decode(res.replace("data:image/png;base64,",""))
+            # print(res)
+        return await scr.screenshot(
+        # full_page=True,
+        type="png",
+        )
+
+
+    
+
 
 async def get_wss(page: Page, header: dict,msg_data: MsgData,httpx_status: bool,logger,httpx_proxy: Optional[str] = None):
     
@@ -221,7 +283,6 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
             try:
                 tmp = json.loads(tmp1)
             except:
-                # print(tmp1)
                 tmp2 = tmp1.replace("\\\\","\\")
                 tmp = json.loads(tmp2)
             text_list.append(tmp)
@@ -255,6 +316,9 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
                     if "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
                         # break
                         pass
+            elif "v" in msg and isinstance(msg["v"], dict):
+                pass
+
         # msg id..
         if "v" in msg and isinstance(msg["v"], dict):
             if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
@@ -288,17 +352,31 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
         if "turn0" in msg_list or "city" in msg_list: 
             pattern = r'[\ue200-\ue203]?([a-z]+)?[\ue200-\ue203](?:turn\d+(?:image|search|fetch|forecast)\d+|city)'
             msg_list_str_re = re.sub(pattern, '', msg_list)
-            # print(f"进行了turn替换，\n{msg_list}\n\n{msg_list_str_re}")
             msg_list = msg_list_str_re
         
         msg_data.status = True
-        # msg_data.msg_type = "old_session"
         msg_data.next_msg_id = msg_id
         msg_data.msg_recv = msg_list
         msg_data.img_list = url_list
-        # msg_data.title = title
         
     return msg_data
+
+def get_all_msg(msg: dict) -> list:
+    text = msg["content"]["parts"][0] if msg["content"]["parts"] else ""
+    pattern = r'[\ue200-\ue206]?[a-z]+[\ue200-\ue203]+(?:turn\d+[a-z]+\d+|city)[\ue200-\ue206]'
+    sub = re.search(pattern,text)
+    if sub:
+        meta = sub.group()
+        texts = text.split(meta)
+        content_references = msg["metadata"]["content_references"]
+        metadata = ""
+        for content in content_references:
+            if meta in content["matched_text"]:
+                metadata = content["alt"]
+                break
+        all_msg = [texts[0],metadata,texts[1]]
+        return all_msg
+    return [text]
 
 async def recive_handle(session: Session,resp: Response|MockResponse,msg_data: MsgData,logger) -> MsgData:
     '''recive handle stream to msgdata'''
@@ -728,7 +806,7 @@ async def save_screen(save_screen_status: bool, path: str,page: Page):
             screenshots.sort(key=lambda f: f.stat().st_ctime)
             files_to_delete = screenshots[:len(screenshots) - max_files]
             for file in files_to_delete:
-                print(f"Deleting old screenshot: {file}")
+                # print(f"Deleting old screenshot: {file}")
                 file.unlink()
 
 async def get_json_url(send_page: Page,session: Session,url: str,logger) -> dict:
