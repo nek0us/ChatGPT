@@ -350,5 +350,5 @@ When using for the first time, if cloudflare exists, use headless=False and manu
 
 初次使用时，如果存在cloudflare，请使用headless=False，并手动点击验证。在session文件生成后，再将其切换为True
 
-### 2025.08 google login
+### 2025.08 google and openai login
 No longer working
