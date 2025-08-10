@@ -1,6 +1,7 @@
 import json
 from logging import Logger
 from typing import Literal
+from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import Page
 from playwright_firefox.async_api import Response,BrowserContext
 from datetime import datetime
@@ -107,7 +108,7 @@ class AsyncAuth0:
         self.logger.debug(f"{self.email_address} login with {self.mode}")
         await self.find_cf(self.login_page)
         try:
-            await self.login_page.wait_for_load_state('networkidle')
+            await self.login_page.wait_for_load_state('load')
         except Exception as e:
             self.logger.warning(f"get auth page by {self.mode} error,will pass:{e}")
             await self.save_screen(path=f"{self.email_address}_get_auth0__{self.mode}_error",page=self.login_page)
@@ -115,7 +116,9 @@ class AsyncAuth0:
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} will point {self.mode} button")
         try:
-            button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}", exact=True)
+            text = f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}"
+            button = self.login_page.locator(f"button[data-dd-action-name='{text}']")
+            # button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}", exact=True)
             await button.wait_for(state="visible")
             await button.click()
         except Exception as e:
@@ -158,11 +161,21 @@ class AsyncAuth0:
             os.unlink(f"{self.email_address}_google_cookie.txt")
 
     async def mc_help_email_verify(self):
+        await asyncio.sleep(1)
+        await self.login_page.wait_for_load_state('load')
         EnterKey = "Enter"
-        verify_locator = self.login_page.get_by_text("Verify your email") # Help us secure your account # Help us secure your account # //*[@id="proofConfirmationText"]
+        select_verify_locator = self.login_page.locator('div[data-testid="tile"]')
+        if await select_verify_locator.count() > 0:
+            if await select_verify_locator.count() > 1:
+                await select_verify_locator.nth(0).click()
+            else:
+                await select_verify_locator.click()
+        await asyncio.sleep(1)
+        await self.login_page.wait_for_load_state('load')
+        verify_locator = self.login_page.locator('input[id="proof-confirmation-email-input"]')
+        # verify_locator = self.login_page.get_by_text("Verify your email") # Help us secure your account # Help us secure your account # //*[@id="proofConfirmationText"]
         if await verify_locator.count() > 0:
-            self.logger.debug(f"{self.email_address} need help_email code")
-            if self.help_email != "":
+            
                 # await verify_locator.click()
                 # await self.login_page.keyboard.press(EnterKey)
                 # verify_email_locator = self.login_page.locator("input[id='iProof0']")
@@ -171,14 +184,17 @@ class AsyncAuth0:
                 #     self.logger.debug(f"{self.email_address} set help_email checkbox true")
 
                 # use passwd
-                verify_user_passwd_locator = self.login_page.get_by_text("Use your password")
-                if await verify_user_passwd_locator.count() > 0:
-                    await verify_user_passwd_locator.click()
-                verify_check_passwd_locator = self.login_page.locator('//*[@id="passwordEntry"]')
-                if await verify_check_passwd_locator.count() > 0:
-                    return
+            verify_user_passwd_locator = self.login_page.locator('span[role="button"]')
+            # verify_user_passwd_locator = self.login_page.get_by_text("Use your password")
+            if await verify_user_passwd_locator.count() > 0:
+                await verify_user_passwd_locator.nth(-1).click()
+            await asyncio.sleep(1)
+            verify_check_passwd_locator = self.login_page.locator('//*[@id="passwordEntry"]')
+            if await verify_check_passwd_locator.count() > 0:
+                return
                     
-
+            self.logger.debug(f"{self.email_address} need help_email code")
+            if self.help_email != "":
                 verify_email_input_locator = self.login_page.locator("//*[@id='proof-confirmation-email-input']") # ("input[id='iProofEmail']")
                 if await verify_email_input_locator.count() > 0:
                     await verify_email_input_locator.fill(self.help_email) # .split("@")[0]
@@ -227,6 +243,51 @@ class AsyncAuth0:
             else:
                 self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
     
+    async def google_login(self,page = None):
+        if not page:
+            page = self.login_page
+        EnterKey = "Enter"
+        await page.wait_for_load_state('networkidle')
+        google_login_history = page.locator('//html/body/div[1]/div[1]/div[2]/div/div/div[2]/div/div/div[1]/form/span/section/div/div/div/div/ul/li[1]/div')
+        await page.wait_for_load_state('networkidle')
+        if await google_login_history.count() > 0:
+            self.logger.debug(f"{self.email_address} google old login,will point email history")
+            await google_login_history.click()
+            await page.wait_for_load_state('networkidle')
+        else:
+        
+            self.logger.debug(f"{self.email_address} google new login,will set email")
+            google_email_input = page.locator("input[type='email']")
+            await google_email_input.fill(self.email_address)
+            await page.keyboard.press(EnterKey)
+            await page.wait_for_load_state('networkidle')
+            # await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
+            # await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
+            # await self.login_page.keyboard.press(EnterKey)
+        await page.wait_for_load_state()
+        try:
+            # enter passwd
+            self.logger.debug(f"{self.email_address} google login,will set password")
+            # await self.login_page.locator(
+            #     "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
+            #     self.password)
+            google_password_input = page.locator("input[type='password']")
+            await google_password_input.fill(self.password)
+        except Exception as e:
+            self.logger.warning(f"{self.email_address} google set password error{e}")
+            await self.save_screen(path=f"{self.email_address}_google_set_password_error",page=self.login_page)
+
+        # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
+        await asyncio.sleep(1)
+        self.logger.debug(f"{self.email_address} google login,will point enter")
+        await page.keyboard.press(EnterKey)
+        await page.wait_for_load_state()
+
+    async def google_page_login(self):
+        context: BrowserContext = self.page.context
+        google_page = await context.new_page()
+        await google_page.goto("https://accounts.google.com/")
+        await self.google_login(google_page)
 
     async def normal_begin(self,logger,retry: int = 1):
         if retry < 0:
@@ -235,12 +296,15 @@ class AsyncAuth0:
         access_token = None
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
-        cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
-        await self.browser_contexts.clear_cookies()
-        await self.browser_contexts.add_cookies(cookies) # type: ignore
+        self.logger.debug(f"cookie num:{len(cookies)}")
+        # cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')]
+        # self.logger.debug(f"cookie num:{len(cookies)}")
+        # cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
+        # await self.browser_contexts.clear_cookies()
+        # await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
         await self.login_page.goto(
-            url="https://chatgpt.com/auth/login",
+            url="https://auth.openai.com/log-in",
             wait_until='load'
         )
         await asyncio.sleep(3)
@@ -250,7 +314,7 @@ class AsyncAuth0:
         if await cf_locator.count() > 0:
             self.logger.warning(f"cf checkbox in {self.email_address}")
         await self.find_cf(self.login_page)
-        await asyncio.sleep(5)
+        # await asyncio.sleep(5)
         check_login = self.login_page.locator('img[alt="User"]')
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} goto auth and relogin homepage check")
@@ -287,21 +351,20 @@ class AsyncAuth0:
                 await login_button_index2.first.click()
             else:
                 pass
-            await self.find_cf(self.login_page)
-            await asyncio.sleep(2)
-            await self.login_page.wait_for_load_state('networkidle')
-            await self.find_cf(self.login_page)
-            current_url = self.login_page.url
-            use_url = "chat.openai.com"
-            if "chatgpt.com" in current_url:
-                use_url = "chatgpt.com"
-            self.logger.debug(f"{self.email_address} check current_url ")
+            # await self.find_cf(self.login_page)
+            # await asyncio.sleep(2)
+            # await self.login_page.wait_for_load_state('networkidle')
+            # await self.find_cf(self.login_page)
+            # current_url = self.login_page.url
+            # if "chatgpt.com" in current_url:
+            #     use_url = "chatgpt.com"
+            # self.logger.debug(f"{self.email_address} check current_url ")
             await self.find_cf(self.login_page)
             
             # Select Mode
             if self.mode != "openai":
                 await self.point_login_button()
-            await asyncio.sleep(2)
+            # await asyncio.sleep(2)
             if self.mode == "google":
                 self.logger.debug(f"{self.email_address} login with google")
                 new_login = True
@@ -319,180 +382,160 @@ class AsyncAuth0:
                 
             await self.find_cf(self.login_page)
             await asyncio.sleep(2)
-            await self.login_page.wait_for_load_state('networkidle')
+            # await self.login_page.wait_for_load_state('networkidle')
             cookies = await self.browser_contexts.cookies()
             cookies = [cookie for cookie in cookies if cookie['name'] in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
-            if cookies == []:
+            # if cookies == []:
                 # Start Fill
                 # TODO: SPlit Parts from select mode
-                if self.mode == "microsoft":
-                    # enter email_address
-                    await self.find_cf(self.login_page)
-                    await asyncio.sleep(5)
-                    
+            if self.mode == "microsoft":
+                # enter email_address
+                await self.find_cf(self.login_page)
+                # await asyncio.sleep(5)
+                
+                self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
+                await self.mc_help_email_verify()
+                
+                self.logger.debug(f"{self.email_address} microsoft new login,will set email")
+                mc_username = self.login_page.locator("input[type='email']")
+                if await mc_username.count() > 0:
+                    await mc_username.wait_for(state="visible")
+                    await mc_username.fill(self.email_address)
+                    await asyncio.sleep(1)
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
+                else:
+                    self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
+                await asyncio.sleep(1)
+                # enter passwd
+                await self.mc_help_email_verify()
+                mc_password = self.login_page.locator("input[type='password']")
+                if await mc_password.count() > 0:
+                    self.logger.debug(f"{self.email_address} microsoft new login,will set password")
+                    await mc_password.wait_for(state="visible")
+                    await mc_password.fill(self.password)
+                    await asyncio.sleep(1)
+                    await self.login_page.keyboard.press(EnterKey)
+                    await self.login_page.wait_for_load_state()
+                else:
+                    self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
+                # verify code 
+                # await self.login_page.wait_for_timeout(1000)
+
+
+                try:
+                    await self.login_page.wait_for_url("https://login.live.com/**")
+                    # await self.login_page.wait_for_url("https://account.live.com/identity/**")
                     self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
                     await self.mc_help_email_verify()
-                    
-                    self.logger.debug(f"{self.email_address} microsoft new login,will set email")
-                    mc_username = self.login_page.locator("input[type='email']")
-                    if await mc_username.count() > 0:
-                        await mc_username.wait_for(state="visible")
-                        await mc_username.fill(self.email_address)
-                        await asyncio.sleep(1)
-                        await self.login_page.keyboard.press(EnterKey)
-                        await self.login_page.wait_for_load_state()
-                    else:
-                        self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
-                    await asyncio.sleep(1)
-                    # enter passwd
-                    
-                    mc_password = self.login_page.locator("input[type='password']")
-                    if await mc_password.count() > 0:
-                        self.logger.debug(f"{self.email_address} microsoft new login,will set password")
-                        await mc_password.wait_for(state="visible")
-                        await mc_password.fill(self.password)
-                        await asyncio.sleep(1)
-                        await self.login_page.keyboard.press(EnterKey)
-                        await self.login_page.wait_for_load_state()
-                    else:
-                        self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
-                    # verify code 
-                    # await self.login_page.wait_for_timeout(1000)
-                    try:
-                        await self.login_page.wait_for_url("https://login.live.com/**")
-                        # await self.login_page.wait_for_url("https://account.live.com/identity/**")
-                        self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
-                        await self.mc_help_email_verify()
-                    except Exception as e:
-                        if "Timeout" not in e.args[0]:
-                            raise e
-                    # stay
-                    self.logger.debug(f"{self.email_address} microsoft login,will point enter Yes")
-                    # await self.login_page.wait_for_timeout(1000)
-                    try:
-                        await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
-                        stay_button = self.login_page.get_by_text("Yes")
-                        if await stay_button.count() > 0:
-                            await stay_button.click()
-                    except:
-                        pass
-                    await self.login_page.wait_for_load_state()
-
-
-                elif self.mode == "google":
-                    # enter google email
-                    await self.login_page.wait_for_load_state('networkidle')
-                    google_login_history = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div/div/div[2]/div/div/div[1]/form/span/section/div/div/div/div/ul/li[1]/div')
-                    await self.login_page.wait_for_load_state('networkidle')
-                    if await google_login_history.count() > 0:
-                        self.logger.debug(f"{self.email_address} google old login,will point email history")
-                        await google_login_history.click()
-                        await self.login_page.wait_for_load_state('networkidle')
-                    else:
-                    
-                        self.logger.debug(f"{self.email_address} google new login,will set email")
-                        google_email_input = self.login_page.locator("input[type='email']")
-                        await google_email_input.fill(self.email_address)
-                        await self.login_page.keyboard.press(EnterKey)
-                        await self.login_page.wait_for_load_state('networkidle')
-                        # await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-                        # await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
-                        # await self.login_page.keyboard.press(EnterKey)
-                    await self.login_page.wait_for_load_state()
-                    try:
-                        # enter passwd
-                        self.logger.debug(f"{self.email_address} google login,will set password")
-                        # await self.login_page.locator(
-                        #     "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
-                        #     self.password)
-                        google_password_input = self.login_page.locator("input[type='password']")
-                        await google_password_input.fill(self.password)
-                    except Exception as e:
-                        self.logger.warning(f"{self.email_address} google set password error{e}")
-                        await self.save_screen(path=f"{self.email_address}_google_set_password_error",page=self.login_page)
-
-                    # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
-                    await asyncio.sleep(1)
-                    self.logger.debug(f"{self.email_address} google login,will point enter")
-                    await self.login_page.keyboard.press(EnterKey)
-                    await self.login_page.wait_for_load_state()
-
-                else:
-                    await asyncio.sleep(1)
-                    await self.login_page.wait_for_load_state('networkidle')
-                    self.logger.debug(f"{self.email_address} openai login,will find email input")
-                    openai_email_input = self.login_page.locator("input[type='email']")
-                    await openai_email_input.fill(self.email_address)
-                    self.logger.debug(f"{self.email_address} openai login,will point email continue")
-                    await self.login_page.keyboard.press(EnterKey)
-
-                    openai_password_input = self.login_page.locator("input[type='password']")
-                    self.logger.debug(f"{self.email_address} openai login,will set password")
-                    await openai_password_input.wait_for(state="visible")
-                    await openai_password_input.fill(self.password)
-                    self.logger.debug(f"{self.email_address} openai login,will point enter")
-                    await self.login_page.keyboard.press(EnterKey)
-
-                    await self.login_page.wait_for_load_state('networkidle')
-                    
-                    try:
-                        verification_code_locator = self.login_page.locator('//html/body/div/h1')
-                        await self.login_page.wait_for_load_state('networkidle')
-                        if await verification_code_locator.count() > 0:
-                            self.logger.debug(f"{self.email_address} openai Check your inbox,please input your code to {self.email_address}_openai_code.txt by your email")
-                            with open(f"{self.email_address}_openai_code.txt","w") as code_file:
-                                code_file.write("")
-                            with open(f"{self.email_address}_openai_code.txt","r") as code_file:
-                                while 1:
-                                    await asyncio.sleep(1)
-                                    code = code_file.read()
-                                    if code != "":
-                                        logger.info(f"get {self.email_address} verify code openai {code}")
-                                        await self.login_page.fill('//html/body/div/form/input', code)
-                                        await self.login_page.click('//html/body/div/form/button')
-                                        await self.login_page.wait_for_load_state()
-                                        # await self.login_page.wait_for_timeout(1000)
-                                        break
-                            os.unlink(f"{self.email_address}_openai_code.txt")
-                    except Exception as e:
-                        logger.info(f"{self.email_address} verify code openai exception: {e}")
+                except Exception as e:
+                    if "Timeout" not in e.args[0]:
                         raise e
-                        
+                # stay
+                self.logger.debug(f"{self.email_address} microsoft login,will point enter Yes")
+                # await self.login_page.wait_for_timeout(1000)
+                try:
+                    await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
+                    await asyncio.sleep(1)
+                    await self.login_page.wait_for_load_state('load')
+                    stay_button = self.login_page.get_by_text("Yes")
+                    if await stay_button.count() > 0:
+                        await stay_button.click()
+                except:
+                    pass
+                await self.login_page.wait_for_load_state()
+
+
+            elif self.mode == "google":
+                # enter google email
+
+                await self.google_page_login()
+                await self.google_login()
 
                 
-                # go chatgpt
+
+            else:
+                await asyncio.sleep(1)
+                # await self.login_page.wait_for_load_state('networkidle')
+                self.logger.debug(f"{self.email_address} openai login,will find email input")
+                openai_email_input = self.login_page.locator("input[type='email']")
+                await openai_email_input.fill(self.email_address)
+                self.logger.debug(f"{self.email_address} openai login,will point email continue")
+                await self.login_page.keyboard.press(EnterKey)
+                await self.login_page.wait_for_load_state('load')
+                openai_password_input = self.login_page.locator("input[type='password']")
+                self.logger.debug(f"{self.email_address} openai login,will set password")
+                await openai_password_input.wait_for(state="visible")
+                await openai_password_input.fill(self.password)
+                self.logger.debug(f"{self.email_address} openai login,will point enter")
+                await self.login_page.keyboard.press(EnterKey)
+                await asyncio.sleep(1)
+                await self.login_page.wait_for_load_state('load')
+                
                 try:
-                    self.logger.debug(f"{self.email_address} wait goto chatgpt homepage ")
-                    await asyncio.sleep(2)
-                    await self.login_page.wait_for_load_state('networkidle')
-                    try:
-                        self.logger.debug(f"{self.email_address} will waitfor chatgpt homepage ")
-                        await self.login_page.wait_for_url(f"https://{use_url}/",timeout=30000)
-                    except Exception:
-                        self.logger.debug(f"{self.email_address} will re waitfor chatgpt homepage ")
-                        await self.login_page.goto(f"https://{use_url}/")
-                    await self.login_page.wait_for_load_state('networkidle')
-                    self.logger.debug(f"{self.email_address} will check login status")
-                    nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
-                    auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
-                    if await nologin_home_locator.count() > 0:
-                        self.logger.debug(f"{self.email_address} nologin_home_locator.count() > 0,will re login ")
-                        access_token = await self.normal_begin(logger,retry)
-                    elif await auth_login.count() > 0:
-                        self.logger.debug(f"{self.email_address} auth_login.count() > 0,will re login ")
-                        access_token = await self.normal_begin(logger,retry)
-                    # else:
-                    #     await self.login_page.click('[data-testid="login-button"]')
-                    if access_token:
-                        self.logger.debug(f"{self.email_address} login get access_token ")
-                        return access_token
-                    self.logger.debug(f"{self.email_address} login not get access_token,will check again ")
+                    verification_code_locator = self.login_page.locator('button[data-dd-action-name="Continue"]')
+                    # await self.login_page.wait_for_load_state('networkidle')
+                    if await verification_code_locator.count() > 0:
+                        self.logger.debug(f"{self.email_address} openai Check your inbox,please input your code to {self.email_address}_openai_code.txt by your email")
+                        with open(f"{self.email_address}_openai_code.txt","w") as code_file:
+                            code_file.write("")
+                        with open(f"{self.email_address}_openai_code.txt","r") as code_file:
+                            while 1:
+                                await asyncio.sleep(1)
+                                code = code_file.read()
+                                if code != "":
+                                    logger.info(f"get {self.email_address} verify code openai {code}")
+                                    openai_verify_code = self.login_page.get_by_text("Code", exact=True)
+                                    if await openai_verify_code.count() > 0:
+                                        pass
+                                    await openai_verify_code.fill(code)
+                                    # await self.login_page.fill('//html/body/div/form/input', code)
+                                    # await self.login_page.click('//html/body/div/form/button')
+                                    await verification_code_locator.click()
+                                    await asyncio.sleep(1)
+                                    await self.login_page.wait_for_load_state('load')
+                                    # await self.login_page.wait_for_timeout(1000)
+                                    break
+                        os.unlink(f"{self.email_address}_openai_code.txt")
                 except Exception as e:
-                    self.logger.warning(e)
-                    # Try Again
-                    await self.login_page.keyboard.press(EnterKey)
-                    await self.login_page.wait_for_url(f"https://{use_url}/")
+                    logger.info(f"{self.email_address} verify code openai exception: {e}")
+                    raise e
                     
+
+            
+            # go chatgpt
+            try:
+                self.logger.debug(f"{self.email_address} wait goto chatgpt homepage ")
+                await asyncio.sleep(2)
+                await self.login_page.wait_for_load_state('networkidle')
+                try:
+                    self.logger.debug(f"{self.email_address} will waitfor chatgpt homepage ")
+                    await self.login_page.wait_for_url("https://chatgpt.com/",timeout=30000)
+                except Exception:
+                    self.logger.debug(f"{self.email_address} will re waitfor chatgpt homepage ")
+                    await self.login_page.goto("https://chatgpt.com/")
+                await self.login_page.wait_for_load_state('networkidle')
+                self.logger.debug(f"{self.email_address} will check login status")
+                nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
+                auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
+                if await nologin_home_locator.count() > 0:
+                    self.logger.debug(f"{self.email_address} nologin_home_locator.count() > 0,will re login ")
+                    access_token = await self.normal_begin(logger,retry)
+                elif await auth_login.count() > 0:
+                    self.logger.debug(f"{self.email_address} auth_login.count() > 0,will re login ")
+                    access_token = await self.normal_begin(logger,retry)
+                # else:
+                #     await self.login_page.click('[data-testid="login-button"]')
+                if access_token:
+                    self.logger.debug(f"{self.email_address} login get access_token ")
+                    return access_token
+                self.logger.debug(f"{self.email_address} login not get access_token,will check again ")
+            except Exception as e:
+                self.logger.warning(e)
+                # Try Again
+                await self.login_page.keyboard.press(EnterKey)
+                await self.login_page.wait_for_url("https://chatgpt.com/")
+                
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)
         res = await a.value
@@ -527,6 +570,9 @@ class AsyncAuth0:
         self.logger.debug(f"{self.email_address} will create self.login_page")
         self.login_page: Page = await self.browser_contexts.new_page()
         self.logger.debug(f"{self.email_address} create self.login_page over")
+        if self.mode == "google":
+            self.logger.debug(f"{self.email_address} {self.mode},will set stealth")
+            await Stealth().apply_stealth_async(self.login_page)
         access_token = None
         try:
             try_num = 3

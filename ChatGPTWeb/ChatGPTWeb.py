@@ -9,6 +9,7 @@ import asyncio
 import threading
 from pathlib import Path
 from aiohttp import ClientSession
+from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
 from typing import Dict, Optional,Literal,List
 from urllib.parse import urlparse
@@ -268,6 +269,8 @@ class chatgpt:
             await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
         if not session.browser_contexts:
             session.browser_contexts = await self.browser.new_context(service_workers="block")
+            if session.mode != "google":
+                await Stealth().apply_stealth_async(session.browser_contexts)
         self.logger.debug(f"{session.email} begin login when it start")
         if session.session_token and session.browser_contexts:
             token = session.session_token

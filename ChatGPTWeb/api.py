@@ -654,7 +654,8 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
         raise e
 
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
-    await page.reload()
+    await page.goto("https://chatgpt.com",wait_until="load")
+    await asyncio.sleep(1)
     res = await page.evaluate_handle(js[0])
     await res.json_value()
     await page.wait_for_load_state('networkidle')

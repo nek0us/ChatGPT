@@ -349,3 +349,6 @@ When the "\{email_address\}_google_cookie.txt" file appears, paste the copied js
 When using for the first time, if cloudflare exists, use headless=False and manually click Verify. After the session file is generated, switch it to True
 
 初次使用时，如果存在cloudflare，请使用headless=False，并手动点击验证。在session文件生成后，再将其切换为True
+
+### 2025.08 google login
+No longer working

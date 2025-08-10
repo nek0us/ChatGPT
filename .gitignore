@@ -1,6 +1,7 @@
 # Test files
 src/test.py
 .vscode/
+screen/
 data
 test.py
 setup.py
