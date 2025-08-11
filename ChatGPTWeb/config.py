@@ -34,11 +34,13 @@ formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(messa
 
 MODEL_DICT = {
         "free":{
+            "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
             "4om":"gpt-4o-mini",
             "3.5":"text-davinci-002-render-sha",
         },
         "plus":{
+            "5": "gpt-5",
             "41m":"gpt-4-1-mini",
 
             "4om":"gpt-4o-mini",
@@ -261,6 +263,10 @@ class IOFile(BaseModel):
             })
         return attachment
     
+def get_first_model():
+    free_dict = MODEL_DICT['free']
+    first_key = next(iter(free_dict))
+    return free_dict[first_key]
 
 class MsgData(BaseModel):
     '''
@@ -315,7 +321,7 @@ class MsgData(BaseModel):
     header: Dict[str, str] = Field({}, description="HTTP请求头")
     # 模型选择
     gpt_model: str = Field(
-        MODEL_DICT['free']['41m'], 
+        default_factory=get_first_model, 
         description="使用的GPT模型"
     )
     gpt_plus: bool = Field(False, description="use plus account")
@@ -380,7 +386,7 @@ class MsgData(BaseModel):
 class Payload():
         
     @staticmethod
-    def new_payload(prompt: str, gpt_model: str = Field(MODEL_DICT['free']['41m'],description="used gpt model"), files: Optional[List[IOFile]] = None, search: bool = False) -> str:
+    def new_payload(prompt: str, gpt_model: str = Field(default_factory=get_first_model,description="used gpt model"), files: Optional[List[IOFile]] = None, search: bool = False) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
@@ -449,7 +455,7 @@ class Payload():
         })
 
     @staticmethod
-    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: str = Field(MODEL_DICT['free']['41m'],description="used gpt model"),files: Optional[List[IOFile]] = None, search: bool = False ) -> str:
+    def old_payload(prompt: str, conversation_id: str, p_msg_id: str,gpt_model: str = Field(default_factory=get_first_model,description="used gpt model"),files: Optional[List[IOFile]] = None, search: bool = False ) -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)

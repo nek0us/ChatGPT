@@ -297,11 +297,11 @@ class AsyncAuth0:
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
         self.logger.debug(f"cookie num:{len(cookies)}")
-        # cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')]
-        # self.logger.debug(f"cookie num:{len(cookies)}")
+        cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')]
+        self.logger.debug(f"cookie num:{len(cookies)}")
         # cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
-        # await self.browser_contexts.clear_cookies()
-        # await self.browser_contexts.add_cookies(cookies) # type: ignore
+        await self.browser_contexts.clear_cookies()
+        await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
         await self.login_page.goto(
             url="https://auth.openai.com/log-in",
@@ -414,7 +414,7 @@ class AsyncAuth0:
                     self.logger.debug(f"{self.email_address} microsoft new login,will set password")
                     await mc_password.wait_for(state="visible")
                     await mc_password.fill(self.password)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     await self.login_page.keyboard.press(EnterKey)
                     await self.login_page.wait_for_load_state()
                 else:
@@ -459,14 +459,14 @@ class AsyncAuth0:
                 # await self.login_page.wait_for_load_state('networkidle')
                 self.logger.debug(f"{self.email_address} openai login,will find email input")
                 openai_email_input = self.login_page.locator("input[type='email']")
-                await openai_email_input.fill(self.email_address)
+                await openai_email_input.type(self.email_address,delay=200)
                 self.logger.debug(f"{self.email_address} openai login,will point email continue")
                 await self.login_page.keyboard.press(EnterKey)
                 await self.login_page.wait_for_load_state('load')
                 openai_password_input = self.login_page.locator("input[type='password']")
                 self.logger.debug(f"{self.email_address} openai login,will set password")
                 await openai_password_input.wait_for(state="visible")
-                await openai_password_input.fill(self.password)
+                await openai_password_input.type(self.password,delay=200)
                 self.logger.debug(f"{self.email_address} openai login,will point enter")
                 await self.login_page.keyboard.press(EnterKey)
                 await asyncio.sleep(1)
@@ -485,13 +485,15 @@ class AsyncAuth0:
                                 code = code_file.read()
                                 if code != "":
                                     logger.info(f"get {self.email_address} verify code openai {code}")
-                                    openai_verify_code = self.login_page.get_by_text("Code", exact=True)
+                                    openai_verify_code = self.login_page.locator('input[autocomplete="one-time-code"]')
                                     if await openai_verify_code.count() > 0:
                                         pass
                                     await openai_verify_code.fill(code)
                                     # await self.login_page.fill('//html/body/div/form/input', code)
                                     # await self.login_page.click('//html/body/div/form/button')
-                                    await verification_code_locator.click()
+                                    # await verification_code_locator.click()
+                                    await asyncio.sleep(1)
+                                    await self.login_page.keyboard.press(EnterKey)
                                     await asyncio.sleep(1)
                                     await self.login_page.wait_for_load_state('load')
                                     # await self.login_page.wait_for_timeout(1000)
@@ -513,6 +515,8 @@ class AsyncAuth0:
                     await self.login_page.wait_for_url("https://chatgpt.com/",timeout=30000)
                 except Exception:
                     self.logger.debug(f"{self.email_address} will re waitfor chatgpt homepage ")
+                    # await asyncio.sleep(2)
+                    await self.login_page.wait_for_load_state('load')
                     await self.login_page.goto("https://chatgpt.com/")
                 await self.login_page.wait_for_load_state('networkidle')
                 self.logger.debug(f"{self.email_address} will check login status")
