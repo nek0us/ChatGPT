@@ -411,6 +411,7 @@ class Payload():
             },
             "enable_message_followups": True,
             "force_use_search": search,
+            "force_parallel_switch":gpt_model,
             "infer_debug_info": {},
             "messages": [{
                 "author": {
@@ -480,6 +481,7 @@ class Payload():
             },
             "enable_message_followups": True,
             "force_use_search": search,
+            "force_parallel_switch":gpt_model,
             "infer_debug_info": {},
             "messages": [{
                 "id": str(uuid.uuid4()),

@@ -556,13 +556,13 @@ class chatgpt:
                     self.logger.debug(f"{session.email} will continue_ send msg")
                     await route.continue_(method="POST", headers=header, post_data=data)
                 self.logger.debug(f"{session.email} will register conversation api route")
-                await send_page.route("**/backend-api/conversation", route_handle)  
+                await send_page.route("**/backend-api/f/conversation", route_handle)  
 
-                async with send_page.expect_response("https://chatgpt.com/backend-api/conversation",timeout=70000) as response_info: 
+                async with send_page.expect_response("https://chatgpt.com/backend-api/f/conversation",timeout=70000) as response_info: 
                     try:
                         self.logger.debug(f"send:{msg_data.msg_send}")
                         await send_page.goto(url_check, timeout=60000)
-                        await send_page.goto("https://chatgpt.com/backend-api/conversation", timeout=60000,wait_until='networkidle') 
+                        await send_page.goto("https://chatgpt.com/backend-api/f/conversation", timeout=60000,wait_until='networkidle') 
                     except Exception as e:
                         a, b, exc_traceback = sys.exc_info()
                         if "Download is starting" not in e.args[0]:
