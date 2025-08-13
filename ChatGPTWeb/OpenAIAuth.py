@@ -161,6 +161,7 @@ class AsyncAuth0:
             os.unlink(f"{self.email_address}_google_cookie.txt")
 
     async def mc_help_email_verify(self):
+        await self.login_page.wait_for_load_state('load')
         await asyncio.sleep(1)
         await self.login_page.wait_for_load_state('load')
         EnterKey = "Enter"
@@ -170,18 +171,37 @@ class AsyncAuth0:
                 await select_verify_locator.nth(0).click()
             else:
                 await select_verify_locator.click()
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         await self.login_page.wait_for_load_state('load')
+        help_status = False
+        verify_email_locator = self.login_page.locator("input[id='iProof0']")
+        if await verify_email_locator.count() > 0:
+            await verify_email_locator.click()
+            self.logger.debug(f"{self.email_address} set help_email checkbox true")
+            await asyncio.sleep(1)
+
+            verify_iProofEmail_locator = self.login_page.locator('input[id="iProofEmail"]')
+            if await verify_iProofEmail_locator.count() > 0:
+                if self.help_email:
+                    await verify_iProofEmail_locator.fill(self.help_email.split("@")[0])
+                else:
+                    self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
+                    raise Error("Microsoft login error",111,f"{self.email_address} need microsoft login help email")
+                await self.login_page.wait_for_load_state('load')
+                await asyncio.sleep(1)
+                help_status = True
+
+            await self.login_page.keyboard.press(EnterKey)
+            await self.login_page.wait_for_load_state('load')
+            await asyncio.sleep(1)
+
         verify_locator = self.login_page.locator('input[id="proof-confirmation-email-input"]')
         # verify_locator = self.login_page.get_by_text("Verify your email") # Help us secure your account # Help us secure your account # //*[@id="proofConfirmationText"]
-        if await verify_locator.count() > 0:
-            
+        if await verify_locator.count() > 0 or help_status:
+            help_status = True
                 # await verify_locator.click()
                 # await self.login_page.keyboard.press(EnterKey)
-                # verify_email_locator = self.login_page.locator("input[id='iProof0']")
-                # if await verify_email_locator.count() > 0:
-                #     await verify_email_locator.click()
-                #     self.logger.debug(f"{self.email_address} set help_email checkbox true")
+            
 
                 # use passwd
             verify_user_passwd_locator = self.login_page.locator('span[role="button"]')
@@ -195,6 +215,9 @@ class AsyncAuth0:
                     
             self.logger.debug(f"{self.email_address} need help_email code")
             if self.help_email != "":
+                # help_us_protect_locator = 
+
+
                 verify_email_input_locator = self.login_page.locator("//*[@id='proof-confirmation-email-input']") # ("input[id='iProofEmail']")
                 if await verify_email_input_locator.count() > 0:
                     await verify_email_input_locator.fill(self.help_email) # .split("@")[0]
@@ -220,10 +243,13 @@ class AsyncAuth0:
                             if code != "":
                                 self.logger.info(f"get {self.email_address} verify code {code}")
                                 verify_email_code_locator = self.login_page.locator('input[id="codeEntry-0"]') # ("input[aria-label='Enter your security code']")
+                                verify_email_code_far_locator = self.login_page.locator('input[aria-label="Enter your security code"]') # ("input[aria-label='Enter your security code']")
                                 if await verify_email_code_locator.count() > 0:
                                     for i in range(6):
                                         verify_email_code_locator_code = self.login_page.locator(f'input[id="codeEntry-{i}"]')
                                         await verify_email_code_locator_code.fill(code[i])
+                                if await verify_email_code_far_locator.count() > 0:
+                                    await verify_email_code_far_locator.fill(code)
                                         # Use your password
                                 # await self.login_page.fill('//*[@id="idTxtBx_OTC_Password"]', code)
                                 await self.login_page.keyboard.press(EnterKey)
@@ -297,17 +323,21 @@ class AsyncAuth0:
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
         self.logger.debug(f"cookie num:{len(cookies)}")
-        cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')]
+        cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')] # type: ignore
         self.logger.debug(f"cookie num:{len(cookies)}")
         # cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
         await self.browser_contexts.clear_cookies()
         await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
         await self.login_page.goto(
-            url="https://auth.openai.com/log-in",
+            url="https://chatgpt.com",
             wait_until='load'
         )
-        await asyncio.sleep(3)
+        # await asyncio.sleep(3)
+        try:
+            await self.login_page.wait_for_url("https://auth.openai.com/log-in",timeout=10000)
+        except Exception as e:
+            self.logger.debug(f"{self.email_address} wait for url auth exception: {e}")
         self.logger.debug(f"{self.email_address}  relogin goto auth")
         await self.find_cf(self.login_page)
         cf_locator = self.login_page.locator('//*[@id="cf-chl-widget-lpiae"]')
@@ -331,26 +361,36 @@ class AsyncAuth0:
             login_button3 = self.login_page.locator('//html/body/div[1]/div/main/div[1]/div[1]/div/div[1]/div/div[3]/div/button[1]/div')
             login_button_index = self.login_page.locator('//html/body/div/div[2]/div[1]/div/div/button[1]/div')
             login_button_index2 = self.login_page.locator('//html/body/div/div[2]/div[1]/div/div/button[1]')
-            if await alert_login_box.count() > 0:
-                await alert_login_box.click()
-            elif await alert_login_box2.count() > 0:
-                await alert_login_box2.click()
-            elif await nologin_home_locator.count() > 0:
-                await nologin_home_locator.click()
-            elif await auth_login.count() > 0:
-                await auth_login.click()
-            elif await login_button.count() > 0:
-                await login_button.first.click()
-            elif await login_button2.count() > 0:
-                await login_button2.first.click()
-            elif await login_button3.count() > 0:
-                await login_button3.first.click()
-            elif await login_button_index.count() > 0:
-                await login_button_index.first.click()
-            elif await login_button_index2.count() > 0:
-                await login_button_index2.first.click()
-            else:
-                pass
+            
+            login_button_index3 = self.login_page.locator('button[data-testid="login-button"]')
+            login_button_index4 = self.login_page.locator('button[class="btn relative btn-primary btn-large"]')
+            try:
+                if await alert_login_box.count() > 0:
+                    await alert_login_box.click()
+                elif await alert_login_box2.count() > 0:
+                    await alert_login_box2.click()
+                elif await nologin_home_locator.count() > 0:
+                    await nologin_home_locator.click()
+                elif await auth_login.count() > 0:
+                    await auth_login.click()
+                elif await login_button.count() > 0:
+                    await login_button.first.click()
+                elif await login_button2.count() > 0:
+                    await login_button2.first.click()
+                elif await login_button3.count() > 0:
+                    await login_button3.first.click()
+                elif await login_button_index.count() > 0:
+                    await login_button_index.first.click()
+                elif await login_button_index2.count() > 0:
+                    await login_button_index2.first.click()
+                elif await login_button_index4.count() > 0:
+                    await login_button_index4.first.click()
+                elif await login_button_index3.count() > 0:
+                    await login_button_index3.first.click()
+                else:
+                    self.logger.debug(f"{self.email_address} have no login butoon")
+            except Exception as e:
+                self.logger.debug(f"{self.email_address} point login button timeout {e}")
             # await self.find_cf(self.login_page)
             # await asyncio.sleep(2)
             # await self.login_page.wait_for_load_state('networkidle')
@@ -360,7 +400,7 @@ class AsyncAuth0:
             #     use_url = "chatgpt.com"
             # self.logger.debug(f"{self.email_address} check current_url ")
             await self.find_cf(self.login_page)
-            
+            await asyncio.sleep(2)
             # Select Mode
             if self.mode != "openai":
                 await self.point_login_button()
@@ -421,6 +461,7 @@ class AsyncAuth0:
                     self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                 # verify code 
                 # await self.login_page.wait_for_timeout(1000)
+                await self.mc_help_email_verify()
 
 
                 try:

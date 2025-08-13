@@ -268,7 +268,7 @@ class chatgpt:
         if self.begin_sleep_time:
             await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
         if not session.browser_contexts:
-            session.browser_contexts = await self.browser.new_context(service_workers="block")
+            session.browser_contexts = await self.browser.new_context()
             await Stealth().apply_stealth_async(session.browser_contexts)
         self.logger.debug(f"{session.email} begin login when it start")
         if session.session_token and session.browser_contexts:
@@ -300,18 +300,9 @@ class chatgpt:
         self.js = await load_js(self.httpx_proxy,self.local_js)    
         self.playwright_manager = async_playwright()
         self.playwright = await self.playwright_manager.start()
-        user_prefs = {
-            "browser.contentblocking.category": "standard",
-            # 下面按需选择，其一即可
-            "network.cookie.cookieBehavior": 0,  # 接受所有
-            # "network.cookie.cookieBehavior": 1,  # 阻止第三方
-            # "network.cookie.cookieBehavior": 4,  # 阻止跨站跟踪
-        }
         self.browser = await self.playwright.firefox.launch(
             headless=self.headless,
             slow_mo=50, proxy=self.proxy,
-            # user_data_dir="ff-profile",
-            firefox_user_prefs=user_prefs
             )
         
         # arkose context
