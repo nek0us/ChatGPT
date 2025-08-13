@@ -41,6 +41,7 @@ MODEL_DICT = {
         },
         "plus":{
             "5": "gpt-5",
+            "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
 
             "4om":"gpt-4o-mini",
@@ -405,14 +406,13 @@ class Payload():
                 "screen_height": 1152,
                 "screen_width": 2048
             },
-            "client_reported_search_source": "conversation_composer_web_icon",
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
+            # "client_reported_search_source": "conversation_composer_web_icon",
             "enable_message_followups": True,
-            "force_use_search": search,
+            # "force_use_search": search,
             "force_parallel_switch":gpt_model,
-            "infer_debug_info": {},
             "messages": [{
                 "author": {
                     "role": "user"
@@ -433,12 +433,13 @@ class Payload():
             "model": gpt_model,
             "paragen_cot_summary_display_override": "allow",
             "parent_message_id": "client-created-root",# "aaa" + str(uuid.uuid4())[3:],
-            
             "supported_encodings": [
                 "v1"
             ],
             "supports_buffering": True,
             "system_hints": [],
+            # "infer_debug_info": {},
+            
             "timezone": "Asia/Shanghai",
             "timezone_offset_min": -480,
             # "suggestions": [],
@@ -475,14 +476,16 @@ class Payload():
                 "screen_height": 1152,
                 "screen_width": 2048
             },
-            "client_reported_search_source": "conversation_composer_web_icon",
+            "conversation_id":
+                conversation_id,
+            # "client_reported_search_source": "conversation_composer_web_icon",
             "conversation_mode": {
                 "kind": "primary_assistant",
             },
             "enable_message_followups": True,
-            "force_use_search": search,
+            # "force_use_search": search,
             "force_parallel_switch":gpt_model,
-            "infer_debug_info": {},
+            # "infer_debug_info": {},
             "messages": [{
                 "id": str(uuid.uuid4()),
                 "author": {
@@ -500,12 +503,16 @@ class Payload():
                     "system_hints": ["search"] if search else [],
                 } if attachments else {"selected_all_github_repos": False,"selected_github_repos": [],"serialization_metadata": {"custom_symbol_offsets": []},"system_hints": ["search"] if search else [],},
             }],
-            "conversation_id":
-                conversation_id,
-            "parent_message_id":
-                p_msg_id,
             "model":
                 gpt_model,
+            "paragen_cot_summary_display_override": "allow",
+            "parent_message_id":
+                p_msg_id,
+            "supported_encodings": [
+                "v1"
+            ],
+            "supports_buffering": True,
+            "system_hints": [],
             "timezone_offset_min":
                 -480,
             "timezone": "Asia/Shanghai",
@@ -515,14 +522,8 @@ class Payload():
             # "force_rate_limit": False,
             # "reset_rate_limits": False,
             # "websocket_request_id": str(uuid.uuid4()),
-            "system_hints": [],
-            "supported_encodings": [
-                "v1"
-            ],
             # "conversation_origin": None,
             # "paragen_stream_type_override": None,
-            "paragen_cot_summary_display_override": "allow",
-            "supports_buffering": True
         })
 
     @staticmethod
