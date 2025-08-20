@@ -323,9 +323,9 @@ class AsyncAuth0:
         EnterKey = "Enter"
         cookies = await self.browser_contexts.cookies()
         self.logger.debug(f"cookie num:{len(cookies)}")
-        cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')] # type: ignore
+        # cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')] # type: ignore
         self.logger.debug(f"cookie num:{len(cookies)}")
-        # cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
+        cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
         await self.browser_contexts.clear_cookies()
         await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
@@ -334,6 +334,7 @@ class AsyncAuth0:
             wait_until='load'
         )
         # await asyncio.sleep(3)
+        await self.login_page.keyboard.press(EnterKey)
         try:
             await self.login_page.wait_for_url("https://auth.openai.com/log-in",timeout=10000)
         except Exception as e:
