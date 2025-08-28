@@ -333,12 +333,13 @@ class AsyncAuth0:
             url="https://chatgpt.com",
             wait_until='load'
         )
-        # await asyncio.sleep(3)
+        await asyncio.sleep(1)
         await self.login_page.keyboard.press(EnterKey)
         try:
             await self.login_page.wait_for_url("https://auth.openai.com/log-in",timeout=10000)
         except Exception as e:
             self.logger.debug(f"{self.email_address} wait for url auth exception: {e}")
+            await self.login_page.keyboard.press(EnterKey)
         self.logger.debug(f"{self.email_address}  relogin goto auth")
         await self.find_cf(self.login_page)
         cf_locator = self.login_page.locator('//*[@id="cf-chl-widget-lpiae"]')
