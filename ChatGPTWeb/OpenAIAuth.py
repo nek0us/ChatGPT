@@ -481,6 +481,21 @@ class AsyncAuth0:
                 # verify code 
                 # await self.login_page.wait_for_timeout(1000)
                 await self.mc_help_email_verify()
+                await self.login_page.wait_for_load_state()
+                await self.login_page.wait_for_load_state('networkidle')
+                await asyncio.sleep(3)
+                check_mc_next = self.login_page.locator('button[data-testid="primaryButton"]')
+                if await check_mc_next.count() > 0:
+                    self.logger.debug(f"{self.email_address} microsoft old login,will try to point Next Button")
+                    try:
+                        await check_mc_next.click(timeout=3000)
+                    except Exception as e:
+                        self.logger.debug(f"{self.email_address} microsoft try to point Next Button exception:{e}")
+                    await asyncio.sleep(1)
+                    await self.login_page.wait_for_load_state('networkidle')
+                    await asyncio.sleep(2)
+                    await self.login_page.wait_for_load_state()
+
 
 
                 try:
