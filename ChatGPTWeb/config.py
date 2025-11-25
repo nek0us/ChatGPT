@@ -34,12 +34,17 @@ formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(messa
 
 MODEL_DICT = {
         "free":{
+            "51m": "gpt-5-1-mini",
             "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
             "4om":"gpt-4o-mini",
             "3.5":"text-davinci-002-render-sha",
         },
         "plus":{
+            "51": "gpt-5-1",
+            "51ts": "gpt-5-1-thinking",
+            "51te": "gpt-5-1-thinking",
+            "51m": "gpt-5-1-mini",
             "5": "gpt-5",
             "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
@@ -404,14 +409,15 @@ class Payload():
                 "page_width": 1100,
                 "pixel_ratio": 1.25,
                 "screen_height": 1152,
-                "screen_width": 2048
+                "screen_width": 2048,
+                "app_name": "chatgpt.com"
             },
             "conversation_mode": {
                 "kind": "primary_assistant"
             },
             # "client_reported_search_source": "conversation_composer_web_icon",
             "enable_message_followups": True,
-            # "force_use_search": search,
+            "force_use_search": search,
             "force_parallel_switch":gpt_model,
             "messages": [{
                 "author": {
@@ -474,7 +480,8 @@ class Payload():
                 "page_width": 1100,
                 "pixel_ratio": 1.25,
                 "screen_height": 1152,
-                "screen_width": 2048
+                "screen_width": 2048,
+                "app_name": "chatgpt.com"
             },
             "conversation_id":
                 conversation_id,
@@ -483,7 +490,7 @@ class Payload():
                 "kind": "primary_assistant",
             },
             "enable_message_followups": True,
-            # "force_use_search": search,
+            "force_use_search": search,
             "force_parallel_switch":gpt_model,
             # "infer_debug_info": {},
             "messages": [{
