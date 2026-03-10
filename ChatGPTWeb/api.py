@@ -46,7 +46,23 @@ async def markdown2image(md: str,session: Session) -> bytes:
         # await page.screenshot(path="1.png")
         # if await editor.count() > 0:
         # await editor.fill(md)
-        await page.evaluate(f"""localStorage.setItem('vditorvditor', {repr(md)});""")
+        # await page.evaluate(f"""localStorage.setItem('vditorvditor', {repr(md)});""")
+        info = await page.evaluate(
+            """
+            (md) => {
+                const activeDoc = localStorage.getItem('arya_active_doc');
+                if (!activeDoc) {
+                    throw new Error('localStorage not have arya_active_doc');
+                }
+
+                const newKey = `arya_doc_${activeDoc}`;
+                localStorage.setItem(newKey, md);
+
+                return { activeDoc, newKey };
+            }
+            """,
+            md
+        )
         await page.goto("https://markdown.lovejade.cn/export/png",wait_until="networkidle")
         await asyncio.sleep(2)
         scr = page.locator("div[class='vditor-reset']")
@@ -66,13 +82,14 @@ async def markdown2image(md: str,session: Session) -> bytes:
 # """     
 #         # run_download = "() =>  document.querySelector('.export-page').__vue__.exportAndDownloadImg(document.querySelectorAll('.vditor-preview')[1])"
 #         get_base64 = "window.dd"
-        
-#         await page.evaluate("""
-#     () => {
-#         const el = document.querySelector('.header-wrapper');
-#         if (el) el.remove();
-#     }
-# """)
+        header_locator = page.locator("header[class='header-wrapper']")
+        await header_locator.wait_for(state="attached", timeout=5000)
+        await page.evaluate("""
+                    () => {
+                        const el = document.querySelector('.header-wrapper');
+                        if (el) el.remove();
+                    }
+                """)
         # if await export_button.count() > 0:
         #     await page.evaluate(hook_download)
         #     await page.evaluate(run_download)
