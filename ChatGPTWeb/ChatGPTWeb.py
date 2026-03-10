@@ -240,9 +240,9 @@ class chatgpt:
                     self.logger.error(f"add {context_index} flush cf task error! {e}")
             try:
                 self.logger.debug(f"{session.email} will flush alive tasks")
-                await asyncio.wait_for(asyncio.gather(*tasks),timeout=150)
+                await asyncio.wait_for(asyncio.gather(*tasks),timeout=300)
             except TimeoutError:
-                self.logger.warning(f"{session.email} flush alive tasks timeout")
+                self.logger.warning(f"{session.email} flush alive tasks timeout 300")
             except Exception as e:
                 a, b, exc_traceback = sys.exc_info()
                 self.logger.warning(f"{session.email} flush alive tasks error:{e},line: {exc_traceback.tb_lineno}") # type: ignore

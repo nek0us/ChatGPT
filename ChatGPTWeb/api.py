@@ -429,7 +429,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
 
             if res.status == 403 and res.url == url:
                 session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
-            elif (res.status == 200 or res.status == 307) and res.url == url:
+            elif (res.status == 200 or res.status == 307 or res.status == 304) and res.url == url:
                 if await res.json():
                     # await page.wait_for_timeout(1000)
                     cookies = await session.page.context.cookies()
@@ -508,8 +508,12 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                     if "error" in token and session.status != Status.Login.value:
                         session.status = Status.Update.value
                         logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
-                    session.access_token = token['accessToken']
-                    logger.debug(f"flush {session.email} cf cookie OK!")
+                    if 'accessToken' not in token:
+                        logger.debug(f"flush {session.email}'s cookie but no accessToken in response,it begin Status.Update,html text: \n{await res.body()}\n")
+                        session.status = Status.Update.value
+                    else:
+                        session.access_token = token['accessToken']
+                        logger.debug(f"flush {session.email} cf cookie OK!")
                 else:
                     logger.debug(f"flush {session.email}'s cookie get a {res.status} code,html text: \n{await res.body()}\n,it begin Status.Update")
                     session.status = Status.Update.value
