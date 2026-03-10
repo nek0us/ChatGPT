@@ -34,17 +34,31 @@ formator = logging.Formatter(fmt="%(asctime)s %(filename)s %(levelname)s %(messa
 
 MODEL_DICT = {
         "free":{
+            "5tm": "gpt-5-t-mini",
+            "auto": "auto",
+            "52m": "gpt-5-2-mini",
             "51m": "gpt-5-1-mini",
+            "53": "gpt-5-3",
+            "52": "gpt-5-2",
+            "51": "gpt-5-1",
             "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
             "4om":"gpt-4o-mini",
             "3.5":"text-davinci-002-render-sha",
         },
         "plus":{
-            "51": "gpt-5-1",
+            "auto": "auto",
+            "54ts": "gpt-5-4-thinking",
+            "54te": "gpt-5-4-thinking",
+            "52ts": "gpt-5-2-thinking",
+            "52te": "gpt-5-2-thinking",
             "51ts": "gpt-5-1-thinking",
             "51te": "gpt-5-1-thinking",
+            "52m": "gpt-5-2-mini",
             "51m": "gpt-5-1-mini",
+            "53": "gpt-5-3",
+            "52": "gpt-5-2",
+            "51": "gpt-5-1",
             "5": "gpt-5",
             "5m": "gpt-5-mini",
             "41m":"gpt-4-1-mini",
@@ -274,6 +288,9 @@ def get_first_model():
     first_key = next(iter(free_dict))
     return free_dict[first_key]
 
+def get_auto_model():
+    return "auto"
+
 class MsgData(BaseModel):
     '''
     status ： 操作执行状态
@@ -327,7 +344,8 @@ class MsgData(BaseModel):
     header: Dict[str, str] = Field({}, description="HTTP请求头")
     # 模型选择
     gpt_model: str = Field(
-        default_factory=get_first_model, 
+        # default_factory=get_first_model, 
+        default_factory=get_auto_model,
         description="使用的GPT模型"
     )
     gpt_plus: bool = Field(False, description="use plus account")
