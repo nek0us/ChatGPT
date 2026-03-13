@@ -326,12 +326,16 @@ class AsyncAuth0:
             
             await asyncio.sleep(1)
             openai_password_input = self.login_page.locator("input[type='password']")
-            self.logger.debug(f"{self.email_address} openai login,will set password")
-            await openai_password_input.wait_for(state="visible")
-            await openai_password_input.type(self.password,delay=200)
-            self.logger.debug(f"{self.email_address} openai login,will point enter")
-            await asyncio.sleep(1)
-            await self.login_page.keyboard.press(self.EnterKey)
+            if await openai_password_input.count() > 0:
+                self.logger.debug(f"{self.email_address} openai login,find password input")
+                self.logger.debug(f"{self.email_address} openai login,will set password")
+                await openai_password_input.wait_for(state="visible")
+                await openai_password_input.type(self.password,delay=200)
+                self.logger.debug(f"{self.email_address} openai login,will point enter")
+                await asyncio.sleep(1)
+                await self.login_page.keyboard.press(self.EnterKey)
+            else:
+                self.logger.warning(f"{self.email_address} openai login,not find password input,will skip")
             await asyncio.sleep(1)
             num -= 1
             if num <= 0:
