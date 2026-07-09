@@ -59,7 +59,8 @@ class chatgpt:
                  logger_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO",
                  stdout_flush: bool = False,
                  local_js: bool = False,
-                 save_screen: bool = False
+                 save_screen: bool = False,
+                 ready_timeout: int = 180
                 
                  ) -> None:
         """
@@ -106,6 +107,7 @@ class chatgpt:
         self.local_js = local_js
         self.js_used = 0
         self.save_screen = save_screen
+        self.ready_timeout = ready_timeout
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -271,26 +273,41 @@ class chatgpt:
     
 
     async def __login(self, session: Session):
-        if self.begin_sleep_time:
-            await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
-        if not session.browser_contexts:
-            session.browser_contexts = await self.browser.new_context()
-            await Stealth().apply_stealth_async(session.browser_contexts)
-        self.logger.debug(f"{session.email} begin login when it start")
-        if session.session_token and session.browser_contexts:
-            token = session.session_token
-            await session.browser_contexts.add_cookies([token]) # type: ignore
-            session.page = await session.browser_contexts.new_page()
-            session.status = Status.Login.value
+        try:
+            if self.begin_sleep_time:
+                await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
+            if not session.browser_contexts:
+                session.browser_contexts = await self.browser.new_context()
+                await Stealth().apply_stealth_async(session.browser_contexts)
+            self.logger.debug(f"{session.email} begin login when it start")
+            if session.session_token and session.browser_contexts:
+                token = session.session_token
+                await session.browser_contexts.add_cookies([token]) # type: ignore
+                session.page = await session.browser_contexts.new_page()
+                session.status = Status.Login.value
 
-        elif session.email and session.password and session.browser_contexts:
-            session.page = await session.browser_contexts.new_page()
-            await Auth(session,self.logger)
-        else:
-            # TODO:
-            pass
-        if session.login_cookies and session.browser_contexts:
-            await session.browser_contexts.add_cookies(session.login_cookies)
+            elif session.email and session.password and session.browser_contexts:
+                session.page = await session.browser_contexts.new_page()
+                await Auth(session,self.logger)
+            else:
+                session.mark_login_failure(
+                    details="No session_token or email/password was provided",
+                    stop=True,
+                )
+            if session.login_cookies and session.browser_contexts:
+                await session.browser_contexts.add_cookies(session.login_cookies)
+        except asyncio.CancelledError:
+            session.mark_login_failure(
+                details="login task cancelled by startup timeout",
+                stop=True,
+            )
+            raise
+        except Exception as e:
+            session.mark_login_failure(
+                details=f"login task failed: {e}",
+                stop=True,
+            )
+            self.logger.warning(f"{session.email} login task failed:{e}")
         
 
     async def __start__(self, loop):
@@ -312,7 +329,6 @@ class chatgpt:
             )
         
         # arkose context
-        load_tasks = []
         auth_tasks = []
         # s = Session(type="script")
         # s.browser_contexts = await self.browser.new_context(service_workers="block")
@@ -320,21 +336,30 @@ class chatgpt:
         # await stealth_async(s.page)
         # self.Sessions.append(s)
         # load_tasks.append(self.load_page(s))
-        self.manage["start"] = True # wait remove
         # gpt cookie contexts
         for session in self.Sessions:
             auth_tasks.append(self.__login(session))
         # auth login
-        
-        load_tasks += [self.load_page(session) for session in self.Sessions] #  if session.status == Status.Login.value or session.status == Status.Update.value
         try:
             self.logger.debug(f"{session.email} will auth_task")
-            await asyncio.wait_for(asyncio.gather(*auth_tasks),timeout=200)
+            await asyncio.wait_for(asyncio.gather(*auth_tasks, return_exceptions=True),timeout=300)
             # load page
+            load_tasks = [
+                self.load_page(session)
+                for session in self.Sessions
+                if session.status != Status.Stop.value
+            ]
             self.logger.debug(f"{session.email} will load_task")
-            await asyncio.wait_for(asyncio.gather(*load_tasks),timeout=200)
+            if load_tasks:
+                await asyncio.wait_for(asyncio.gather(*load_tasks, return_exceptions=True),timeout=240)
         except TimeoutError:
             self.logger.warning(f"{session.email} auth and load_page timeout")
+            for s in self.Sessions:
+                if s.status in (Status.Login.value, Status.Update.value):
+                    s.mark_login_failure(
+                        details="startup auth/load_page timeout",
+                        stop=True,
+                    )
         except Exception as e:
             a, b, exc_traceback = sys.exc_info()
             self.logger.warning(f"{session.email} auth and load_page error:{e},line: {exc_traceback.tb_lineno}") # type: ignore
@@ -342,6 +367,7 @@ class chatgpt:
         self.manage["browser_contexts"] = self.browser.contexts
 
         self.personality.read_data(self.chat_file) # type: ignore
+        self.manage["start"] = True
         self.logger.debug("start!")
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
         self.thread.start()
@@ -500,6 +526,7 @@ class chatgpt:
                 send_page: Page = await session.browser_contexts.new_page() # type: ignore
                 self.logger.debug(f"{session.email} create new page to send msg")
                 async def route_handle(route: Route, request: Request):
+                    json_result = None
                     self.logger.debug(f"{session.email} will use page's _chatp")
                     js_test = await page.evaluate("window._chatp")
                     if not js_test:
@@ -540,6 +567,25 @@ class chatgpt:
                         else:
                             self.logger.warning(f"route_handle try else error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
                             await save_screen(save_screen_status=self.save_screen,path=f"context_{session.email}_page_send_faild!",page=session.page) # type: ignore
+                        
+                    if not isinstance(json_result, dict) or "token" not in json_result:
+                        try:
+                            chatp_type = await page.evaluate("() => typeof window._chatp")
+                            chatp_keys = await page.evaluate(
+                                "() => window._chatp && typeof window._chatp === 'object' ? Object.keys(window._chatp).slice(0, 20) : []"
+                            )
+                        except Exception as e:
+                            chatp_type = "unknown"
+                            chatp_keys = [str(e)]
+                        msg_data.add_error(
+                            kind="requirements_token_unavailable",
+                            message=f"window._chatp is not ready, type:{chatp_type}, keys:{chatp_keys}",
+                            retryable=False,
+                            attempt=attempt,
+                            session_email=session.email,
+                        )
+                        await route.abort()
+                        return
                         
                         
                     self.logger.debug(f"{session.email} will run _proof")
@@ -860,6 +906,17 @@ class chatgpt:
         # script_session: Session = [s for s in self.Sessions if s.type == "script"][0]
         # while not script_session.login_state:
         #     await asyncio.sleep(0.5)
+        startup_wait_seconds = 0
+        while not self.manage["start"]:
+            await asyncio.sleep(0.5)
+            startup_wait_seconds += 0.5
+            if startup_wait_seconds >= self.ready_timeout:
+                msg_data.add_error(
+                    kind="startup_timeout",
+                    message=f"chatgpt startup did not finish within {self.ready_timeout} seconds",
+                )
+                self.logger.error(msg_data.error_info)
+                return msg_data
         session:Session = Session(status=Status.Working.value)
         # We need to get c_id back to the session that created it
         if not msg_data.conversation_id:
@@ -895,13 +952,29 @@ class chatgpt:
                 
                 if filtered_sessions:
                     session = random.choice(filtered_sessions)
+                else:
+                    pending_sessions = [
+                        s for s in session_list
+                        if (
+                            s.type != "script"
+                            and s.status in (Status.Login.value, Status.Update.value, Status.Working.value)
+                            and not s.is_login_disabled()
+                        )
+                    ]
+                    if not pending_sessions:
+                        msg_data.add_error(
+                            kind="no_available_session",
+                            message="no login-capable session is available",
+                        )
+                        self.logger.error(msg_data.error_info)
+                        return msg_data
                     
                 await asyncio.sleep(0.5)
                 wait_ready_seconds += 0.5
-                if wait_ready_seconds >= 30:
+                if wait_ready_seconds >= self.ready_timeout:
                     msg_data.add_error(
                         kind="no_ready_session",
-                        message="no ready session found within 30 seconds",
+                        message=f"no ready session found within {self.ready_timeout} seconds",
                     )
                     self.logger.error(msg_data.error_info)
                     return msg_data
@@ -944,10 +1017,10 @@ class chatgpt:
                         # if this session is working or updating,waitting | 如果它还没准备好，那就等
                         await asyncio.sleep(0.5)
                         wait_ready_seconds += 0.5
-                        if wait_ready_seconds >= 30:
+                        if wait_ready_seconds >= self.ready_timeout:
                             msg_data.add_error(
                                 kind="conversation_session_not_ready",
-                                message=f"conversation session is not ready within 30 seconds, status:{session.status}",
+                                message=f"conversation session is not ready within {self.ready_timeout} seconds, status:{session.status}",
                                 session_email=session.email,
                             )
                             self.logger.error(msg_data.error_info)
