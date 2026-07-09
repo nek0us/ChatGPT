@@ -429,16 +429,48 @@ class chatgpt:
 
 
 
+    def _is_retryable_send_error(self, error: Exception, session: Session) -> bool:
+        text = str(error).lower()
+        if session.status in (Status.Update.value, Status.Stop.value):
+            return False
+        retryable_marks = (
+            "timeout",
+            "network",
+            "net::",
+            "closed",
+            "websocket",
+            "wss",
+            "download is starting",
+        )
+        return any(mark in text for mark in retryable_marks)
+
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
         发送消息处理函数"""
-        if retry != 3:
-            self.logger.debug(f"resend {retry}")
-        retry -= 1 
-        if retry < 0:
-            msg_data.error_info += " and error: send msg retry max\n"
-            return msg_data
-        
+        max_attempts = max(1, retry)
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                self.logger.debug(f"resend attempt {attempt}/{max_attempts}")
+            try:
+                return await self._send_msg_once(msg_data, session, send_status=send_status, attempt=attempt)
+            except Exception as e:
+                retryable = self._is_retryable_send_error(e, session)
+                if not retryable or attempt >= max_attempts:
+                    if attempt >= max_attempts:
+                        msg_data.add_error(
+                            kind="send_retry_max",
+                            message="send msg retry max",
+                            retryable=False,
+                            attempt=attempt,
+                            session_email=session.email,
+                        )
+                    return msg_data
+                await asyncio.sleep(min(attempt, 3))
+        return msg_data
+
+    async def _send_msg_once(self, msg_data: MsgData, session: Session, send_status: bool = True, attempt: int = 1) -> MsgData:
+        """send message body function
+        发送消息处理函数"""
         page = session.page
         token = session.access_token
         context_num = session.email
@@ -462,6 +494,7 @@ class chatgpt:
         # header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device()")
         header['OAI-Language'] = 'en-US'
         headers = header.copy()
+        send_page = None
         try:
             if page and not self.httpx_status:
                 send_page: Page = await session.browser_contexts.new_page() # type: ignore
@@ -596,7 +629,14 @@ class chatgpt:
                         if "Download is starting" not in e.args[0]:
                             # 处理重定向
                             self.logger.warning(f"Download message error:{e},line number {exc_traceback.tb_lineno}") # type: ignore
-                            msg_data.error_info += f"Download message error: {str(e)},line number {exc_traceback.tb_lineno}\n" # type: ignore
+                            msg_data.add_error(
+                                kind="download_message",
+                                message=str(e),
+                                retryable=True,
+                                attempt=attempt,
+                                session_email=session.email,
+                                line=exc_traceback.tb_lineno, # type: ignore
+                            )
                             raise e
                     self.logger.debug(f"{session.email} download msg will wait networkidle")
                     await send_page.wait_for_load_state('networkidle')
@@ -622,10 +662,22 @@ class chatgpt:
                         if "token_expired" in await res.text():
                             session.status = Status.Update.value
                             self.logger.warning(f"{session.email} maybe token expired,set session.status Update,please try again later")
-                            msg_data.error_info += f"{session.email} maybe token expired,set session.status Update,please try again later\n"
-                            retry = 0
+                            msg_data.add_error(
+                                kind="token_expired",
+                                message=f"{session.email} maybe token expired,set session.status Update,please try again later",
+                                retryable=False,
+                                attempt=attempt,
+                                session_email=session.email,
+                            )
                             raise e
-                        msg_data.error_info += f"download msg may json_wss,and error: {e} {await res.text()},line number {exc_traceback.tb_lineno}\n" # type: ignore
+                        msg_data.add_error(
+                            kind="json_wss",
+                            message=f"{e} {await res.text()}",
+                            retryable=True,
+                            attempt=attempt,
+                            session_email=session.email,
+                            line=exc_traceback.tb_lineno, # type: ignore
+                        )
                         raise e
                     finally:
                         if session.wss:
@@ -706,10 +758,19 @@ class chatgpt:
         except Exception as e:
             a, b, exc_traceback = sys.exc_info()
             self.logger.warning(f"send message error:{e}")
-            msg_data.error_info += f"send message error: {str(e)} ,retry: {retry},line number {exc_traceback.tb_lineno}\n" # type: ignore
-            msg_data = await self.send_msg(msg_data,session,retry=retry)
+            retryable = self._is_retryable_send_error(e, session)
+            msg_data.add_error(
+                kind="send_message",
+                message=str(e),
+                retryable=retryable,
+                attempt=attempt,
+                session_email=session.email,
+                line=exc_traceback.tb_lineno, # type: ignore
+            )
+            raise e
         finally:
-            await send_page.close()
+            if send_page:
+                await send_page.close()
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:

@@ -378,6 +378,7 @@ class MsgData(BaseModel):
     msg_raw: List[str] = Field([],description="原始消息")
     msg_md_img: bytes = Field(b"",description="markdown to image")
     error_info: str = Field("", description="错误信息")
+    error_list: List[Dict[str, Any]] = Field(default_factory=list, description="structured errors")
     
     # 会话标识
     conversation_id: str = Field("", description="会话id")
@@ -446,6 +447,37 @@ class MsgData(BaseModel):
         super().__setattr__(name, value)
         if name == "gpt_model":
             self.gpt_plus = self.is_plus_model()
+
+    def add_error(
+            self,
+            kind: str,
+            message: str,
+            retryable: bool = False,
+            attempt: Optional[int] = None,
+            session_email: str = "",
+            line: Optional[int] = None
+    ):
+        item: Dict[str, Any] = {
+            "kind": kind,
+            "message": message,
+            "retryable": retryable,
+        }
+        if attempt is not None:
+            item["attempt"] = attempt
+        if session_email:
+            item["session_email"] = session_email
+        if line is not None:
+            item["line"] = line
+        self.error_list.append(item)
+
+        parts = [kind]
+        if attempt is not None:
+            parts.append(f"attempt={attempt}")
+        if session_email:
+            parts.append(f"session={session_email}")
+        if line is not None:
+            parts.append(f"line={line}")
+        self.error_info += f"{' '.join(parts)}: {message}\n"
 
     # @model_validator(mode="after")
     # def validate_model(self):
