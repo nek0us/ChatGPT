@@ -7,8 +7,9 @@ import pickle
 import base64
 import asyncio
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional,List
+from typing import Any, Dict, Optional,List
 from datetime import datetime
 from httpx import AsyncClient
 from contextlib import asynccontextmanager
@@ -27,6 +28,168 @@ class MockResponse:
     
     async def text(self):
         return self.data
+
+
+@dataclass
+class ChatStreamEvent:
+    type: str
+    text: str = ""
+    message_id: str = ""
+    conversation_id: str = ""
+    image_urls: List[str] = field(default_factory=list)
+    raw: Optional[Dict[str, Any]] = None
+
+
+class ChatStreamParser:
+    def __init__(self):
+        self.text = ""
+        self.message_id = ""
+        self.conversation_id = ""
+        self.image_gen = False
+        self.image_urls: List[str] = []
+
+    def _append_delta(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        if not value:
+            return []
+        self.text += value
+        return [ChatStreamEvent(type="delta", text=value, raw=raw)]
+
+    def _merge_full_text(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        if not value:
+            return []
+        if value.startswith(self.text):
+            delta = value[len(self.text):]
+        else:
+            delta = value
+        self.text = value
+        if not delta:
+            return []
+        return [ChatStreamEvent(type="delta", text=delta, raw=raw)]
+
+    def _handle_message(self, item: Dict[str, Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        message = item.get("message")
+        if not isinstance(message, dict):
+            return events
+
+        if item.get("conversation_id"):
+            self.conversation_id = item["conversation_id"]
+
+        author = message.get("author")
+        role = author.get("role") if isinstance(author, dict) else ""
+        if message.get("id") and role == "assistant":
+            self.message_id = message["id"]
+
+        if role == "tool":
+            metadata = message.get("metadata", {})
+            if metadata.get("ui_card_title") == "Processing image":
+                self.image_gen = True
+                events.append(ChatStreamEvent(type="image_pending", raw=raw))
+
+        content = message.get("content", {})
+        if role == "assistant" and isinstance(content, dict):
+            parts = content.get("parts")
+            if parts and isinstance(parts[0], str):
+                events.extend(self._merge_full_text(parts[0], raw))
+
+        if message.get("is_complete") or message.get("status") == "finished_successfully":
+            events.append(self.final_event(raw=raw))
+        return events
+
+    def _handle_patch_list(self, patches: List[Dict[str, Any]], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            path = patch.get("p")
+            value = patch.get("v")
+            if path == "/message/content/parts/0" and isinstance(value, str):
+                events.extend(self._append_delta(value, raw))
+            elif path == "/message/status" and value == "finished_successfully":
+                events.append(self.final_event(raw=raw))
+            elif path == "/message/metadata/image_results" and isinstance(value, list):
+                for image in value:
+                    if isinstance(image, dict) and image.get("content_url"):
+                        self.image_urls.append(image["content_url"])
+                if self.image_urls:
+                    events.append(ChatStreamEvent(type="image", image_urls=self.image_urls.copy(), raw=raw))
+        return events
+
+    def feed(self, item: Dict[str, Any]) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        path = item.get("p")
+        op = item.get("o")
+        value = item.get("v")
+
+        if path == "/message/content/parts/0" and isinstance(value, str):
+            events.extend(self._append_delta(value, item))
+        elif isinstance(value, list):
+            for patch in value:
+                if not isinstance(patch, dict):
+                    continue
+                if patch.get("p") == "/message/content/parts/0" and isinstance(patch.get("v"), str):
+                    events.extend(self._append_delta(patch["v"], item))
+                elif patch.get("p") == "" and patch.get("o") == "patch" and isinstance(patch.get("v"), list):
+                    events.extend(self._handle_patch_list(patch["v"], item))
+                elif patch.get("p") == "/message/status" and patch.get("v") == "finished_successfully":
+                    events.append(self.final_event(raw=item))
+        elif isinstance(value, dict):
+            events.extend(self._handle_message(value, item))
+
+        if path == "/message/metadata/image_results" and isinstance(value, list):
+            events.extend(self._handle_patch_list([item], item))
+
+        if op == "patch" and isinstance(value, list):
+            events.extend(self._handle_patch_list(value, item))
+
+        return events
+
+    def final_event(self, raw: Optional[Dict[str, Any]] = None) -> ChatStreamEvent:
+        return ChatStreamEvent(
+            type="final",
+            text=self.text,
+            message_id=self.message_id,
+            conversation_id=self.conversation_id,
+            image_urls=self.image_urls.copy(),
+            raw=raw,
+        )
+
+
+def parse_event_stream_items(stream_text: str) -> List[Dict[str, Any]]:
+    text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
+    text_tmp1 = text_tmp1[7:] if text_tmp1.startswith("\ndata: ") else text_tmp1
+    text_tmp2 = text_tmp1[:-16] if text_tmp1.endswith("\n\ndata: [DONE]\n\n") else text_tmp1
+    text_list: List[Dict[str, Any]] = []
+    for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
+        if x == "":
+            continue
+        tmp1 = x.strip()
+        if tmp1 == "[DONE]":
+            continue
+        if not tmp1.startswith("{"):
+            start_index = tmp1.find("{")
+            tmp1 = tmp1[start_index:]
+        if not tmp1.endswith("}"):
+            end_index = tmp1.rfind("}")
+            tmp1 = tmp1[:end_index + 1]
+        try:
+            tmp = json.loads(tmp1)
+        except:
+            tmp2 = tmp1.replace("\\\\","\\")
+            tmp = json.loads(tmp2)
+        text_list.append(tmp)
+    return text_list
+
+
+def parse_event_stream_events(stream_text: str) -> List[ChatStreamEvent]:
+    parser = ChatStreamParser()
+    events: List[ChatStreamEvent] = []
+    for item in parse_event_stream_items(stream_text):
+        events.extend(parser.feed(item))
+    if parser.text or parser.image_gen:
+        if not events or events[-1].type != "final":
+            events.append(parser.final_event())
+    return events
 
 @asynccontextmanager
 async def new_script_page(session: Session) -> AsyncIterator[Page]:
@@ -201,6 +364,8 @@ async def try_wss(wss: dict, msg_data: MsgData,session: Session,proxy: Optional[
 
 async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool = False) -> MockResponse:
     body = ""
+    parser = ChatStreamParser()
+    printed_prefix = False
     while 1:
         recv = await asyncio.wait_for(ws.receive(),timeout=20)
         if json.loads(recv.data)["body"] == "ZGF0YTogW0RPTkVdCgo=":
@@ -210,20 +375,17 @@ async def recv_ws(session: Session,ws:ClientWebSocketResponse,stdout_flush: bool
         ws_tmp = json.loads(recv.data)
         ws_tmp_body = base64.b64decode(ws_tmp['body']).decode('utf-8')
         msg_body = json.loads(ws_tmp_body[5:])
-        if 'message' in msg_body:
-            if msg_body['message']:
-                if msg_body['message']['author']['role'] == 'assistant':
-                    if stdout_flush and "parts" in msg_body['message']["content"]:
-                        text = msg_body['message']["content"]["parts"][0]
-                        # yield text
-                        #TODO
-                        sys.stdout.write(f"\rChatGPT:{text}")
-                        sys.stdout.flush()
-                        body = ws_tmp_body
-                    elif not stdout_flush and "parts" in msg_body['message']['content']:
-                        body = ws_tmp_body
-                    if "is_complete" in msg_body['message']:
-                        return MockResponse(ws_tmp_body)
+        for event in parser.feed(msg_body):
+            if stdout_flush and event.type == "delta" and event.text:
+                if not printed_prefix:
+                    sys.stdout.write("ChatGPT:")
+                    printed_prefix = True
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+            if event.type in ("delta", "final"):
+                body = ws_tmp_body
+            if event.type == "final":
+                return MockResponse(ws_tmp_body)
     return MockResponse(body)
 
 async def get_msg_from_history(page: Page,msg_data: MsgData,url: str,logger):
@@ -277,104 +439,24 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
 
 async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData) -> MsgData:
     stream_text = await response.text()
-    # remove startswith("event: delta_encoding")
-    text_tmp1 = stream_text[33:] if stream_text.startswith("event: delta_encoding") else stream_text
-    text_tmp1 = text_tmp1[7:] if text_tmp1.startswith("\ndata: ") else text_tmp1
-    # remove endswith("\n\ndata: [DONE]\n\n")
-    if text_tmp1.endswith("\n\ndata: [DONE]\n\n"):
-        text_tmp2 = text_tmp1[:-16] 
-    else:
-        text_tmp2 = text_tmp1
-    text_list = []
-    # remove "event: delta" and "data"
-    for x in text_tmp2.replace("""event: delta""","").split("""\n\ndata: """):
-        if x != "":
-            tmp1 = x.strip() # repr(x.strip())[1:-1]
-            if not tmp1.startswith("{"):
-                start_index = tmp1.find("{")
-                tmp1 = tmp1[start_index:]
-            if not tmp1.endswith("}"):
-                end_index = tmp1.rfind("}")
-                tmp1 = tmp1[:end_index + 1]
-            # try json loads
-            try:
-                tmp = json.loads(tmp1)
-            except:
-                tmp2 = tmp1.replace("\\\\","\\")
-                tmp = json.loads(tmp2)
-            text_list.append(tmp)
-    # index of : data: {"p": "/message/content/parts/0", "o": "append", "v": "\u662f\u4e00"}   
-    first_msg_list_begin = [index for index,msg in enumerate(text_list) if "p" in msg and msg['p'] == "/message/content/parts/0"]
-    # index of : data: {"type": "title_generation"}
-    # first_msg_list_end = [index for index,msg in enumerate(text_list) if "type" in msg and msg["type"] == "title_generation"]
-    msg_list = ""
-    msg_id = ""
-    url_list = []
-    begin = first_msg_list_begin[0] if first_msg_list_begin else 0
-    # end = first_msg_list_end[0] if first_msg_list_end else len(text_list)
-    for index,msg in enumerate(text_list):
-        # if "type" in msg and msg["type"] == "title_generation":
-        #     title = msg["title"]
+    parser = ChatStreamParser()
+    for item in parse_event_stream_items(stream_text):
+        parser.feed(item)
 
-        # word
-        if index >= begin: # and index <= end:
-            if "v" in msg and isinstance(msg["v"], str):
-                msg_list += msg["v"]
-            if "v" in msg and isinstance(msg["v"], list):
-                for x in msg["v"]:
-                    if "p" in x and x["p"] == "/message/content/parts/0":
-                        msg_list += x["v"]
-                    if "p" in x and x["p"] == "" and "o" in x and x["o"] == "patch" and "v" in x and isinstance(x["v"], list):
-                        for sub in x["v"]:
-                            if "p" in sub  and sub ["p"] == "/message/content/parts/0" and "v" in sub:
-                                msg_list += sub["v"]
-                            # elif "p" in sub and sub["p"] == "/message/status" and sub["v"] == "finished_successfully":
-                            #     break
-                    if "p" in x and x["p"] == "/message/status" and x["v"] == "finished_successfully":
-                        # break
-                        pass
-            elif "v" in msg and isinstance(msg["v"], dict):
-                pass
-
-        # msg id..
-        if "v" in msg and isinstance(msg["v"], dict):
-            if "message" in msg['v'] and isinstance(msg["v"]["message"],dict):
-                if "id" in msg["v"]["message"] and "author" in msg["v"]["message"] and isinstance(msg["v"]["message"]["author"],dict):
-                    if "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'assistant':
-                        msg_id = msg["v"]["message"]["id"]
-                        msg_data.conversation_id = msg["v"]['conversation_id']
-                    elif "role" in msg["v"]["message"]["author"] and msg["v"]["message"]["author"]["role"] == 'tool':
-                        # image generation
-                        if "metadata" in msg["v"]["message"] and "ui_card_title" in msg["v"]["message"]["metadata"] and msg["v"]["message"]["metadata"]["ui_card_title"] == "Processing image":
-                            msg_data.image_gen = True
-                        elif "metadata" in msg["v"]["message"] and "command" in msg["v"]["message"]["metadata"] and msg["v"]["message"]["metadata"]["command"] == "search":
-                            # search img
-                            pass
-            
-                # if "content" in msg["v"]["message"] and isinstance(msg["v"]["message"]["content"],dict):
-                    
-        # image url
-        # if "url_moderation_result" in msg and isinstance(msg["url_moderation_result"], dict):
-        #     if "full_url" in msg["url_moderation_result"]:
-        if 'v' in msg and isinstance(msg['v'], list):
-            if 'p' in msg['v'] and msg['v']['p'] == "/message/metadata/image_results":
-                if 'v' in msg['v'] and isinstance(msg['v']['v'], list):
-                    for d in msg['v']['v']:
-                        if "content_url" in msg['v']['v']:
-                            url_list.append(msg['v']['v']["content_url"])
-                    
-
-
-    if msg_list or msg_data.image_gen:
-        if "turn0" in msg_list or "city" in msg_list: 
+    msg_data.image_gen = parser.image_gen
+    if parser.text or msg_data.image_gen:
+        msg_list = parser.text
+        if "turn0" in msg_list or "city" in msg_list:
             pattern = r'[\ue200-\ue203]?([a-z]+)?[\ue200-\ue203](?:turn\d+(?:image|search|fetch|forecast)\d+|city)'
             msg_list_str_re = re.sub(pattern, '', msg_list)
             msg_list = msg_list_str_re
         
         msg_data.status = True
-        msg_data.next_msg_id = msg_id
-        msg_data.msg_recv = msg_list
-        msg_data.img_list = url_list
+        msg_data.next_msg_id = parser.message_id
+        if parser.conversation_id:
+            msg_data.conversation_id = parser.conversation_id
+        msg_data.msg_recv = markdown_to_text(msg_list)
+        msg_data.img_list = parser.image_urls
         
     return msg_data
 
