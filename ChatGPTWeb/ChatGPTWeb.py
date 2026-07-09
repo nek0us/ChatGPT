@@ -114,6 +114,8 @@ class chatgpt:
         self._closing = False
         self._start_task: Optional[asyncio.Future] = None
         self._alive_task: Optional[asyncio.Future] = None
+        self._watched_contexts = set()
+        self._watched_pages = set()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -210,6 +212,73 @@ class chatgpt:
     # 安装Firefox
     def install_firefox(self):
         os.system('playwright_firefox install firefox')
+
+    def _mark_session_runtime_closed(self, session: Session, source: str):
+        if self._closing:
+            return
+        if session.status == Status.Stop.value:
+            return
+        session.login_state = False
+        session.login_state_first = False
+        session.status = Status.Update.value
+        session.last_login_error = f"runtime {source} closed unexpectedly"
+        if source == "context":
+            session.browser_contexts = None
+            session.page = None
+        elif "page" in source:
+            session.page = None
+        self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Update")
+
+    def _watch_page_events(self, session: Session, page: Page, label: str = "page"):
+        page_id = id(page)
+        if page_id in self._watched_pages:
+            return
+        self._watched_pages.add(page_id)
+        page.on("close", lambda *args: self._mark_session_runtime_closed(session, label))
+        page.on("crash", lambda *args: self._mark_session_runtime_closed(session, f"{label} crash"))
+        page.on("pageerror", lambda error: self.logger.warning(f"{session.email} {label} pageerror: {error}"))
+
+    def _watch_context_events(self, session: Session):
+        context = session.browser_contexts
+        if not context:
+            return
+        context_id = id(context)
+        if context_id in self._watched_contexts:
+            return
+        self._watched_contexts.add(context_id)
+        context.on("close", lambda *args: self._mark_session_runtime_closed(session, "context"))
+        for page in context.pages:
+            if page == session.page:
+                self._watch_page_events(session, page)
+
+    async def _ensure_session_runtime(self, session: Session) -> bool:
+        if self._closing or session.status == Status.Stop.value:
+            return False
+        browser = getattr(self, "browser", None)
+        if not browser or not browser.is_connected():
+            self._mark_session_runtime_closed(session, "browser")
+            return False
+
+        context = session.browser_contexts
+        if not context:
+            self.logger.warning(f"{session.email} runtime context missing, recreate it")
+            session.browser_contexts = await self.browser.new_context()
+            await Stealth().apply_stealth_async(session.browser_contexts)
+            self._watch_context_events(session)
+            if session.login_cookies:
+                await session.browser_contexts.add_cookies(session.login_cookies)
+            elif session.session_token:
+                await session.browser_contexts.add_cookies([session.session_token]) # type: ignore
+        else:
+            self._watch_context_events(session)
+
+        page = session.page
+        if not page or page.is_closed():
+            self.logger.warning(f"{session.email} runtime page missing or closed, recreate it")
+            session.page = await session.browser_contexts.new_page() # type: ignore
+            self._watch_page_events(session, session.page)
+
+        return True
     
     def set_chat_file(self):
         """
@@ -240,6 +309,8 @@ class chatgpt:
             )
             return
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
+        if not await self._ensure_session_runtime(session):
+            return
         session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
         # check session_token need update
         if session.status == Status.Update.value and not session.is_login_disabled():
@@ -292,15 +363,18 @@ class chatgpt:
             if not session.browser_contexts:
                 session.browser_contexts = await self.browser.new_context()
                 await Stealth().apply_stealth_async(session.browser_contexts)
+                self._watch_context_events(session)
             self.logger.debug(f"{session.email} begin login when it start")
             if session.session_token and session.browser_contexts:
                 token = session.session_token
                 await session.browser_contexts.add_cookies([token]) # type: ignore
                 session.page = await session.browser_contexts.new_page()
+                self._watch_page_events(session, session.page)
                 session.status = Status.Login.value
 
             elif session.email and session.password and session.browser_contexts:
                 session.page = await session.browser_contexts.new_page()
+                self._watch_page_events(session, session.page)
                 await Auth(session,self.logger)
             else:
                 session.mark_login_failure(
@@ -340,6 +414,7 @@ class chatgpt:
             headless=self.headless,
             slow_mo=50, proxy=self.proxy,
             )
+        self.browser.on("disconnected", lambda *args: self.logger.warning("browser disconnected unexpectedly") if not self._closing else None)
         
         # arkose context
         auth_tasks = []
@@ -1313,6 +1388,14 @@ class chatgpt:
                     )
                     self.logger.error(msg_data.error_info)
                     return msg_data
+            if not await self._ensure_session_runtime(session):
+                msg_data.add_error(
+                    kind="session_runtime_unavailable",
+                    message=f"session runtime is not available: {session.email}",
+                    session_email=session.email,
+                )
+                self.logger.error(msg_data.error_info)
+                return msg_data
             session.status = Status.Working.value
             self.logger.debug(f"session {session.email} begin work")
         else:
@@ -1360,6 +1443,14 @@ class chatgpt:
                             )
                             self.logger.error(msg_data.error_info)
                             return msg_data
+                    if not await self._ensure_session_runtime(session):
+                        msg_data.add_error(
+                            kind="session_runtime_unavailable",
+                            message=f"session runtime is not available: {session.email}",
+                            session_email=session.email,
+                        )
+                        self.logger.error(msg_data.error_info)
+                        return msg_data
                     session.status = Status.Working.value
                     self.logger.debug(f"session {session.email} begin work")
                     break
