@@ -2,6 +2,65 @@
 
 This document tracks the practical path from the current browser-driven ChatGPT wrapper to a cleaner bot and agent backend.
 
+## Current Direction
+
+The main transport should stay browser-resident. Protected ChatGPT requests should be made from the logged-in Playwright page with browser `fetch`, not from Python `httpx`.
+
+Reasons:
+
+- Browser fetch keeps the real browser cookie jar, Cloudflare state, user agent, TLS/browser behavior, local storage, service worker state, and cached frontend modules together.
+- Python `httpx` was historically tested and sometimes worked, but it is unreliable because Cloudflare can distinguish it from the real browser environment.
+- The old route/goto transport is kept only as a compatibility fallback. It is slower and cannot provide realtime streaming cleanly.
+- Frontend JS exports can move. Code should prefer capability detection and multiple provider names over hard-coded single module names.
+
+## Implementation Notes So Far
+
+- Login failures are now classified and permanent failures stop retrying instead of looping forever.
+- Send retries are iterative and write structured errors into `MsgData.error_list`.
+- `ChatStreamParser` parses ChatGPT SSE/WebSocket patch events into `ChatStreamEvent` objects.
+- `ChatStreamDecoder` incrementally decodes raw SSE chunks and feeds `ChatStreamParser`.
+- Buffered browser fetch send works through `/backend-api/f/conversation`, with `/backend-api/conversation` as a fallback candidate.
+- `continue_chat_stream()` streams events from browser `fetch` by exposing a temporary Playwright binding and pushing `ReadableStream` chunks back to Python.
+- Stream event noise is filtered:
+  - empty early `final` events are hidden;
+  - duplicate final events are hidden;
+  - overlapping text chunks are deduplicated by the parser.
+- `chat.close()` now cancels keep-alive work and closes browser resources without forcibly stopping the event loop.
+- Runtime watchers record unexpected browser/context/page closure and can recreate missing session context/page before keep-alive or send.
+
+## Known Traps
+
+- Do not make `httpx` the default path for protected ChatGPT endpoints. It can trigger Cloudflare verification and account risk behavior.
+- Do not assume `/backend-api/sentinel/chat-requirements` is the only requirements URL forever. The browser bridge gathers resource entries containing `/backend-api/sentinel/chat-requirements` and also keeps the known path as a candidate.
+- Do not assume stream `data:` payloads are always one clean dict. Some chunks can contain non-dict payloads or status-only patches.
+- Do not emit every parser `final` event directly to bot/agent callers. Some early final-like patches contain only a conversation id and no useful assistant content.
+- Do not listen to every new page in a context as if it were the long-lived session page. Upload, login, markdown rendering, and keep-alive temporary pages close normally.
+- Do not close browser/context on each bot request. Bot and agent usage need warm sessions for latency and account stability.
+
+## Verified Smoke Commands
+
+Buffered send:
+
+```powershell
+uv run python example\local_smoke.py
+```
+
+Streaming send:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_STREAM='true'
+uv run python example\local_smoke.py
+```
+
+Expected streaming shape:
+
+```json
+[
+  {"type": "delta", "text": "..."},
+  {"type": "final", "text": "...", "conversation_id": "...", "message_id": "..."}
+]
+```
+
 ## Phase 1: Login Stability
 
 - Add login failure classification for account lock, bad credentials, verification required, risk blocks, rate limits, transient failures, and unknown failures.
@@ -21,11 +80,10 @@ This document tracks the practical path from the current browser-driven ChatGPT 
 
 ## Phase 3: Streaming Output
 
-- Split the current receive path into parser and transport layers.
-- Convert websocket receive logic into an async generator that yields `delta`, `final`, `image`, and `error` events.
+- Split the current receive path into parser and transport layers. Done for SSE via `ChatStreamDecoder` and `ChatStreamParser`.
+- Convert browser fetch streaming into an async generator that yields `delta`, `final`, `image`, and `error` events. Implemented as `continue_chat_stream()`.
 - Keep `continue_chat()` as the existing buffered API.
-- Add `stream_chat()` as the new realtime API for bots and agents.
-- Add compatibility adapters so NoneBot can choose buffered or streaming mode.
+- Add adapter examples so NoneBot can choose buffered or streaming mode.
 
 ## Phase 4: Stable Core Service API
 
@@ -58,6 +116,7 @@ This document tracks the practical path from the current browser-driven ChatGPT 
 - Keep tool schemas compact and explicit.
 - Never expose raw cookies, access tokens, or account passwords through MCP.
 - Add approval-sensitive tools for actions that spend account quota or upload files.
+- For Codex/agent usage, prefer streaming events over buffered responses so the caller can observe partial progress and cancellation.
 
 ## Phase 7: Storage And State
 
@@ -79,7 +138,22 @@ This document tracks the practical path from the current browser-driven ChatGPT 
 1. Login state metadata and failure classification.
 2. Login retry/cooldown/stop behavior.
 3. Structured retry errors for sending messages.
-4. Streaming parser and `stream_chat()`.
-5. Service API boundary.
-6. NoneBot adapter cleanup.
-7. MCP server prototype.
+4. Browser fetch transport for conversation send.
+5. Graceful shutdown and runtime context/page recovery.
+6. Streaming parser and `continue_chat_stream()`.
+7. Service API boundary.
+8. NoneBot adapter cleanup.
+9. MCP server prototype.
+
+## Next Engineering Steps
+
+- Extract duplicated session-selection code from `continue_chat()` and `continue_chat_stream()` into a shared internal helper.
+- Extract duplicated browser JS for buffered and streaming fetch into one maintained script template.
+- Add parser fixtures for saved SSE streams, including:
+  - normal text;
+  - overlapping text patches;
+  - empty early final patches;
+  - image generation status and image URL patches.
+- Add an optional `stream_callback` or adapter helper for callers that cannot consume async generators directly.
+- Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
+- Add MCP prototype only after service-layer request/response objects are stable.

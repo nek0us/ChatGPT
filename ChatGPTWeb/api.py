@@ -131,6 +131,8 @@ class ChatStreamParser:
 
     def feed(self, item: Dict[str, Any]) -> List[ChatStreamEvent]:
         events: List[ChatStreamEvent] = []
+        if not isinstance(item, dict):
+            return events
         path = item.get("p")
         op = item.get("o")
         value = item.get("v")
@@ -167,6 +169,61 @@ class ChatStreamParser:
             image_urls=self.image_urls.copy(),
             raw=raw,
         )
+
+
+class ChatStreamDecoder:
+    def __init__(self):
+        self.buffer = ""
+        self.parser = ChatStreamParser()
+        self.done = False
+        self._final_sent = False
+
+    def _feed_block(self, block: str) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+        if not data_lines:
+            return events
+        payload = "\n".join(data_lines).strip()
+        if not payload:
+            return events
+        if payload == "[DONE]":
+            self.done = True
+            if not self._final_sent and (self.parser.text or self.parser.image_gen):
+                self._final_sent = True
+                events.append(self.parser.final_event())
+            return events
+        try:
+            item = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = payload.replace("\\\\", "\\")
+            item = json.loads(payload)
+        events.extend(self.parser.feed(item))
+        if events and events[-1].type == "final":
+            self._final_sent = True
+        return events
+
+    def feed(self, chunk: str) -> List[ChatStreamEvent]:
+        if not chunk:
+            return []
+        self.buffer += chunk
+        events: List[ChatStreamEvent] = []
+        while "\n\n" in self.buffer:
+            block, self.buffer = self.buffer.split("\n\n", 1)
+            events.extend(self._feed_block(block))
+        return events
+
+    def close(self) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        if self.buffer.strip():
+            events.extend(self._feed_block(self.buffer))
+        self.buffer = ""
+        if not self._final_sent and (self.parser.text or self.parser.image_gen):
+            self._final_sent = True
+            events.append(self.parser.final_event())
+        return events
 
 
 def parse_event_stream_items(stream_text: str) -> List[Dict[str, Any]]:
@@ -453,9 +510,10 @@ def stream2msgdata(stream_lines:list,msg_data:MsgData):
 
 async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData) -> MsgData:
     stream_text = await response.text()
-    parser = ChatStreamParser()
-    for item in parse_event_stream_items(stream_text):
-        parser.feed(item)
+    decoder = ChatStreamDecoder()
+    decoder.feed(stream_text)
+    decoder.close()
+    parser = decoder.parser
 
     msg_data.image_gen = parser.image_gen
     if parser.text or msg_data.image_gen:

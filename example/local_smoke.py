@@ -12,6 +12,7 @@ SESSIONS_FILE = Path(os.getenv("CHATGPTWEB_SESSIONS_FILE", "example/local_sessio
 PROMPT = os.getenv("CHATGPTWEB_SMOKE_PROMPT", "Say hello in one short sentence.")
 HEADLESS = os.getenv("CHATGPTWEB_HEADLESS", "false").lower() in ("1", "true", "yes")
 TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_TIMEOUT", "600"))
+STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
@@ -38,8 +39,26 @@ async def main():
         ready_timeout=TIMEOUT,
     )
     data = MsgData(msg_send=PROMPT)
+    stream_events = []
     try:
-        data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
+        if STREAM:
+            async def run_stream():
+                events = []
+                async for event in chat.continue_chat_stream(data):
+                    events.append(
+                        {
+                            "type": event.type,
+                            "text": event.text,
+                            "conversation_id": event.conversation_id,
+                            "message_id": event.message_id,
+                            "image_urls": event.image_urls,
+                        }
+                    )
+                return events
+
+            stream_events = await asyncio.wait_for(run_stream(), timeout=TIMEOUT)
+        else:
+            data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
     except TimeoutError:
         data.add_error(
             kind="local_smoke_timeout",
@@ -57,6 +76,8 @@ async def main():
                 "msg_recv": data.msg_recv,
                 "error_info": data.error_info,
                 "error_list": data.error_list,
+                "stream": STREAM,
+                "stream_events": stream_events,
             },
             ensure_ascii=False,
             indent=2,

@@ -11,7 +11,7 @@ from pathlib import Path
 from aiohttp import ClientSession
 from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
-from typing import Dict, Optional,Literal,List
+from typing import AsyncIterator, Dict, Optional,Literal,List
 from urllib.parse import urlparse
 from .config import (
     Payload,
@@ -44,7 +44,9 @@ from .api import (
     get_json_url,
     get_all_msg,
     markdown2image,
-    MockResponse
+    MockResponse,
+    ChatStreamDecoder,
+    ChatStreamEvent,
 )
 
 class chatgpt:
@@ -606,6 +608,17 @@ class chatgpt:
         )
         return any(mark in text for mark in retryable_marks)
 
+    def _build_conversation_payload(self, msg_data: MsgData) -> str:
+        if not msg_data.conversation_id:
+            return Payload.new_payload(msg_data.msg_send, gpt_model=msg_data.gpt_model, files=msg_data.upload_file)
+        return Payload.old_payload(
+            msg_data.msg_send,
+            msg_data.conversation_id,
+            msg_data.p_msg_id,
+            gpt_model=msg_data.gpt_model,
+            files=msg_data.upload_file,
+        )
+
     async def _send_msg_by_browser_fetch(self, msg_data: MsgData, session: Session, attempt: int) -> MsgData:
         page = session.page
         if not page:
@@ -615,16 +628,7 @@ class chatgpt:
             self.logger.debug(f"{session.email} browser fetch path will upload file first")
             await upload_file(msg_data=msg_data, session=session, logger=self.logger)
 
-        if not msg_data.conversation_id:
-            data = Payload.new_payload(msg_data.msg_send, gpt_model=msg_data.gpt_model, files=msg_data.upload_file)
-        else:
-            data = Payload.old_payload(
-                msg_data.msg_send,
-                msg_data.conversation_id,
-                msg_data.p_msg_id,
-                gpt_model=msg_data.gpt_model,
-                files=msg_data.upload_file,
-            )
+        data = self._build_conversation_payload(msg_data)
 
         bridge_result = await asyncio.wait_for(
             page.evaluate(
@@ -809,6 +813,290 @@ class chatgpt:
             msg_data,
             self.logger,
         )
+
+    async def _stream_msg_by_browser_fetch(
+            self,
+            msg_data: MsgData,
+            session: Session,
+            attempt: int = 1
+    ) -> AsyncIterator[ChatStreamEvent]:
+        page = session.page
+        if not page:
+            raise RuntimeError("session page is not ready")
+
+        if msg_data.upload_file:
+            self.logger.debug(f"{session.email} browser stream path will upload file first")
+            await upload_file(msg_data=msg_data, session=session, logger=self.logger)
+
+        data = self._build_conversation_payload(msg_data)
+        msg_data.post_data = data
+        binding_name = f"__chatgptweb_stream_{uuid.uuid4().hex}"
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def emit_chunk(source, payload):
+            queue.put_nowait(payload)
+
+        await page.expose_binding(binding_name, emit_chunk)
+        stream_task = asyncio.create_task(
+            page.evaluate(
+                """
+                async (options) => {
+                    const errors = [];
+                    const emit = async (payload) => {
+                        await window[options.emitBinding](payload);
+                    };
+                    const unique = (items) => [...new Set(items.filter(Boolean))];
+                    const toPath = (url) => {
+                        try {
+                            const parsed = new URL(url, location.origin);
+                            return parsed.pathname + parsed.search;
+                        } catch (_) {
+                            return url;
+                        }
+                    };
+                    const fetchWithTimeout = async (url, init, timeoutMs) => {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            return await fetch(url, { ...init, signal: controller.signal });
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    };
+                    const sentinelEntries = performance.getEntriesByType("resource")
+                        .map((entry) => entry.name)
+                        .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
+                        .map(toPath);
+                    const requirementsUrls = unique([
+                        toPath(options.requirementsUrl),
+                        "/backend-api/sentinel/chat-requirements",
+                        ...sentinelEntries,
+                    ]);
+                    const baseHeaders = {
+                        "accept": "*/*",
+                        "content-type": "application/json",
+                        "oai-language": "en-US",
+                    };
+                    if (options.accessToken) {
+                        baseHeaders["authorization"] = `Bearer ${options.accessToken}`;
+                    }
+                    if (options.deviceId) {
+                        baseHeaders["oai-device-id"] = options.deviceId;
+                    }
+
+                    let requirements = null;
+                    for (const reqUrl of requirementsUrls) {
+                        try {
+                            const response = await fetchWithTimeout(reqUrl, {
+                                method: "POST",
+                                credentials: "include",
+                                headers: baseHeaders,
+                                body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
+                            }, options.timeoutMs);
+                            const text = await response.text();
+                            if (!response.ok) {
+                                errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
+                                continue;
+                            }
+                            const parsed = JSON.parse(text);
+                            if (parsed && parsed.token) {
+                                requirements = parsed;
+                                break;
+                            }
+                            errors.push(`requirements ${reqUrl} returned no token`);
+                        } catch (error) {
+                            errors.push(`requirements ${reqUrl}: ${error && error.message ? error.message : String(error)}`);
+                        }
+                    }
+                    if (!requirements || !requirements.token) {
+                        throw new Error(`requirements token unavailable: ${errors.join(" | ")}`);
+                    }
+
+                    const getToken = async (names, methodName, errorName) => {
+                        for (const name of names) {
+                            let provider = window;
+                            for (const part of name.split(".")) {
+                                provider = provider && provider[part];
+                            }
+                            if (provider && typeof provider[methodName] === "function") {
+                                return await provider[methodName](requirements);
+                            }
+                        }
+                        throw new Error(`${errorName} provider is not ready`);
+                    };
+
+                    const proof = await getToken(["_chatp_old", "_proof", "_proof.Z"], "getEnforcementToken", "proof");
+                    const conversationHeaders = {
+                        ...baseHeaders,
+                        "accept": "text/event-stream",
+                        "openai-sentinel-chat-requirements-token": requirements.token,
+                        "openai-sentinel-proof-token": proof,
+                    };
+                    if (requirements.turnstile) {
+                        conversationHeaders["openai-sentinel-turnstile-token"] = await getToken(
+                            ["_turnstile", "_turnstile.Z"],
+                            "getEnforcementToken",
+                            "turnstile"
+                        );
+                    }
+                    if (requirements.arkose) {
+                        const arkose = await getToken(["_ark", "_ark.ZP"], "startEnforcement", "arkose");
+                        conversationHeaders["openai-sentinel-arkose-token"] = arkose && arkose.token ? arkose.token : arkose;
+                    }
+
+                    const conversationUrls = unique([
+                        "/backend-api/f/conversation",
+                        toPath(options.conversationUrl),
+                        "/backend-api/conversation",
+                    ]);
+                    let lastError = "";
+                    for (const conversationUrl of conversationUrls) {
+                        try {
+                            const response = await fetchWithTimeout(conversationUrl, {
+                                method: "POST",
+                                credentials: "include",
+                                headers: conversationHeaders,
+                                body: options.payload,
+                            }, options.timeoutMs);
+                            const contentType = response.headers.get("content-type") || "";
+                            if (!response.ok) {
+                                const text = await response.text();
+                                errors.push(`conversation ${conversationUrl} ${response.status}: ${text.slice(0, 500)}`);
+                                continue;
+                            }
+                            await emit({ type: "meta", url: conversationUrl, status: response.status, contentType });
+                            if (!response.body) {
+                                await emit({ type: "chunk", text: await response.text() });
+                                await emit({ type: "done" });
+                                return { ok: true, url: conversationUrl, status: response.status, contentType };
+                            }
+                            const reader = response.body.getReader();
+                            const decoder = new TextDecoder();
+                            while (true) {
+                                const item = await reader.read();
+                                if (item.done) {
+                                    break;
+                                }
+                                const text = decoder.decode(item.value, { stream: true });
+                                if (text) {
+                                    await emit({ type: "chunk", text });
+                                }
+                            }
+                            const tail = decoder.decode();
+                            if (tail) {
+                                await emit({ type: "chunk", text: tail });
+                            }
+                            await emit({ type: "done" });
+                            return { ok: true, url: conversationUrl, status: response.status, contentType };
+                        } catch (error) {
+                            lastError = error && error.message ? error.message : String(error);
+                            errors.push(`conversation ${conversationUrl}: ${lastError}`);
+                        }
+                    }
+                    throw new Error(`conversation fetch failed: ${errors.join(" | ")}`);
+                }
+                """,
+                {
+                    "payload": data,
+                    "accessToken": session.access_token,
+                    "deviceId": session.device_id,
+                    "conversationUrl": url_chatgpt,
+                    "requirementsUrl": url_requirements,
+                    "timeoutMs": 120000,
+                    "emitBinding": binding_name,
+                },
+            )
+        )
+
+        decoder = ChatStreamDecoder()
+        done = False
+        emitted_final_signatures = set()
+
+        def should_emit(event: ChatStreamEvent) -> bool:
+            if event.type != "final":
+                return True
+            if not (event.text or event.message_id or event.image_urls):
+                return False
+            signature = (event.text, event.message_id, event.conversation_id, tuple(event.image_urls))
+            if signature in emitted_final_signatures:
+                return False
+            emitted_final_signatures.add(signature)
+            return True
+
+        try:
+            while True:
+                if stream_task.done() and queue.empty():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except TimeoutError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "meta":
+                    self.logger.debug(
+                        f"{session.email} browser stream conversation ok, url:{payload.get('url')}, "
+                        f"status:{payload.get('status')}, content-type:{payload.get('contentType')}"
+                    )
+                    continue
+                if payload.get("type") == "chunk":
+                    for event in decoder.feed(payload.get("text", "")):
+                        if not should_emit(event):
+                            continue
+                        self._apply_stream_event(msg_data, event)
+                        yield event
+                    continue
+                if payload.get("type") == "done":
+                    done = True
+                    for event in decoder.close():
+                        if not should_emit(event):
+                            continue
+                        self._apply_stream_event(msg_data, event)
+                        yield event
+                    break
+
+            result = await stream_task
+            if not isinstance(result, dict) or not result.get("ok"):
+                raise RuntimeError(f"browser stream bridge returned invalid result: {result}")
+            if not done:
+                for event in decoder.close():
+                    if not should_emit(event):
+                        continue
+                    self._apply_stream_event(msg_data, event)
+                    yield event
+        except Exception as e:
+            if not stream_task.done():
+                stream_task.cancel()
+            msg_data.add_error(
+                kind="browser_stream_bridge",
+                message=str(e),
+                retryable=True,
+                attempt=attempt,
+                session_email=session.email,
+            )
+            yield ChatStreamEvent(type="error", text=str(e))
+            raise
+        finally:
+            if msg_data.upload_file:
+                msg_data.upload_file.clear()
+
+    def _apply_stream_event(self, msg_data: MsgData, event: ChatStreamEvent):
+        if event.type == "delta" and event.text:
+            msg_data.msg_recv += event.text
+        elif event.type == "final":
+            msg_data.status = True
+            if event.text:
+                msg_data.msg_recv = event.text
+            if event.message_id:
+                msg_data.next_msg_id = event.message_id
+            if event.conversation_id:
+                msg_data.conversation_id = event.conversation_id
+            if event.image_urls:
+                msg_data.img_list = event.image_urls
+                msg_data.image_gen = True
+        elif event.type == "image":
+            msg_data.img_list = event.image_urls
+            msg_data.image_gen = True
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
@@ -1512,6 +1800,137 @@ class chatgpt:
                 session.status = Status.Ready.value
         self.logger.debug(f"session {session.email} finish work")
         return msg_data
+
+    async def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
+        """Stream chat events from the browser fetch transport."""
+        startup_wait_seconds = 0
+        while not self.manage["start"]:
+            await asyncio.sleep(0.5)
+            startup_wait_seconds += 0.5
+            if startup_wait_seconds >= self.ready_timeout:
+                message = f"chatgpt startup did not finish within {self.ready_timeout} seconds"
+                msg_data.add_error(kind="startup_timeout", message=message)
+                yield ChatStreamEvent(type="error", text=message)
+                return
+
+        session: Session = Session(status=Status.Working.value)
+        if not msg_data.conversation_id:
+            gpt4_list = [s for s in self.Sessions if s.gptplus is True]
+            if gpt4_list == [] and msg_data.gpt_plus:
+                message = "you use gptplus model,but gptplus account not found"
+                msg_data.add_error(kind="no_plus_account", message=message)
+                yield ChatStreamEvent(type="error", text=message)
+                return
+            elif msg_data.gpt_model not in all_models_values() and not msg_data.gpt_plus:
+                self.logger.warning(f"unknown model: {msg_data.gpt_model} ,try to use it")
+
+            session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
+            wait_ready_seconds = 0
+            while not session or session.status == Status.Working.value:
+                filtered_sessions = [
+                    s for s in session_list
+                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value
+                ]
+                if filtered_sessions:
+                    session = random.choice(filtered_sessions)
+                else:
+                    pending_sessions = [
+                        s for s in session_list
+                        if (
+                            s.type != "script"
+                            and s.status in (Status.Login.value, Status.Update.value, Status.Working.value)
+                            and not s.is_login_disabled()
+                        )
+                    ]
+                    if not pending_sessions:
+                        message = "no login-capable session is available"
+                        msg_data.add_error(kind="no_available_session", message=message)
+                        yield ChatStreamEvent(type="error", text=message)
+                        return
+                await asyncio.sleep(0.5)
+                wait_ready_seconds += 0.5
+                if wait_ready_seconds >= self.ready_timeout:
+                    message = f"no ready session found within {self.ready_timeout} seconds"
+                    msg_data.add_error(kind="no_ready_session", message=message)
+                    yield ChatStreamEvent(type="error", text=message)
+                    return
+        else:
+            map_tmp = json.loads(self.cc_map.read_text("utf8"))
+            for context_name in map_tmp:
+                if msg_data.conversation_id in map_tmp[context_name]:
+                    sessions = [session for session in self.Sessions if session.email == context_name]
+                    if sessions:
+                        session = sessions[0]
+                    else:
+                        message = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
+                        msg_data.add_error(kind="conversation_session_missing", message=message)
+                        yield ChatStreamEvent(type="error", text=message)
+                        return
+                    if session.status == Status.Stop.value:
+                        message = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
+                        msg_data.add_error(kind="conversation_session_stopped", message=message, session_email=session.email)
+                        yield ChatStreamEvent(type="error", text=message)
+                        return
+                    wait_ready_seconds = 0
+                    while session.status != Status.Ready.value:
+                        await asyncio.sleep(0.5)
+                        wait_ready_seconds += 0.5
+                        if wait_ready_seconds >= self.ready_timeout:
+                            message = f"conversation session is not ready within {self.ready_timeout} seconds, status:{session.status}"
+                            msg_data.add_error(
+                                kind="conversation_session_not_ready",
+                                message=message,
+                                session_email=session.email,
+                            )
+                            yield ChatStreamEvent(type="error", text=message)
+                            return
+                    break
+
+            if not session.email:
+                message = "Not session found,please check your conversation_id input"
+                msg_data.add_error(kind="session_not_found", message=message)
+                yield ChatStreamEvent(type="error", text=message)
+                return
+
+            if not msg_data.p_msg_id:
+                try:
+                    msg_history = await self.load_chat(msg_data)
+                    msg_data.p_msg_id = msg_history["message"][-1]["next_msg_id"]
+                    msg_data.msg_type = "old_session"
+                except Exception as e:
+                    msg_data.add_error(kind="parent_message_restore_failed", message=str(e))
+                    yield ChatStreamEvent(type="error", text=str(e))
+                    return
+
+        if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
+            msg_data.msg_type = "old_session"
+
+        if not await self._ensure_session_runtime(session):
+            message = f"session runtime is not available: {session.email}"
+            msg_data.add_error(kind="session_runtime_unavailable", message=message, session_email=session.email)
+            yield ChatStreamEvent(type="error", text=message)
+            return
+
+        session.status = Status.Working.value
+        context_num = session.email
+        msg_data.from_email = session.email
+        self.logger.debug(f"session {session.email} begin stream work")
+        try:
+            async for event in self._stream_msg_by_browser_fetch(msg_data, session):
+                yield event
+            if msg_data.status:
+                if session.login_state is False:
+                    session.login_state = True
+                await self.save_chat(msg_data, context_num)
+                self.logger.info(f"receive stream message: {msg_data.msg_recv}")
+        except Exception as e:
+            if not msg_data.error_info:
+                msg_data.add_error(kind="continue_chat_stream_error", message=str(e), session_email=session.email)
+            self.logger.error(msg_data.error_info)
+        finally:
+            if session.status not in (Status.Update.value, Status.Stop.value):
+                session.status = Status.Ready.value
+            self.logger.debug(f"session {session.email} finish stream work")
 
     async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, str]]:
         """show chat history
