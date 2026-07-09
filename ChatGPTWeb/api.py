@@ -51,6 +51,12 @@ class ChatStreamParser:
     def _append_delta(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         if not value:
             return []
+        if value == self.text:
+            return []
+        if self.text and value.startswith(self.text):
+            value = value[len(self.text):]
+            if not value:
+                return []
         self.text += value
         return [ChatStreamEvent(type="delta", text=value, raw=raw)]
 

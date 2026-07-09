@@ -24,6 +24,8 @@ from .config import (
     uuid,
     url_check,
     url_session,
+    url_chatgpt,
+    url_requirements,
     Status,
     all_models_values
 )
@@ -41,7 +43,8 @@ from .api import (
     save_screen,
     get_json_url,
     get_all_msg,
-    markdown2image
+    markdown2image,
+    MockResponse
 )
 
 class chatgpt:
@@ -173,6 +176,8 @@ class chatgpt:
     # 检测Firefox是否已经安装 
     async def is_firefox_installed(self):
         '''chekc firefox install | 检测Firefox是否已经安装 '''
+        playwright_manager = None
+        browser = None
         try:
             playwright_manager = async_playwright()
             playwright = await playwright_manager.start()
@@ -182,10 +187,22 @@ class chatgpt:
             
             )
             await browser.close()
+            browser = None
             return True
         except Exception as e:
             self.logger.warning(f"check firefox:{e}")
             return False
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright_manager:
+                try:
+                    await playwright_manager.__aexit__()
+                except Exception:
+                    pass
 
     # 安装Firefox
     def install_firefox(self):
@@ -470,6 +487,210 @@ class chatgpt:
         )
         return any(mark in text for mark in retryable_marks)
 
+    async def _send_msg_by_browser_fetch(self, msg_data: MsgData, session: Session, attempt: int) -> MsgData:
+        page = session.page
+        if not page:
+            raise RuntimeError("session page is not ready")
+
+        if msg_data.upload_file:
+            self.logger.debug(f"{session.email} browser fetch path will upload file first")
+            await upload_file(msg_data=msg_data, session=session, logger=self.logger)
+
+        if not msg_data.conversation_id:
+            data = Payload.new_payload(msg_data.msg_send, gpt_model=msg_data.gpt_model, files=msg_data.upload_file)
+        else:
+            data = Payload.old_payload(
+                msg_data.msg_send,
+                msg_data.conversation_id,
+                msg_data.p_msg_id,
+                gpt_model=msg_data.gpt_model,
+                files=msg_data.upload_file,
+            )
+
+        bridge_result = await asyncio.wait_for(
+            page.evaluate(
+                """
+                async (options) => {
+                    const errors = [];
+
+                    const unique = (items) => [...new Set(items.filter(Boolean))];
+                    const toPath = (url) => {
+                        try {
+                            const parsed = new URL(url, location.origin);
+                            return parsed.pathname + parsed.search;
+                        } catch (_) {
+                            return url;
+                        }
+                    };
+                    const readText = async (response) => {
+                        if (!response.body) {
+                            return await response.text();
+                        }
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+                        let text = "";
+                        while (true) {
+                            const chunk = await reader.read();
+                            if (chunk.done) {
+                                break;
+                            }
+                            text += decoder.decode(chunk.value, { stream: true });
+                        }
+                        text += decoder.decode();
+                        return text;
+                    };
+                    const fetchWithTimeout = async (url, init, timeoutMs) => {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            return await fetch(url, { ...init, signal: controller.signal });
+                        } finally {
+                            clearTimeout(timer);
+                        }
+                    };
+                    const sentinelEntries = performance.getEntriesByType("resource")
+                        .map((entry) => entry.name)
+                        .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
+                        .map(toPath);
+                    const requirementsUrls = unique([
+                        toPath(options.requirementsUrl),
+                        "/backend-api/sentinel/chat-requirements",
+                        ...sentinelEntries,
+                    ]);
+                    const baseHeaders = {
+                        "accept": "*/*",
+                        "content-type": "application/json",
+                        "oai-language": "en-US",
+                    };
+                    if (options.accessToken) {
+                        baseHeaders["authorization"] = `Bearer ${options.accessToken}`;
+                    }
+                    if (options.deviceId) {
+                        baseHeaders["oai-device-id"] = options.deviceId;
+                    }
+
+                    let requirements = null;
+                    for (const reqUrl of requirementsUrls) {
+                        try {
+                            const response = await fetchWithTimeout(reqUrl, {
+                                method: "POST",
+                                credentials: "include",
+                                headers: baseHeaders,
+                                body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
+                            }, options.timeoutMs);
+                            const text = await response.text();
+                            if (!response.ok) {
+                                errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
+                                continue;
+                            }
+                            const parsed = JSON.parse(text);
+                            if (parsed && parsed.token) {
+                                requirements = parsed;
+                                break;
+                            }
+                            errors.push(`requirements ${reqUrl} returned no token`);
+                        } catch (error) {
+                            errors.push(`requirements ${reqUrl}: ${error && error.message ? error.message : String(error)}`);
+                        }
+                    }
+                    if (!requirements || !requirements.token) {
+                        throw new Error(`requirements token unavailable: ${errors.join(" | ")}`);
+                    }
+
+                    const getToken = async (names, methodName, errorName) => {
+                        for (const name of names) {
+                            let provider = window;
+                            for (const part of name.split(".")) {
+                                provider = provider && provider[part];
+                            }
+                            if (provider && typeof provider[methodName] === "function") {
+                                return await provider[methodName](requirements);
+                            }
+                        }
+                        throw new Error(`${errorName} provider is not ready`);
+                    };
+
+                    const proof = await getToken(["_chatp_old", "_proof", "_proof.Z"], "getEnforcementToken", "proof");
+                    const conversationHeaders = {
+                        ...baseHeaders,
+                        "accept": "text/event-stream",
+                        "openai-sentinel-chat-requirements-token": requirements.token,
+                        "openai-sentinel-proof-token": proof,
+                    };
+                    if (requirements.turnstile) {
+                        conversationHeaders["openai-sentinel-turnstile-token"] = await getToken(
+                            ["_turnstile", "_turnstile.Z"],
+                            "getEnforcementToken",
+                            "turnstile"
+                        );
+                    }
+                    if (requirements.arkose) {
+                        const arkose = await getToken(["_ark", "_ark.ZP"], "startEnforcement", "arkose");
+                        conversationHeaders["openai-sentinel-arkose-token"] = arkose && arkose.token ? arkose.token : arkose;
+                    }
+
+                    const conversationUrls = unique([
+                        "/backend-api/f/conversation",
+                        toPath(options.conversationUrl),
+                        "/backend-api/conversation",
+                    ]);
+                    for (const conversationUrl of conversationUrls) {
+                        try {
+                            const response = await fetchWithTimeout(conversationUrl, {
+                                method: "POST",
+                                credentials: "include",
+                                headers: conversationHeaders,
+                                body: options.payload,
+                            }, options.timeoutMs);
+                            const text = await readText(response);
+                            const contentType = response.headers.get("content-type") || "";
+                            if (!response.ok) {
+                                errors.push(`conversation ${conversationUrl} ${response.status}: ${text.slice(0, 500)}`);
+                                continue;
+                            }
+                            return {
+                                ok: true,
+                                url: conversationUrl,
+                                status: response.status,
+                                contentType,
+                                text,
+                                requirementsKeys: Object.keys(requirements),
+                            };
+                        } catch (error) {
+                            errors.push(`conversation ${conversationUrl}: ${error && error.message ? error.message : String(error)}`);
+                        }
+                    }
+                    throw new Error(`conversation fetch failed: ${errors.join(" | ")}`);
+                }
+                """,
+                {
+                    "payload": data,
+                    "accessToken": session.access_token,
+                    "deviceId": session.device_id,
+                    "conversationUrl": url_chatgpt,
+                    "requirementsUrl": url_requirements,
+                    "timeoutMs": 120000,
+                },
+            ),
+            timeout=150,
+        )
+
+        if not isinstance(bridge_result, dict) or not bridge_result.get("ok"):
+            raise RuntimeError(f"browser fetch bridge returned invalid result: {bridge_result}")
+
+        self.logger.debug(
+            f"{session.email} browser fetch conversation ok, url:{bridge_result.get('url')}, "
+            f"status:{bridge_result.get('status')}, content-type:{bridge_result.get('contentType')}"
+        )
+        msg_data.post_data = data
+        msg_data.header = {}
+        return await recive_handle(
+            session,
+            MockResponse(bridge_result.get("text", ""), bridge_result.get("status", 200)),
+            msg_data,
+            self.logger,
+        )
+
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
         发送消息处理函数"""
@@ -520,6 +741,12 @@ class chatgpt:
         # header['OAI-Device-Id'] = session.device_id = await page.evaluate("() => window._device()")
         header['OAI-Language'] = 'en-US'
         headers = header.copy()
+        if page and not self.httpx_status:
+            try:
+                self.logger.debug(f"{session.email} will send msg by browser fetch bridge")
+                return await self._send_msg_by_browser_fetch(msg_data, session, attempt=attempt)
+            except Exception as e:
+                self.logger.warning(f"{session.email} browser fetch bridge failed, fall back to legacy route: {e}")
         send_page = None
         try:
             if page and not self.httpx_status:
@@ -589,22 +816,64 @@ class chatgpt:
                         
                         
                     self.logger.debug(f"{session.email} will run _proof")
-                    # proof = await page.evaluate(f'() => window._proof.Z.getEnforcementToken({json.dumps(json_result)})')
-                    proof = await page.evaluate(f'() => window._chatp_old.getEnforcementToken({json.dumps(json_result)})')
+                    try:
+                        proof = await page.evaluate(
+                            """(jsonResult) => {
+                                const providers = [window._chatp_old, window._proof, window._proof && window._proof.Z];
+                                for (const provider of providers) {
+                                    if (provider && typeof provider.getEnforcementToken === "function") {
+                                        return provider.getEnforcementToken(jsonResult);
+                                    }
+                                }
+                                throw new Error("proof provider is not ready");
+                            }""",
+                            json_result,
+                        )
+                    except Exception as e:
+                        msg_data.add_error(
+                            kind="proof_token_unavailable",
+                            message=str(e),
+                            retryable=False,
+                            attempt=attempt,
+                            session_email=session.email,
+                        )
+                        await route.abort()
+                        return
                     self.logger.debug(f"{session.email} get proof token")
                     if len(proof) < 30:
                         self.logger.warning(f"{session.email} 's proof may error: {proof}")
                     header['OpenAI-Sentinel-Chat-Requirements-Token'] = json_result['token']
                     header['OpenAI-Sentinel-Proof-Token'] = proof
                     self.logger.debug(f"{session.email} check chatp's turnstile")
-                    if json_result['turnstile']:
-                        # turnstile = await page.evaluate(f'() => window._turnstile.Z.getEnforcementToken({json.dumps(json_result)})')
-                        turnstile = await page.evaluate(f'() => window._turnstile.getEnforcementToken({json.dumps(json_result)})')
+                    if json_result.get('turnstile'):
+                        try:
+                            turnstile = await page.evaluate(
+                                """(jsonResult) => {
+                                    const providers = [window._turnstile, window._turnstile && window._turnstile.Z];
+                                    for (const provider of providers) {
+                                        if (provider && typeof provider.getEnforcementToken === "function") {
+                                            return provider.getEnforcementToken(jsonResult);
+                                        }
+                                    }
+                                    throw new Error("turnstile provider is not ready");
+                                }""",
+                                json_result,
+                            )
+                        except Exception as e:
+                            msg_data.add_error(
+                                kind="turnstile_token_unavailable",
+                                message=str(e),
+                                retryable=True,
+                                attempt=attempt,
+                                session_email=session.email,
+                            )
+                            await route.abort()
+                            return
                         self.logger.debug(f"{session.email} get turnstile token")
                         header['OpenAI-Sentinel-turnstile-Token'] = turnstile
                     self.logger.debug(f"{session.email} check chatp's arkose")
                     if 'arkose' in json_result:
-                        if json_result['arkose']:
+                        if json_result.get('arkose'):
                             # self.logger.debug(f"{session.email} get a arkose token")
                             # async with page.expect_response("https://tcr9i.chat.openai.com/**/public_key/**", timeout=40000) as arkose_info:
                             #     self.logger.debug(f"{session.email} will handle arkose")
@@ -615,7 +884,29 @@ class chatgpt:
                             #     self.logger.debug(f"{session.email} handle arkose success")
                             
                             self.logger.debug(f"{session.email} will handle arkose")
-                            arkose = await page.evaluate(f"() => window._ark.startEnforcement({json.dumps(json_result)})")
+                            try:
+                                arkose = await page.evaluate(
+                                    """(jsonResult) => {
+                                        const providers = [window._ark, window._ark && window._ark.ZP];
+                                        for (const provider of providers) {
+                                            if (provider && typeof provider.startEnforcement === "function") {
+                                                return provider.startEnforcement(jsonResult);
+                                            }
+                                        }
+                                        throw new Error("arkose provider is not ready");
+                                    }""",
+                                    json_result,
+                                )
+                            except Exception as e:
+                                msg_data.add_error(
+                                    kind="arkose_token_unavailable",
+                                    message=str(e),
+                                    retryable=True,
+                                    attempt=attempt,
+                                    session_email=session.email,
+                                )
+                                await route.abort()
+                                return
                             header['OpenAI-Sentinel-Arkose-Token'] = arkose['token']
                             self.logger.debug(f"{session.email} handle arkose success")
                         

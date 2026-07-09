@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 from ChatGPTWeb import chatgpt
@@ -23,6 +24,9 @@ def load_sessions() -> list[dict]:
 
 
 async def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+
     chat = chatgpt(
         sessions=load_sessions(),
         begin_sleep_time=False,
@@ -41,6 +45,13 @@ async def main():
             kind="local_smoke_timeout",
             message=f"local smoke timed out after {TIMEOUT} seconds",
         )
+    finally:
+        browser = getattr(chat, "browser", None)
+        if browser:
+            await browser.close()
+        playwright_manager = getattr(chat, "playwright_manager", None)
+        if playwright_manager:
+            await playwright_manager.__aexit__()
     print(
         json.dumps(
             {
