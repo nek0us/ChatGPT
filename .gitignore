@@ -11,6 +11,9 @@ ChatGPTWeb/Auth0_bak.py
 ChatGPTWeb/api_update.py
 ChatGPTWeb/OpenAIAuth_update.py
 
+# uv
+uv.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

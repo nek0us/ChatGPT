@@ -106,6 +106,16 @@ class Status(Enum):
     Ready = "Ready"
 
 
+class LoginFailureKind(Enum):
+    Unknown = "unknown"
+    BadCredentials = "bad_credentials"
+    AccountLocked = "account_locked"
+    NeedVerification = "need_verification"
+    RiskBlocked = "risk_blocked"
+    RateLimited = "rate_limited"
+    Transient = "transient"
+
+
 @dataclass
 class Session:
     email: str = ""
@@ -129,6 +139,11 @@ class Session:
     device_id: str = ""
     mode: Literal["openai", "google", "microsoft"] = "openai"
     last_active: 'datetime.datetime' = datetime.datetime.now()
+    login_fail_count: int = 0
+    max_login_failures: int = 3
+    login_failure_kind: str = ""
+    last_login_error: str = ""
+    disabled_until: Optional[datetime.datetime] = None
     input_session_token = session_token
     
     def __post_init__(self):
@@ -139,6 +154,46 @@ class Session:
     def is_valid(self):
         # TODO::
         return True
+
+    def is_login_disabled(self) -> bool:
+        if self.status == Status.Stop.value:
+            return True
+        if not self.disabled_until:
+            return False
+        return datetime.datetime.now() < self.disabled_until
+
+    def mark_login_success(self):
+        self.login_fail_count = 0
+        self.login_failure_kind = ""
+        self.last_login_error = ""
+        self.disabled_until = None
+        self.login_state = True
+        self.status = Status.Ready.value
+
+    def mark_login_failure(
+            self,
+            kind: str = LoginFailureKind.Unknown.value,
+            details: str = "",
+            cooldown_seconds: int = 300,
+            stop: bool = False
+    ):
+        self.login_fail_count += 1
+        self.login_failure_kind = kind
+        self.last_login_error = details[:1000] if details else kind
+        self.login_state = False
+        self.login_state_first = False
+
+        permanent_kinds = {
+            LoginFailureKind.BadCredentials.value,
+            LoginFailureKind.AccountLocked.value,
+            LoginFailureKind.NeedVerification.value,
+        }
+        if stop or kind in permanent_kinds or self.login_fail_count >= self.max_login_failures:
+            self.status = Status.Stop.value
+            self.disabled_until = None
+        else:
+            self.status = Status.Update.value
+            self.disabled_until = datetime.datetime.now() + datetime.timedelta(seconds=cooldown_seconds)
 
 
 class Personality:

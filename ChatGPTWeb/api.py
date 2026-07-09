@@ -18,7 +18,7 @@ from playwright_firefox.async_api import Page
 from playwright_firefox.async_api import Response,Route, Request
 
 from .OpenAIAuth import AsyncAuth0
-from .config import MsgData,Session,SetCookieParam,Status,url_requirements,Payload
+from .config import MsgData,Session,SetCookieParam,Status,LoginFailureKind,url_requirements,Payload
 
 class MockResponse:
     def __init__(self, data, status=200):
@@ -430,6 +430,9 @@ def create_session(**kwargs) -> Session:
     return Session(**kwargs)
 
 async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,js_num: int,save_screen_status: bool,logger,retry:int = 2) -> Session:
+    if session.is_login_disabled():
+        logger.debug(f"{session.email} skip keep-alive, status:{session.status}, failure:{session.login_failure_kind}")
+        return session
     if retry != 2:
         logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
@@ -551,8 +554,83 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
     return session
 
 
+def classify_login_failure(details: str, mode: str) -> str:
+    text = (details or "").lower()
+    if any(x in text for x in (
+        "your account has been locked",
+        "account has been locked",
+        "temporarily suspended",
+        "microsoft services agreement",
+        "account.live.com/abuse",
+        "account is locked",
+        "account locked",
+        "account banned",
+        "account disabled",
+    )):
+        return LoginFailureKind.AccountLocked.value
+    if any(x in text for x in (
+        "incorrect password",
+        "password is incorrect",
+        "wrong password",
+        "enter a valid password",
+        "couldn't find an account",
+        "could not find an account",
+        "doesn't exist",
+        "does not exist",
+        "invalid username or password",
+    )):
+        return LoginFailureKind.BadCredentials.value
+    if any(x in text for x in (
+        "verify your email",
+        "security code",
+        "help us protect your account",
+        "approve sign in request",
+        "need microsoft login help email",
+        "change your password",
+        "two-step verification",
+    )):
+        return LoginFailureKind.NeedVerification.value
+    if any(x in text for x in (
+        "too many requests",
+        "too many attempts",
+        "try again later",
+        "temporarily unavailable",
+        "rate limit",
+    )):
+        return LoginFailureKind.RateLimited.value
+    if mode == "google" or any(x in text for x in (
+        "couldn't sign you in",
+        "this browser or app may not be secure",
+        "suspicious",
+        "risk",
+        "captcha",
+        "cloudflare",
+        "turnstile",
+    )):
+        return LoginFailureKind.RiskBlocked.value
+    if any(x in text for x in ("timeout", "network", "net::", "closed", "context")):
+        return LoginFailureKind.Transient.value
+    return LoginFailureKind.Unknown.value
+
+
+def login_failure_cooldown(kind: str) -> int:
+    if kind == LoginFailureKind.RateLimited.value:
+        return 1800
+    if kind == LoginFailureKind.RiskBlocked.value:
+        return 3600
+    if kind == LoginFailureKind.Transient.value:
+        return 300
+    return 600
+
+
 async def Auth(session: Session,logger):
     '''Auth account login func'''
+    if session.is_login_disabled():
+        logger.warning(
+            f"{session.email} login skipped, status:{session.status}, "
+            f"failure:{session.login_failure_kind}, disabled_until:{session.disabled_until}"
+        )
+        return
     if session.email and session.password:
         auth = AsyncAuth0(email=session.email, password=session.password, page=session.page, # type: ignore
                             mode=session.mode,
@@ -563,15 +641,24 @@ async def Auth(session: Session,logger):
                             )
         if session.status != Status.Update.value:
             session.status = Status.Login.value
-        cookie, access_token = await auth.get_session_token(logger)
+        cookie, access_token, login_error = await auth.get_session_token(logger)
         if cookie and access_token:
             session.session_token = cookie
             session.access_token = access_token
-            session.status = Status.Ready.value
+            session.mark_login_success()
             logger.debug(f"{session.email} login success")
         else:
-            logger.warning(f"{session.email} login error,waiting for next try")
-            session.status = Status.Update.value
+            kind = classify_login_failure(login_error, session.mode)
+            session.mark_login_failure(
+                kind=kind,
+                details=login_error,
+                cooldown_seconds=login_failure_cooldown(kind),
+            )
+            logger.warning(
+                f"{session.email} login error, kind:{kind}, "
+                f"fail_count:{session.login_fail_count}/{session.max_login_failures}, "
+                f"status:{session.status}"
+            )
 
     else:
         logger.warning("No email or password")
@@ -591,6 +678,11 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.last_wss = session.last_wss
         tmp.mode = session.mode
         tmp.password = session.password
+        tmp.login_fail_count = session.login_fail_count
+        tmp.max_login_failures = session.max_login_failures
+        tmp.login_failure_kind = session.login_failure_kind
+        tmp.last_login_error = session.last_login_error
+        tmp.disabled_until = session.disabled_until
         tmp.session_token = session.session_token
         tmp.browser_contexts = None
         tmp.page = None
@@ -614,6 +706,11 @@ def get_session_token(session: Session,chat_file: Path,logger):
             session.login_cookies = load_session.login_cookies
             session.last_wss = load_session.last_wss
             session.device_id = load_session.device_id
+            session.login_fail_count = getattr(load_session, "login_fail_count", 0)
+            session.max_login_failures = getattr(load_session, "max_login_failures", session.max_login_failures)
+            session.login_failure_kind = getattr(load_session, "login_failure_kind", "")
+            session.last_login_error = getattr(load_session, "last_login_error", "")
+            session.disabled_until = getattr(load_session, "disabled_until", None)
             return session
     except FileNotFoundError:
         session.device_id = str(uuid.uuid4())

@@ -52,6 +52,7 @@ class AsyncAuth0:
         self.help_email = help_email
 
         self.access_token = None
+        self.last_error_details = ""
 
         self.EnterKey = "Enter"
 
@@ -707,6 +708,15 @@ class AsyncAuth0:
                 print(f"Deleting old screenshot: {file}")
                 file.unlink()
 
+    async def get_login_error_details(self) -> str:
+        try:
+            text = await self.login_page.evaluate(
+                "() => document.body ? document.body.innerText : ''"
+            )
+        except Exception as e:
+            text = f"failed to read login page text: {e}"
+        return f"url={self.login_page.url}\n{text[:3000]}"
+
     async def get_session_token(self,logger):
         self.logger.debug(f"{self.email_address} will create self.login_page")
         self.login_page: Page = await self.browser_contexts.new_page()
@@ -725,16 +735,22 @@ class AsyncAuth0:
                     break
                 try_num -= 1
         except Exception as e:
+            self.last_error_details = str(e)
             self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
             await self.save_screen(path=f"{self.email_address}_login_error",page=self.login_page)
         finally:
             cookies = await self.browser_contexts.cookies()
+            if not access_token:
+                try:
+                    self.last_error_details = await self.get_login_error_details()
+                except Exception as e:
+                    self.last_error_details = self.last_error_details or str(e)
             await self.login_page.close()
             
         try:
-            return next(filter(lambda x: x.get("name") in ("__Secure-next-auth.session-token.0", '__Secure-next-auth.session-token'), cookies), None),access_token
+            return next(filter(lambda x: x.get("name") in ("__Secure-next-auth.session-token.0", '__Secure-next-auth.session-token'), cookies), None),access_token,self.last_error_details
         except Exception as e:
             self.logger.warning(f"get cookie error:{e}")
         
-        return None,None
+        return None,None,self.last_error_details
     

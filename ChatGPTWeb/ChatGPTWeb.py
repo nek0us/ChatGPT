@@ -211,10 +211,16 @@ class chatgpt:
 
     async def __keep_alive__(self, session: Session):
         url = url_check
+        if session.is_login_disabled():
+            self.logger.debug(
+                f"{session.email} keep-alive skipped, status:{session.status}, "
+                f"failure:{session.login_failure_kind}"
+            )
+            return
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
         session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
         # check session_token need update
-        if session.status == Status.Update.value:
+        if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
             self.logger.debug(f"{session.email} begin relogin")
             await Auth(session,self.logger)
@@ -233,7 +239,7 @@ class chatgpt:
             for session in filter(lambda s: s.type != "script", self.Sessions):
                 context_index = session.email
                 try:
-                    if session.status == Status.Stop:
+                    if session.status == Status.Stop.value or session.is_login_disabled():
                         continue
                     tasks.append(self.__keep_alive__(session))
                 except Exception as e:
@@ -358,11 +364,34 @@ class chatgpt:
             # await page.wait_for_url(current_url)
             # current_url = page.url 
             
+            relogin_try = 0
             while session.status == Status.Update.value:
+                if session.is_login_disabled():
+                    self.logger.warning(
+                        f"context {session.email} stop relogin, failure:{session.login_failure_kind}, "
+                        f"fail_count:{session.login_fail_count}"
+                    )
+                    break
+                if relogin_try >= session.max_login_failures:
+                    session.mark_login_failure(
+                        details="load_page relogin retry max",
+                        stop=True,
+                    )
+                    self.logger.warning(f"context {session.email} relogin retry max, set Stop")
+                    break
+                relogin_try += 1
                 self.logger.debug(f"context {session.email} begin relogin")
                 await Auth(session,self.logger)
                 self.logger.debug(f"context {session.email} relogin over")
             
+            if session.status in (Status.Stop.value, Status.Update.value):
+                session.login_state = False
+                self.logger.warning(
+                    f"context {session.email} not ready, status:{session.status}, failure:{session.login_failure_kind}, "
+                    f"error:{session.last_login_error[:200]}"
+                )
+                return
+
             self.js_used = await flush_page(page,self.js,self.js_used)
             
             if session.access_token:
@@ -870,7 +899,8 @@ class chatgpt:
                 else:
                     self.logger.info(f"receive message: {msg_data.msg_recv}")
         finally:
-            session.status = Status.Ready.value
+            if session.status not in (Status.Update.value, Status.Stop.value):
+                session.status = Status.Ready.value
         self.logger.debug(f"session {session.email} finish work")
         return msg_data
 
@@ -1122,6 +1152,10 @@ class chatgpt:
             "account": [session.email  for session in self.Sessions if session.type != "script"],
             "token": [True if session.login_state else False for session in self.Sessions if session.type != "script"],
             "work": [session.status for session in self.Sessions if session.type != "script"],
+            "login_fail_count": [session.login_fail_count for session in self.Sessions if session.type != "script"],
+            "login_failure_kind": [session.login_failure_kind for session in self.Sessions if session.type != "script"],
+            "last_login_error": [session.last_login_error for session in self.Sessions if session.type != "script"],
+            "disabled_until": [session.disabled_until.isoformat() if session.disabled_until else "" for session in self.Sessions if session.type != "script"],
             "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
         }
