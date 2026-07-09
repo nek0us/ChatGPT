@@ -57,6 +57,14 @@ class ChatStreamParser:
             value = value[len(self.text):]
             if not value:
                 return []
+        elif self.text:
+            max_overlap = min(len(self.text), len(value))
+            for overlap in range(max_overlap, 0, -1):
+                if self.text.endswith(value[:overlap]):
+                    value = value[overlap:]
+                    break
+            if not value:
+                return []
         self.text += value
         return [ChatStreamEvent(type="delta", text=value, raw=raw)]
 

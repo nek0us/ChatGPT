@@ -111,6 +111,9 @@ class chatgpt:
         self.js_used = 0
         self.save_screen = save_screen
         self.ready_timeout = ready_timeout
+        self._closing = False
+        self._start_task: Optional[asyncio.Future] = None
+        self._alive_task: Optional[asyncio.Future] = None
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -151,7 +154,7 @@ class chatgpt:
         '''
         if not self.plugin:
             self.browser_event_loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(self.__start__(self.browser_event_loop),self.browser_event_loop)
+            self._start_task = asyncio.run_coroutine_threadsafe(self.__start__(self.browser_event_loop),self.browser_event_loop)
         elif self.log_status:
             from nonebot.log import logger # type: ignore
             self.logger = logger
@@ -252,7 +255,7 @@ class chatgpt:
         """keep cf cookie alive
         保持cf cookie存活
         """
-        while self.browser.contexts:
+        while not self._closing and self.browser.contexts:
             # browser_context:BrowserContext
             tasks = []
             for session in filter(lambda s: s.type != "script", self.Sessions):
@@ -279,13 +282,6 @@ class chatgpt:
         #     task.cancel()
         # await asyncio.gather(*tasks,return_exceptions=True)    
 
-        await self.browser.close()
-        await self.playwright_manager.__aexit__()
-        loop = asyncio.get_event_loop()
-        loop.stop()
-        # loop.close()
-        current_thread = threading.current_thread()
-        current_thread._stop() # type: ignore
 
     
 
@@ -459,7 +455,55 @@ class chatgpt:
     def tmp(self, loop):
         # task = asyncio.create_task(self.__alive__())
         # await task
-        asyncio.run_coroutine_threadsafe(self.__alive__(), loop)
+        self._alive_task = asyncio.run_coroutine_threadsafe(self.__alive__(), loop)
+
+    async def close(self):
+        """Close background tasks and browser resources."""
+        self._closing = True
+
+        for task in (self._alive_task,):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wrap_future(task)
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        for session in self.Sessions:
+            for resource_name in ("wss", "wss_session"):
+                resource = getattr(session, resource_name, None)
+                if resource:
+                    try:
+                        await resource.close()
+                    except Exception:
+                        pass
+                    setattr(session, resource_name, None)
+            context = getattr(session, "browser_contexts", None)
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                session.browser_contexts = None
+                session.page = None
+
+        browser = getattr(self, "browser", None)
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            self.browser = None
+
+        playwright_manager = getattr(self, "playwright_manager", None)
+        if playwright_manager:
+            try:
+                await playwright_manager.__aexit__()
+            except Exception:
+                pass
+            self.playwright_manager = None
+
+        self.manage["browser_contexts"] = []
 
     async def get_bda(self, data: str, key: str):
         session: Session = next(filter(lambda s: s.type == "script", self.Sessions))

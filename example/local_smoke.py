@@ -46,12 +46,7 @@ async def main():
             message=f"local smoke timed out after {TIMEOUT} seconds",
         )
     finally:
-        browser = getattr(chat, "browser", None)
-        if browser:
-            await browser.close()
-        playwright_manager = getattr(chat, "playwright_manager", None)
-        if playwright_manager:
-            await playwright_manager.__aexit__()
+        await chat.close()
     print(
         json.dumps(
             {
