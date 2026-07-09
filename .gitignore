@@ -4,6 +4,8 @@ src/test.py
 screen/
 data
 test.py
+local_sessions.json
+example/local_sessions.json
 setup.py
 ChatGPTWeb/ChatGPTWebTest.py
 ChatGPTWeb/configTest.py

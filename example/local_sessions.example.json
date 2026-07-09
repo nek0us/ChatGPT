@@ -1,0 +1,8 @@
+[
+  {
+    "email": "your-account@example.com",
+    "password": "your-password",
+    "mode": "microsoft",
+    "help_email": "optional-helper@example.com"
+  }
+]
