@@ -868,7 +868,10 @@ class chatgpt:
             gpt4_list = [s for s in self.Sessions if s.gptplus==True]
             if gpt4_list == [] and msg_data.gpt_plus:
                 # no plus account
-                msg_data.error_info = "you use gptplus model,but gptplus account not found"
+                msg_data.add_error(
+                    kind="no_plus_account",
+                    message="you use gptplus model,but gptplus account not found",
+                )
                 self.logger.error(msg_data.error_info)
                 return msg_data
             elif msg_data.gpt_model in all_models_values():
@@ -883,6 +886,7 @@ class chatgpt:
                 
             session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
             
+            wait_ready_seconds = 0
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
                     s for s in session_list 
@@ -893,6 +897,14 @@ class chatgpt:
                     session = random.choice(filtered_sessions)
                     
                 await asyncio.sleep(0.5)
+                wait_ready_seconds += 0.5
+                if wait_ready_seconds >= 30:
+                    msg_data.add_error(
+                        kind="no_ready_session",
+                        message="no ready session found within 30 seconds",
+                    )
+                    self.logger.error(msg_data.error_info)
+                    return msg_data
             session.status = Status.Working.value
             self.logger.debug(f"session {session.email} begin work")
         else:
@@ -906,20 +918,40 @@ class chatgpt:
                     if sessions:
                         session = sessions[0]
                     else:
-                        msg_data.error_info += f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed.\n"
+                        msg_data.add_error(
+                            kind="conversation_session_missing",
+                            message=f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed.",
+                        )
                         self.logger.error(msg_data.error_info)
                         return msg_data
                     if not session:
                         self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
-                        msg_data.error_info += f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.\n"
+                        msg_data.add_error(
+                            kind="conversation_not_found",
+                            message=f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.",
+                        )
                         return msg_data
                     if session.status == Status.Stop.value:
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
-                        msg_data.error_info += f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.\n"
+                        msg_data.add_error(
+                            kind="conversation_session_stopped",
+                            message=f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.",
+                            session_email=session.email,
+                        )
                         return msg_data
+                    wait_ready_seconds = 0
                     while session.status != Status.Ready.value:
                         # if this session is working or updating,waitting | 如果它还没准备好，那就等
                         await asyncio.sleep(0.5)
+                        wait_ready_seconds += 0.5
+                        if wait_ready_seconds >= 30:
+                            msg_data.add_error(
+                                kind="conversation_session_not_ready",
+                                message=f"conversation session is not ready within 30 seconds, status:{session.status}",
+                                session_email=session.email,
+                            )
+                            self.logger.error(msg_data.error_info)
+                            return msg_data
                     session.status = Status.Working.value
                     self.logger.debug(f"session {session.email} begin work")
                     break
@@ -934,24 +966,41 @@ class chatgpt:
                     # Recovery failed | 恢复失败
                     a, b, exc_traceback = sys.exc_info()
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.") # type: ignore
-                    msg_data.error_info += f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.\n" # type: ignore
+                    msg_data.add_error(
+                        kind="parent_message_restore_failed",
+                        message=f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found",
+                        line=exc_traceback.tb_lineno, # type: ignore
+                    )
                     return msg_data
         if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
             msg_data.msg_type = "old_session"
 
         if not session.email:
-            msg_data.error_info += ("Not session found,please check your conversation_id input\n")
+            msg_data.add_error(
+                kind="session_not_found",
+                message="Not session found,please check your conversation_id input",
+            )
             self.logger.error(msg_data.error_info)
             return msg_data
         try:
             msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=180) 
             session.status = Status.Ready.value
         except TimeoutError:
-            msg_data.error_info += f"send msg {msg_data.msg_send} time out,session:{session.email}\n"
+            msg_data.add_error(
+                kind="continue_chat_timeout",
+                message=f"send msg {msg_data.msg_send} time out",
+                retryable=True,
+                session_email=session.email,
+            )
             self.logger.warning(msg_data.error_info)
         except Exception as e:
             a, b, exc_traceback = sys.exc_info()
-            msg_data.error_info += f"send msg {msg_data.msg_send} error,session:{session.email}，行号 {exc_traceback.tb_lineno},error:{e}\n" # type: ignore
+            msg_data.add_error(
+                kind="continue_chat_error",
+                message=f"send msg {msg_data.msg_send} error:{e}",
+                session_email=session.email,
+                line=exc_traceback.tb_lineno, # type: ignore
+            )
             self.logger.error(msg_data.error_info)
         else:
             if not msg_data.error_info or msg_data.status:
