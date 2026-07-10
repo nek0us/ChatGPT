@@ -27,7 +27,8 @@ from .config import (
     url_chatgpt,
     url_requirements,
     Status,
-    all_models_values
+    all_models_values,
+    model_list,
 )
 from .load import load_js
 from .api import (
@@ -680,6 +681,7 @@ class chatgpt:
         return any(mark in text for mark in retryable_marks)
 
     def _build_conversation_payload(self, msg_data: MsgData) -> str:
+        msg_data.model_requested = msg_data.gpt_model
         if not msg_data.conversation_id:
             return Payload.new_payload(msg_data.msg_send, gpt_model=msg_data.gpt_model, files=msg_data.upload_file)
         return Payload.old_payload(
@@ -1143,6 +1145,12 @@ class chatgpt:
             if event.image_urls:
                 msg_data.img_list = event.image_urls
                 msg_data.image_gen = True
+            if event.model:
+                msg_data.model_used = event.model
+            if event.usage:
+                msg_data.usage = event.usage.copy()
+            if event.metadata:
+                msg_data.response_metadata = event.metadata.copy()
         elif event.type == "image":
             msg_data.img_list = event.image_urls
             msg_data.image_gen = True
@@ -2128,6 +2136,11 @@ class chatgpt:
             "disabled_until": [session.disabled_until.isoformat() if session.disabled_until else "" for session in self.Sessions if session.type != "script"],
             "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
+            "model_catalog": {
+                "free": model_list(False),
+                "plus": model_list(True),
+                "source": "local_static",
+            },
         }
 
 

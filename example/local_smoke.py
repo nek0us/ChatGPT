@@ -83,6 +83,9 @@ async def main():
                                     "conversation_id": event.conversation_id,
                                     "message_id": event.message_id,
                                     "image_urls": event.image_urls,
+                                    "model": event.model,
+                                    "usage": event.usage,
+                                    "metadata": event.metadata,
                                 }
                             )
                         return events
@@ -98,6 +101,10 @@ async def main():
                         "from_email": data.from_email,
                         "conversation_id": data.conversation_id,
                         "next_msg_id": data.next_msg_id,
+                        "model_requested": data.model_requested,
+                        "model_used": data.model_used,
+                        "usage": data.usage,
+                        "response_metadata": data.response_metadata,
                         "msg_recv": data.msg_recv,
                         "error_info": data.error_info,
                         "error_list": data.error_list,
@@ -122,6 +129,10 @@ async def main():
                 "from_email": data.from_email,
                 "conversation_id": data.conversation_id,
                 "next_msg_id": data.next_msg_id,
+                "model_requested": data.model_requested,
+                "model_used": data.model_used,
+                "usage": data.usage,
+                "response_metadata": data.response_metadata,
                 "msg_recv": data.msg_recv,
                 "error_info": data.error_info,
                 "error_list": data.error_list,

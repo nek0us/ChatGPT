@@ -405,6 +405,10 @@ class MsgData(BaseModel):
         description="使用的GPT模型"
     )
     gpt_plus: bool = Field(False, description="use plus account")
+    model_requested: str = Field("", description="requested model")
+    model_used: str = Field("", description="model reported by upstream")
+    usage: Dict[str, Any] = Field(default_factory=dict, description="usage or quota metadata reported by upstream")
+    response_metadata: Dict[str, Any] = Field(default_factory=dict, description="structured response metadata")
     # 文件处理
     upload_file: List[IOFile] = Field(
         [], 

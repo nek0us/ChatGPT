@@ -37,6 +37,9 @@ class ChatStreamEvent:
     message_id: str = ""
     conversation_id: str = ""
     image_urls: List[str] = field(default_factory=list)
+    model: str = ""
+    usage: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     raw: Optional[Dict[str, Any]] = None
 
 
@@ -47,8 +50,46 @@ class ChatStreamParser:
         self.conversation_id = ""
         self.image_gen = False
         self.image_urls: List[str] = []
+        self.model = ""
+        self.usage: Dict[str, Any] = {}
+        self.metadata: Dict[str, Any] = {}
+
+    def _record_metadata(self, item: Dict[str, Any]):
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            selected = {}
+            for key in (
+                "model_slug",
+                "default_model_slug",
+                "requested_model_slug",
+                "finish_details",
+                "content_references",
+                "citations",
+                "aggregate_result",
+            ):
+                if key in metadata:
+                    selected[key] = metadata[key]
+            if selected:
+                self.metadata.update(selected)
+            for key in ("model_slug", "default_model_slug", "requested_model_slug"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value:
+                    self.model = value
+                    break
+
+        for key in ("model_slug", "model", "default_model_slug", "requested_model_slug"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                self.model = value
+                break
+
+        for key in ("usage", "usage_metadata", "quota", "rate_limits"):
+            value = item.get(key)
+            if isinstance(value, dict):
+                self.usage.update(value)
 
     def _record_ids(self, item: Dict[str, Any]):
+        self._record_metadata(item)
         conversation_id = item.get("conversation_id")
         if isinstance(conversation_id, str) and conversation_id:
             self.conversation_id = conversation_id
@@ -98,6 +139,7 @@ class ChatStreamParser:
             return events
 
         self._record_ids(item)
+        self._record_metadata(message)
 
         author = message.get("author")
         role = author.get("role") if isinstance(author, dict) else ""
@@ -217,6 +259,9 @@ class ChatStreamParser:
             message_id=self.message_id,
             conversation_id=self.conversation_id,
             image_urls=self.image_urls.copy(),
+            model=self.model,
+            usage=self.usage.copy(),
+            metadata=self.metadata.copy(),
             raw=raw,
         )
 
@@ -579,6 +624,12 @@ async def handle_event_stream(response: Response|MockResponse,msg_data: MsgData)
             msg_data.conversation_id = parser.conversation_id
         msg_data.msg_recv = markdown_to_text(msg_list)
         msg_data.img_list = parser.image_urls
+        if parser.model:
+            msg_data.model_used = parser.model
+        if parser.usage:
+            msg_data.usage = parser.usage.copy()
+        if parser.metadata:
+            msg_data.response_metadata = parser.metadata.copy()
         
     return msg_data
 

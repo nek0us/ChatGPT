@@ -32,6 +32,7 @@ Reasons:
 - `probe_browser_runtime()` inspects bridge capabilities after frontend updates without sending a message.
 - `continue_chat()` and `continue_chat_stream()` now share `_prepare_chat_session()` for startup wait, account selection, old conversation routing, parent message restore, runtime recovery, and session reservation.
 - Buffered and streaming browser fetch now share `_browser_fetch_bridge_script()` so endpoint discovery and proof/turnstile/arkose provider handling are maintained in one browser-side script.
+- `MsgData` and `ChatStreamEvent` reserve `model_requested`, `model_used`, `usage`, and response metadata fields for bot/API/agent callers. Bot adapters can hide them by default; agent/API layers can expose them.
 
 ## Known Traps
 
@@ -47,6 +48,7 @@ Reasons:
 - The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
 - After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
 - Keep legacy `recive_handle()` only for the old route/goto fallback until that transport is retired. New browser fetch paths should parse stream text through `ChatStreamDecoder`.
+- Do not hard-code dynamic model/quota behavior beyond the local fallback catalog. Prefer browser runtime discovery or authenticated API probes, then merge remote capabilities with local aliases.
 
 ## Verified Smoke Commands
 
@@ -128,8 +130,11 @@ Expected streaming shape:
   - `upload_file()`
   - `get_history()`
   - `get_account_status()`
+  - `get_model_catalog()`
+  - `get_usage_status()`
 - Keep Playwright, websocket, history files, and bot formatting outside this service boundary.
 - Treat `MsgData` as a compatibility DTO until a cleaner request/response model replaces it.
+- Return structured metadata alongside text so API/agent callers can show requested model, actual upstream model, quota hints, citations, images, and raw unsupported rich UI fragments.
 
 ## Phase 5: Bot-Facing Formatting
 
@@ -182,11 +187,13 @@ Expected streaming shape:
 
 ## Next Engineering Steps
 
+- Add authenticated runtime probes for model catalog and account usage/quota. Start by discovering endpoints from browser resources instead of guessing private paths.
 - Add parser fixtures for saved SSE streams, including:
   - normal text;
   - overlapping text patches;
   - empty early final patches;
   - image generation status and image URL patches.
+- Add fixture coverage for model metadata, usage/quota metadata, citations/content references, and unsupported rich UI payloads.
 - Add an optional `stream_callback` or adapter helper for callers that cannot consume async generators directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
 - Add MCP prototype only after service-layer request/response objects are stable.
