@@ -7,6 +7,7 @@ import base64
 import random
 import asyncio
 import threading
+from contextlib import suppress
 from pathlib import Path
 from aiohttp import ClientSession
 from playwright_firefox.stealth import Stealth
@@ -1044,6 +1045,12 @@ class chatgpt:
         return """
         async (options) => {
             const errors = [];
+            const streamControllers = window.__chatgptwebStreamControllers ||
+                (window.__chatgptwebStreamControllers = Object.create(null));
+            const streamController = options.stream && options.streamId ? new AbortController() : null;
+            if (streamController) {
+                streamControllers[options.streamId] = streamController;
+            }
             const emit = async (payload) => {
                 if (options.stream && options.emitBinding) {
                     await window[options.emitBinding](payload);
@@ -1100,11 +1107,11 @@ class chatgpt:
                 }
                 await emit({ type: "done" });
             };
-            const fetchWithTimeout = async (url, init, timeoutMs) => {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeoutMs);
+            const fetchWithTimeout = async (url, init, timeoutMs, controller = null) => {
+                const activeController = controller || new AbortController();
+                const timer = setTimeout(() => activeController.abort(), timeoutMs);
                 try {
-                    return await fetch(url, { ...init, signal: controller.signal });
+                    return await fetch(url, { ...init, signal: activeController.signal });
                 } finally {
                     clearTimeout(timer);
                 }
@@ -1142,7 +1149,7 @@ class chatgpt:
                         credentials: "include",
                         headers: baseHeaders,
                         body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
-                    }, options.timeoutMs);
+                    }, options.timeoutMs, streamController);
                     const text = await response.text();
                     if (!response.ok) {
                         errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
@@ -1209,7 +1216,7 @@ class chatgpt:
                         credentials: "include",
                         headers: conversationHeaders,
                         body: options.payload,
-                    }, options.timeoutMs);
+                    }, options.timeoutMs, streamController);
                     const contentType = response.headers.get("content-type") || "";
                     if (!response.ok) {
                         const text = await response.text();
@@ -1299,6 +1306,7 @@ class chatgpt:
         data = self._build_conversation_payload(msg_data)
         msg_data.post_data = data
         binding_name = f"__chatgptweb_stream_{uuid.uuid4().hex}"
+        stream_id = uuid.uuid4().hex
         queue: asyncio.Queue = asyncio.Queue()
 
         def emit_chunk(source, payload):
@@ -1316,6 +1324,7 @@ class chatgpt:
                     "requirementsUrl": url_requirements,
                     "timeoutMs": 120000,
                     "stream": True,
+                    "streamId": stream_id,
                     "emitBinding": binding_name,
                 },
             )
@@ -1390,8 +1399,37 @@ class chatgpt:
             yield ChatStreamEvent(type="error", text=str(e))
             raise
         finally:
+            if not stream_task.done():
+                await self._cleanup_browser_stream(page, stream_id, abort=True)
+                stream_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await stream_task
+            else:
+                await self._cleanup_browser_stream(page, stream_id, abort=False)
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
+
+    async def _cleanup_browser_stream(self, page: Page, stream_id: str, abort: bool):
+        """Abort and remove one browser-side streaming fetch controller."""
+        try:
+            await page.evaluate(
+                """
+                ({ streamId, abort }) => {
+                    const controllers = window.__chatgptwebStreamControllers;
+                    const controller = controllers && controllers[streamId];
+                    if (controller && abort) {
+                        controller.abort();
+                    }
+                    if (controllers) {
+                        delete controllers[streamId];
+                    }
+                    return Boolean(controller);
+                }
+                """,
+                {"streamId": stream_id, "abort": abort},
+            )
+        except Exception as error:
+            self.logger.debug(f"browser stream cleanup skipped: {error}")
 
     def _apply_stream_event(self, msg_data: MsgData, event: ChatStreamEvent):
         if event.type == "delta" and event.text:

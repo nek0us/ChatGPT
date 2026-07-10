@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 
@@ -131,6 +132,20 @@ class _FakeBackend:
         return {"fetch_remote": fetch_remote}
 
 
+class _ClosableStreamBackend(_FakeBackend):
+    def __init__(self):
+        super().__init__()
+        self.stream_closed = False
+        self.release = asyncio.Event()
+
+    async def continue_chat_stream(self, msg_data):
+        try:
+            yield ChatStreamEvent(type="delta", text="first")
+            await self.release.wait()
+        finally:
+            self.stream_closed = True
+
+
 class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_converts_request_and_normalizes_response(self):
         backend = _FakeBackend()
@@ -176,6 +191,16 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "stream response")
         self.assertEqual(result.conversation_id, "conversation-stream")
         self.assertEqual(result.used_model, "gpt-5-5-mini")
+
+    async def test_closing_service_stream_closes_backend_stream(self):
+        backend = _ClosableStreamBackend()
+        stream = ChatService(backend).stream(ChatRequest(prompt="cancel me"))
+
+        event = await anext(stream)
+        await stream.aclose()
+
+        self.assertEqual(event.text, "first")
+        self.assertTrue(backend.stream_closed)
 
 
 class HttpApiRequestTests(unittest.TestCase):

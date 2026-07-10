@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import asyncio
 import hmac
 import json
 import time
@@ -209,34 +210,41 @@ def create_http_app(
         })
         await response.prepare(request)
         emitted_text = ""
-        async for event in service.stream(chat_request):
-            if event.type == "delta":
-                emitted_text += event.text
-                await response.write(_sse(None, _chunk_payload(event, request_id, chat_request.model)))
-            elif event.type == "final":
-                # A final full-text event can include a suffix that no delta carried.
-                suffix = event.text[len(emitted_text):] if event.text.startswith(emitted_text) else ""
-                if suffix:
-                    suffix_event = ChatStreamEvent(type="delta", text=suffix, model=event.model)
-                    await response.write(_sse(None, _chunk_payload(suffix_event, request_id, chat_request.model)))
-                await response.write(_sse(None, _chunk_payload(event, request_id, chat_request.model, "stop")))
-                await response.write(_sse("chatgptweb.final", {
-                    "conversation_id": event.conversation_id,
-                    "message_id": event.message_id,
-                    "model": event.model,
-                    "usage": event.usage,
-                    "metadata": event.metadata,
-                    "image_urls": event.image_urls,
-                }))
-            elif event.type in ("image", "image_pending"):
-                await response.write(_sse(f"chatgptweb.{event.type}", {
-                    "image_urls": event.image_urls,
-                    "metadata": event.metadata,
-                }))
-            elif event.type == "error":
-                await response.write(_sse("error", {"message": event.text}))
-        await response.write(_sse(None, "[DONE]"))
-        await response.write_eof()
+        stream = service.stream(chat_request)
+        try:
+            async for event in stream:
+                if event.type == "delta":
+                    emitted_text += event.text
+                    await response.write(_sse(None, _chunk_payload(event, request_id, chat_request.model)))
+                elif event.type == "final":
+                    # A final full-text event can include a suffix that no delta carried.
+                    suffix = event.text[len(emitted_text):] if event.text.startswith(emitted_text) else ""
+                    if suffix:
+                        suffix_event = ChatStreamEvent(type="delta", text=suffix, model=event.model)
+                        await response.write(_sse(None, _chunk_payload(suffix_event, request_id, chat_request.model)))
+                    await response.write(_sse(None, _chunk_payload(event, request_id, chat_request.model, "stop")))
+                    await response.write(_sse("chatgptweb.final", {
+                        "conversation_id": event.conversation_id,
+                        "message_id": event.message_id,
+                        "model": event.model,
+                        "usage": event.usage,
+                        "metadata": event.metadata,
+                        "image_urls": event.image_urls,
+                    }))
+                elif event.type in ("image", "image_pending"):
+                    await response.write(_sse(f"chatgptweb.{event.type}", {
+                        "image_urls": event.image_urls,
+                        "metadata": event.metadata,
+                    }))
+                elif event.type == "error":
+                    await response.write(_sse("error", {"message": event.text}))
+            await response.write(_sse(None, "[DONE]"))
+            await response.write_eof()
+        except ConnectionResetError:
+            # The generator's close path aborts the matching browser fetch.
+            return response
+        finally:
+            await stream.aclose()
         return response
 
     # JSON base64 is larger than decoded attachment bytes.

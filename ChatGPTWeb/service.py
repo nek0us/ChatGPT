@@ -98,8 +98,14 @@ class ChatService:
 
     async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
         """Yield upstream stream events without exposing Playwright objects."""
-        async for event in self._backend.continue_chat_stream(request.to_msg_data()):
-            yield event
+        upstream = self._backend.continue_chat_stream(request.to_msg_data())
+        try:
+            async for event in upstream:
+                yield event
+        finally:
+            close = getattr(upstream, "aclose", None)
+            if close:
+                await close()
 
     async def stream_to_callback(self, request: ChatRequest, callback: StreamCallback) -> ChatResult:
         """Deliver stream events in order and return the final normalized result.

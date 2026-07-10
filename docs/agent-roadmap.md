@@ -40,6 +40,7 @@ Reasons:
 - `ChatService` now provides a transport-neutral facade: `send()`, `stream()`, `get_history()`, `get_account_status()`, `get_model_catalog()`, and an explicitly unknown-safe `get_usage_status()`. It converts between caller-owned `ChatRequest`/`ChatResult` objects and legacy `MsgData` internally.
 - `ChatService.stream_to_callback()` adapts ordered stream events to synchronous or asynchronous bot callbacks and returns the final `ChatResult` after the stream closes.
 - `create_http_app()` is an opt-in aiohttp application factory over `ChatService`. It provides OpenAI-shaped `/v1/chat/completions`, SSE, local health/model/status routes, optional bearer-key protection, and bounded base64 JSON attachments without starting a network listener itself.
+- Streaming browser fetches now register a per-request `AbortController`; closing the Python generator or losing an HTTP SSE client aborts the matching page-side fetch and removes the controller entry.
 
 ## Known Traps
 
@@ -216,6 +217,6 @@ Expected streaming shape:
 - Capture sanitized real SSE samples after future frontend changes and add them as regression fixtures. Current tests intentionally use synthetic, secret-free protocol fixtures.
 - Add fixture coverage for unsupported rich UI payloads and tool-result blocks.
 - Add platform-specific NoneBot message-edit/send adapters on top of `stream_to_callback()`.
-- Add HTTP API fixture coverage for malformed attachment payloads and client-disconnect cancellation. Do not let HTTP handlers call browser internals directly.
+- Add HTTP API fixture coverage for malformed attachment payloads and real client-disconnect cancellation. Do not let HTTP handlers call browser internals directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
 - Add MCP prototype only after service-layer request/response objects are stable.
