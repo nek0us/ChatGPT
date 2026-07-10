@@ -261,6 +261,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completion.status, 200)
         self.assertEqual(completion_body["choices"][0]["message"]["content"], "service response")
         self.assertEqual(completion_body["chatgptweb"]["used_model"], "gpt-5-5-mini")
+        self.assertEqual(completion_body["chatgptweb"]["content"]["raw_markdown"], "service response")
 
         attachment = await self.client.post(
             "/v1/chat/completions",

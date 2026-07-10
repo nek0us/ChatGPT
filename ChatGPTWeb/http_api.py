@@ -137,6 +137,7 @@ def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
             "usage": result.usage,
             "metadata": result.metadata,
             "errors": result.errors,
+            "content": result.content.to_dict(),
         },
     }
 

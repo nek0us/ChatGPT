@@ -6,6 +6,7 @@ import inspect
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Protocol, Union
 
 from .api import ChatStreamEvent
+from .content import ChatContent, build_chat_content
 from .config import IOFile, MsgData
 
 
@@ -48,6 +49,7 @@ class ChatResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
     errors: List[Dict[str, Any]] = field(default_factory=list)
     account: str = ""
+    content: ChatContent = field(default_factory=ChatContent)
 
 
 class ChatBackend(Protocol):
@@ -77,6 +79,8 @@ class ChatService:
 
     @staticmethod
     def _result_from_msg_data(msg_data: MsgData) -> ChatResult:
+        metadata = dict(msg_data.response_metadata)
+        image_urls = list(msg_data.img_list)
         return ChatResult(
             ok=bool(msg_data.status and not msg_data.error_list),
             text=msg_data.msg_recv,
@@ -84,11 +88,12 @@ class ChatService:
             message_id=msg_data.next_msg_id,
             requested_model=msg_data.model_requested or msg_data.gpt_model,
             used_model=msg_data.model_used,
-            image_urls=list(msg_data.img_list),
+            image_urls=image_urls,
             usage=dict(msg_data.usage),
-            metadata=dict(msg_data.response_metadata),
+            metadata=metadata,
             errors=list(msg_data.error_list),
             account=msg_data.from_email,
+            content=build_chat_content(msg_data.msg_recv, image_urls, metadata),
         )
 
     async def send(self, request: ChatRequest) -> ChatResult:
@@ -137,17 +142,20 @@ class ChatService:
                 await callback_result
 
         terminal = final_event or last_event
+        text = final_event.text if final_event and final_event.text else "".join(chunks)
+        metadata = dict(terminal.metadata) if terminal else {}
         return ChatResult(
             ok=bool(final_event and not errors),
-            text=final_event.text if final_event and final_event.text else "".join(chunks),
+            text=text,
             conversation_id=terminal.conversation_id if terminal else request.conversation_id,
             message_id=terminal.message_id if terminal else "",
             requested_model=request.model,
             used_model=terminal.model if terminal else "",
             image_urls=image_urls,
             usage=dict(terminal.usage) if terminal else {},
-            metadata=dict(terminal.metadata) if terminal else {},
+            metadata=metadata,
             errors=errors,
+            content=build_chat_content(text, image_urls, metadata),
         )
 
     async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:

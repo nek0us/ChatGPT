@@ -235,6 +235,10 @@ service = ChatService(runtime)
 
 result = await service.send(ChatRequest(prompt="hello", model="auto"))
 print(result.text)
+print(result.content.raw_markdown)
+print(result.content.plain_text)
+for link in result.content.links:
+    print(link.label, link.url)
 
 async for event in service.stream(ChatRequest(prompt="stream a short reply")):
     if event.type == "delta":
@@ -257,6 +261,7 @@ result = await service.stream_to_callback(
 ```
 
 `ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
+`result.content` keeps the original Markdown and exposes optional plain-text, links, code blocks, citations, and image URLs for platform-specific rendering.
 
 ### Optional HTTP API
 ```python

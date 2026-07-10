@@ -167,8 +167,8 @@ Expected streaming shape:
 
 ## Phase 5: Bot-Facing Formatting
 
-- Normalize markdown output before sending to chat platforms.
-- Preserve links, code blocks, citations, and image placeholders in structured output.
+- `ChatContent` now preserves raw Markdown while exposing plain-text fallback, links, code blocks, citations, and image URLs as platform-neutral rendering hints.
+- Keep platform-specific Markdown normalization and message composition in the NoneBot plugin, after it can inspect the active OneBot v11, Satori, or Telegram driver.
 - Move markdown-to-image behind an interface so different renderers can be plugged in.
 - Return generated image URLs and downloaded bytes separately.
 - Add platform-specific adapters for NoneBot instead of baking display logic into core chat code.
