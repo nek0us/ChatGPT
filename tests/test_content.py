@@ -45,12 +45,16 @@ class ChatContentTests(unittest.TestCase):
 
         self.assertEqual(result.content.raw_markdown, "")
 
-    def test_search_markup_is_removed_and_source_reference_is_preserved(self):
-        markup = "\ue200genui\ue202abc\ue201Sources: \ue200url\ue202Example source\ue202turn0search0\ue201 \ue200cite\ue202turn0search0\ue201"
+    def test_live_search_markup_is_removed_and_source_reference_is_preserved(self):
+        # Sanitized from a live ChatGPT web-search stream on the browser-fetch route.
+        markup = (
+            "Paris \ue200cite\ue202turn0search0\ue201  \n"
+            "Source: \ue200url\ue202European Union - France overview\ue202turn0search0\ue201"
+        )
         content = build_chat_content(markup)
 
-        self.assertEqual(content.markdown, "Sources: Example source ")
-        self.assertEqual(content.source_references[0].label, "Example source")
+        self.assertEqual(content.markdown, "Paris   \nSource: European Union - France overview")
+        self.assertEqual(content.source_references[0].label, "European Union - France overview")
         self.assertEqual(content.source_references[0].source_id, "turn0search0")
 
     def test_stream_normalizer_handles_protocol_token_split_across_deltas(self):
