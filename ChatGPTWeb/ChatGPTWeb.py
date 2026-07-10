@@ -607,7 +607,8 @@ class chatgpt:
                 )
                 return
 
-            self.js_used = await flush_page(page,self.js,self.js_used)
+            if not await self._initialize_page_bridge(session, page):
+                return
             
             if session.access_token:
                 if session.status != Status.Update.value:
@@ -627,6 +628,37 @@ class chatgpt:
                 await page.close()
                 
             return
+
+    async def _initialize_page_bridge(self, session: Session, page: Page) -> bool:
+        """Load browser bridge code with a bounded retry during runtime startup."""
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 3):
+            try:
+                self.js_used = await asyncio.wait_for(
+                    flush_page(page, self.js, self.js_used),
+                    timeout=self.startup_timeout,
+                )
+                return True
+            except Exception as error:
+                last_error = error
+                self.logger.warning(
+                    f"context {session.email} bridge initialization attempt {attempt}/2 failed: {error}"
+                )
+                if attempt == 1:
+                    try:
+                        await page.goto("https://chatgpt.com/", timeout=20000, wait_until="load")
+                    except Exception:
+                        pass
+
+        session.mark_login_failure(
+            kind="transient",
+            details=f"browser bridge initialization failed: {last_error}",
+            cooldown_seconds=60,
+        )
+        self.logger.warning(
+            f"context {session.email} bridge initialization failed twice; status:{session.status}"
+        )
+        return False
         
     def tmp(self, loop):
         # task = asyncio.create_task(self.__alive__())
@@ -942,6 +974,9 @@ class chatgpt:
                                     initiatorType: entry.initiatorType || "",
                                     durationMs: Math.round(entry.duration || 0),
                                 }));
+                            const richMediaFetchCandidates = [...new Set(richMediaResources
+                                .map((resource) => resource.path)
+                                .filter((path) => path === "/backend-api/tasks"))];
                             const summarizeModelCatalog = (data, source) => {
                                 const value = data && data.value && typeof data.value === "object" ? data.value : data;
                                 const categories = Array.isArray(value && value.categories) ? value.categories : [];
@@ -1008,7 +1043,8 @@ class chatgpt:
                                 const getCandidates = capabilityResources
                                     .filter((path) => path.startsWith("/"))
                                     .filter((path) => !path.includes("/conversation/"))
-                                    .slice(-10);
+                                    .slice(-10)
+                                    .concat(richMediaFetchCandidates);
                                 for (const path of getCandidates) {
                                     try {
                                         const headers = { "accept": "application/json, text/plain, */*" };
@@ -1072,6 +1108,7 @@ class chatgpt:
                                 capabilityResources,
                                 capabilityFetchResults,
                                 richMediaResources,
+                                richMediaFetchCandidates,
                                 richMediaStorage: {
                                     localStorageKeys: richMediaStorageKeys(localStorage),
                                     sessionStorageKeys: richMediaStorageKeys(sessionStorage),

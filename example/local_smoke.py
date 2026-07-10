@@ -17,6 +17,7 @@ STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", 
 DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
 PROBE = os.getenv("CHATGPTWEB_SMOKE_PROBE", "false").lower() in ("1", "true", "yes")
 PROBE_FETCH = os.getenv("CHATGPTWEB_SMOKE_PROBE_FETCH", "false").lower() in ("1", "true", "yes")
+PROBE_AFTER = os.getenv("CHATGPTWEB_SMOKE_PROBE_AFTER", "false").lower() in ("1", "true", "yes")
 MODELS = os.getenv("CHATGPTWEB_SMOKE_MODELS", "false").lower() in ("1", "true", "yes")
 WEB_SEARCH = os.getenv("CHATGPTWEB_SMOKE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
 STREAM_IDLE_TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_IDLE_TIMEOUT", "0"))
@@ -64,6 +65,7 @@ async def main():
     stream_events = []
     results = []
     probe = []
+    post_probe = []
     model_catalog = {}
     try:
         if MODELS:
@@ -137,6 +139,11 @@ async def main():
             message=f"local smoke timed out after {TIMEOUT} seconds",
         )
     finally:
+        if PROBE_AFTER and not PROBE and not MODELS:
+            try:
+                post_probe = await chat.probe_browser_runtime(fetch_capabilities=False)
+            except Exception as error:
+                post_probe = [{"error": str(error)}]
         await chat.close()
     print(
         json.dumps(
@@ -155,11 +162,13 @@ async def main():
                 "stream": STREAM,
                 "probe_mode": PROBE,
                 "probe_fetch": PROBE_FETCH,
+                "probe_after": PROBE_AFTER,
                 "model_catalog_mode": MODELS,
                 "web_search": WEB_SEARCH,
                 "stream_idle_timeout_seconds": STREAM_IDLE_TIMEOUT,
                 "model_catalog": model_catalog,
                 "probe": probe,
+                "post_probe": post_probe,
                 "stream_events": stream_events,
                 "results": results,
             },

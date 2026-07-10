@@ -54,6 +54,7 @@ Reasons:
 - Do not immediately fallback to the legacy route when browser fetch returns `Unusual activity`/403. Treat it as a risk block and cool the session down.
 - Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
 - The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
+- A failed frontend bridge initialization no longer leaves a `Ready` but `login_state=False` session. Startup retries bridge loading once, then records a transient `Update` state with a cooldown instead of advertising an unusable account.
 - After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
 - Keep legacy `recive_handle()` only for the old route/goto fallback until that transport is retired. New browser fetch paths should parse stream text through `ChatStreamDecoder`.
 - Do not hard-code dynamic model/quota behavior beyond the local fallback catalog. Prefer browser runtime discovery or authenticated API probes, then merge remote capabilities with local aliases.
@@ -171,6 +172,8 @@ Expected streaming shape:
 - Live web-search SSE verified private `genui`/`url`/`cite` tokens. `ChatContent.markdown` removes them for display while `raw_markdown` and `source_references` retain source labels and opaque source IDs.
 - Image-generation smoke received a 200 SSE response but no displayable events for 300 seconds. Streams now emit platform-neutral `status` events while no parsed content is available and support an opt-in `stream_idle_timeout_seconds`; timeout aborts local browser fetch consumption but cannot guarantee cancellation of a remote generation already started upstream.
 - Runtime probe now records sanitized image/media/task/file/download resource paths and storage keys without issuing speculative requests. Use this trace after a future image test before implementing any task polling endpoint.
+- A verified startup probe observed `/backend-api/tasks`; capability fetch may now read that exact observed GET resource, but does not guess task IDs or invoke image/task mutations.
+- Rich-media startup resources are timing-dependent: later probe runs observed `/backend-api/files/library` instead of `/backend-api/tasks`. Treat either as a discovery lead only; do not hard-code image polling until a single image task yields a stable resource trace or task payload.
 - Keep platform-specific Markdown normalization and message composition in the NoneBot plugin, after it can inspect the active OneBot v11, Satori, or Telegram driver.
 - `web_search=True` now reaches both new and existing conversation payloads; live web-search SSE samples remain the preferred source for extending citation/tool-event parsing.
 - Move markdown-to-image behind an interface so different renderers can be plugged in.
