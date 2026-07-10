@@ -10,9 +10,11 @@ from ChatGPTWeb.config import MsgData
 
 SESSIONS_FILE = Path(os.getenv("CHATGPTWEB_SESSIONS_FILE", "example/local_sessions.json"))
 PROMPT = os.getenv("CHATGPTWEB_SMOKE_PROMPT", "Say hello in one short sentence.")
+PROMPTS = json.loads(os.getenv("CHATGPTWEB_SMOKE_PROMPTS", "null") or "null")
 HEADLESS = os.getenv("CHATGPTWEB_HEADLESS", "false").lower() in ("1", "true", "yes")
 TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_TIMEOUT", "600"))
 STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", "yes")
+DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
 
 
 def load_sessions() -> list[dict]:
@@ -22,6 +24,15 @@ def load_sessions() -> list[dict]:
     if not sessions:
         raise ValueError(f"{SESSIONS_FILE} does not contain any sessions")
     return sessions
+
+
+def get_prompts() -> list[str]:
+    if isinstance(PROMPTS, list) and PROMPTS:
+        return [str(prompt) for prompt in PROMPTS]
+    second_prompt = os.getenv("CHATGPTWEB_SMOKE_SECOND_PROMPT", "")
+    if second_prompt:
+        return [PROMPT, second_prompt]
+    return [PROMPT]
 
 
 async def main():
@@ -38,27 +49,56 @@ async def main():
         local_js=True,
         ready_timeout=TIMEOUT,
     )
-    data = MsgData(msg_send=PROMPT)
+    data = MsgData(msg_send=get_prompts()[0])
     stream_events = []
+    results = []
     try:
-        if STREAM:
-            async def run_stream():
-                events = []
-                async for event in chat.continue_chat_stream(data):
-                    events.append(
-                        {
-                            "type": event.type,
-                            "text": event.text,
-                            "conversation_id": event.conversation_id,
-                            "message_id": event.message_id,
-                            "image_urls": event.image_urls,
-                        }
-                    )
-                return events
+        for index, prompt in enumerate(get_prompts()):
+            if index > 0:
+                data = MsgData(
+                    msg_send=prompt,
+                    conversation_id=data.conversation_id,
+                    p_msg_id=data.next_msg_id,
+                )
+            else:
+                data.msg_send = prompt
 
-            stream_events = await asyncio.wait_for(run_stream(), timeout=TIMEOUT)
-        else:
-            data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
+            if STREAM:
+                async def run_stream():
+                    events = []
+                    async for event in chat.continue_chat_stream(data):
+                        events.append(
+                            {
+                                "type": event.type,
+                                "text": event.text,
+                                "conversation_id": event.conversation_id,
+                                "message_id": event.message_id,
+                                "image_urls": event.image_urls,
+                            }
+                        )
+                    return events
+
+                stream_events = await asyncio.wait_for(run_stream(), timeout=TIMEOUT)
+            else:
+                data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
+
+            results.append(
+                {
+                    "prompt": prompt,
+                    "status": data.status,
+                    "from_email": data.from_email,
+                    "conversation_id": data.conversation_id,
+                    "next_msg_id": data.next_msg_id,
+                    "msg_recv": data.msg_recv,
+                    "error_info": data.error_info,
+                    "error_list": data.error_list,
+                    "stream_events": stream_events,
+                }
+            )
+            if not data.status:
+                break
+            if index < len(get_prompts()) - 1 and DELAY > 0:
+                await asyncio.sleep(DELAY)
     except TimeoutError:
         data.add_error(
             kind="local_smoke_timeout",
@@ -78,6 +118,7 @@ async def main():
                 "error_list": data.error_list,
                 "stream": STREAM,
                 "stream_events": stream_events,
+                "results": results,
             },
             ensure_ascii=False,
             indent=2,

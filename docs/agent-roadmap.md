@@ -36,6 +36,8 @@ Reasons:
 - Do not emit every parser `final` event directly to bot/agent callers. Some early final-like patches contain only a conversation id and no useful assistant content.
 - Do not listen to every new page in a context as if it were the long-lived session page. Upload, login, markdown rendering, and keep-alive temporary pages close normally.
 - Do not close browser/context on each bot request. Bot and agent usage need warm sessions for latency and account stability.
+- Do not immediately fallback to the legacy route when browser fetch returns `Unusual activity`/403. Treat it as a risk block and cool the session down.
+- Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
 
 ## Verified Smoke Commands
 
@@ -49,6 +51,23 @@ Streaming send:
 
 ```powershell
 $env:CHATGPTWEB_SMOKE_STREAM='true'
+uv run python example\local_smoke.py
+```
+
+Two-turn buffered send:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_PROMPTS='["Say hello in one short sentence.", "Reply with exactly four words."]'
+$env:CHATGPTWEB_SMOKE_DELAY='15'
+uv run python example\local_smoke.py
+```
+
+Two-turn streaming send:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_STREAM='true'
+$env:CHATGPTWEB_SMOKE_PROMPTS='["Say hello in one short sentence.", "Reply with exactly four words."]'
+$env:CHATGPTWEB_SMOKE_DELAY='15'
 uv run python example\local_smoke.py
 ```
 

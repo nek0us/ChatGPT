@@ -1151,8 +1151,29 @@ class chatgpt:
         if page and not self.httpx_status:
             try:
                 self.logger.debug(f"{session.email} will send msg by browser fetch bridge")
-                return await self._send_msg_by_browser_fetch(msg_data, session, attempt=attempt)
+                msg_data = await self._send_msg_by_browser_fetch(msg_data, session, attempt=attempt)
+                if msg_data.status:
+                    msg_data.from_email = session.email
+                    if session.login_state is False:
+                        session.login_state = True
+                    await self.save_chat(msg_data, context_num)
+                return msg_data
             except Exception as e:
+                error_text = str(e)
+                if "Unusual activity" in error_text or "unusual activity" in error_text:
+                    session.mark_login_failure(
+                        kind="risk_blocked",
+                        details=error_text,
+                        cooldown_seconds=900,
+                    )
+                    msg_data.add_error(
+                        kind="risk_blocked",
+                        message=error_text,
+                        retryable=False,
+                        attempt=attempt,
+                        session_email=session.email,
+                    )
+                    return msg_data
                 self.logger.warning(f"{session.email} browser fetch bridge failed, fall back to legacy route: {e}")
         send_page = None
         try:
