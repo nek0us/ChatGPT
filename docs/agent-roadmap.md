@@ -27,6 +27,7 @@ Reasons:
   - overlapping text chunks are deduplicated by the parser.
 - `chat.close()` now cancels keep-alive work and closes browser resources without forcibly stopping the event loop.
 - Runtime watchers record unexpected browser/context/page closure and can recreate missing session context/page before keep-alive or send.
+- Startup watchdog wraps Playwright start, Firefox launch, and startup context/page creation with timeouts and one browser launch retry.
 
 ## Known Traps
 
@@ -38,6 +39,7 @@ Reasons:
 - Do not close browser/context on each bot request. Bot and agent usage need warm sessions for latency and account stability.
 - Do not immediately fallback to the legacy route when browser fetch returns `Unusual activity`/403. Treat it as a risk block and cool the session down.
 - Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
+- The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
 
 ## Verified Smoke Commands
 

@@ -65,8 +65,9 @@ class chatgpt:
                  stdout_flush: bool = False,
                  local_js: bool = False,
                  save_screen: bool = False,
-                 ready_timeout: int = 180
-                
+                 ready_timeout: int = 180,
+                 startup_timeout: int = 60
+               
                  ) -> None:
         """
         ### sessions : list[dict]
@@ -113,6 +114,7 @@ class chatgpt:
         self.js_used = 0
         self.save_screen = save_screen
         self.ready_timeout = ready_timeout
+        self.startup_timeout = startup_timeout
         self._closing = False
         self._start_task: Optional[asyncio.Future] = None
         self._alive_task: Optional[asyncio.Future] = None
@@ -187,14 +189,23 @@ class chatgpt:
         browser = None
         try:
             playwright_manager = async_playwright()
-            playwright = await playwright_manager.start()
-            browser = await playwright.firefox.launch(
-            headless=self.headless,
-            slow_mo=50, proxy=self.proxy,
-            
+            playwright = await self._startup_wait_for(
+                "startup_firefox_check_playwright_start",
+                playwright_manager.start(),
+            )
+            browser = await self._startup_wait_for(
+                "startup_firefox_check_browser_launch",
+                playwright.firefox.launch(
+                    headless=self.headless,
+                    slow_mo=50,
+                    proxy=self.proxy,
+                ),
             )
             await browser.close()
             browser = None
+            return True
+        except TimeoutError as e:
+            self.logger.warning(f"check firefox timeout, skip install check:{e}")
             return True
         except Exception as e:
             self.logger.warning(f"check firefox:{e}")
@@ -214,6 +225,71 @@ class chatgpt:
     # 安装Firefox
     def install_firefox(self):
         os.system('playwright_firefox install firefox')
+
+    async def _startup_wait_for(self, name: str, awaitable, timeout: Optional[int] = None):
+        timeout = timeout or self.startup_timeout
+        try:
+            return await asyncio.wait_for(awaitable, timeout=timeout)
+        except TimeoutError as e:
+            self.logger.warning(f"{name} timeout after {timeout}s")
+            raise TimeoutError(f"{name} timeout after {timeout}s") from e
+
+    async def _cleanup_browser_startup(self):
+        browser = getattr(self, "browser", None)
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        playwright_manager = getattr(self, "playwright_manager", None)
+        if playwright_manager:
+            try:
+                await playwright_manager.__aexit__()
+            except Exception:
+                pass
+            self.playwright_manager = None
+        self.playwright = None
+
+    async def _launch_browser_with_retry(self, retries: int = 1):
+        last_error = None
+        for attempt in range(1, retries + 2):
+            try:
+                self.logger.debug(f"startup browser launch attempt {attempt}/{retries + 1}")
+                self.playwright_manager = async_playwright()
+                self.playwright = await self._startup_wait_for(
+                    "startup_playwright_start",
+                    self.playwright_manager.start(),
+                )
+                self.browser = await self._startup_wait_for(
+                    "startup_browser_launch",
+                    self.playwright.firefox.launch(
+                        headless=self.headless,
+                        slow_mo=50,
+                        proxy=self.proxy,
+                    ),
+                )
+                self.browser.on("disconnected", lambda *args: self.logger.warning("browser disconnected unexpectedly") if not self._closing else None)
+                return
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"startup browser launch attempt {attempt} failed: {e}")
+                await self._cleanup_browser_startup()
+                if attempt <= retries:
+                    await asyncio.sleep(2)
+        raise last_error if last_error else RuntimeError("startup browser launch failed")
+
+    async def _new_context_with_timeout(self, label: str):
+        return await self._startup_wait_for(
+            f"{label}_context_create",
+            self.browser.new_context(),
+        )
+
+    async def _new_page_with_timeout(self, context, label: str):
+        return await self._startup_wait_for(
+            f"{label}_page_create",
+            context.new_page(),
+        )
 
     def _mark_session_runtime_closed(self, session: Session, source: str):
         if self._closing:
@@ -264,7 +340,7 @@ class chatgpt:
         context = session.browser_contexts
         if not context:
             self.logger.warning(f"{session.email} runtime context missing, recreate it")
-            session.browser_contexts = await self.browser.new_context()
+            session.browser_contexts = await self._new_context_with_timeout(f"runtime_{session.email}")
             await Stealth().apply_stealth_async(session.browser_contexts)
             self._watch_context_events(session)
             if session.login_cookies:
@@ -277,7 +353,7 @@ class chatgpt:
         page = session.page
         if not page or page.is_closed():
             self.logger.warning(f"{session.email} runtime page missing or closed, recreate it")
-            session.page = await session.browser_contexts.new_page() # type: ignore
+            session.page = await self._new_page_with_timeout(session.browser_contexts, f"runtime_{session.email}") # type: ignore
             self._watch_page_events(session, session.page)
 
         return True
@@ -363,19 +439,19 @@ class chatgpt:
             if self.begin_sleep_time:
                 await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
             if not session.browser_contexts:
-                session.browser_contexts = await self.browser.new_context()
+                session.browser_contexts = await self._new_context_with_timeout(f"startup_{session.email}")
                 await Stealth().apply_stealth_async(session.browser_contexts)
                 self._watch_context_events(session)
             self.logger.debug(f"{session.email} begin login when it start")
             if session.session_token and session.browser_contexts:
                 token = session.session_token
                 await session.browser_contexts.add_cookies([token]) # type: ignore
-                session.page = await session.browser_contexts.new_page()
+                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
                 self._watch_page_events(session, session.page)
                 session.status = Status.Login.value
 
             elif session.email and session.password and session.browser_contexts:
-                session.page = await session.browser_contexts.new_page()
+                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
                 self._watch_page_events(session, session.page)
                 await Auth(session,self.logger)
             else:
@@ -410,13 +486,7 @@ class chatgpt:
         else:
             self.logger.debug("Firefox browser is already installed.")
         self.js = await load_js(self.httpx_proxy,self.local_js)    
-        self.playwright_manager = async_playwright()
-        self.playwright = await self.playwright_manager.start()
-        self.browser = await self.playwright.firefox.launch(
-            headless=self.headless,
-            slow_mo=50, proxy=self.proxy,
-            )
-        self.browser.on("disconnected", lambda *args: self.logger.warning("browser disconnected unexpectedly") if not self._closing else None)
+        await self._launch_browser_with_retry(retries=1)
         
         # arkose context
         auth_tasks = []
