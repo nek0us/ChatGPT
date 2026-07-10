@@ -258,6 +258,17 @@ result = await service.stream_to_callback(
 
 `ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
 
+### Optional HTTP API
+```python
+from aiohttp import web
+from ChatGPTWeb import create_http_app
+
+app = create_http_app(service, api_key="replace-with-a-local-secret")
+web.run_app(app, host="127.0.0.1", port=8000)
+```
+
+The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, and `/health`. Keep an API key when binding beyond localhost.
+
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData
 ```bash
 # 聊天处理入口，一般用这个

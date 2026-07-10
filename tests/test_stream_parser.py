@@ -1,8 +1,11 @@
 import json
 import unittest
 
+from aiohttp.test_utils import TestClient, TestServer
+
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.http_api import chat_request_from_payload, create_http_app
 from ChatGPTWeb.service import ChatRequest, ChatService
 
 
@@ -172,6 +175,70 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "stream response")
         self.assertEqual(result.conversation_id, "conversation-stream")
         self.assertEqual(result.used_model, "gpt-5-5-mini")
+
+
+class HttpApiRequestTests(unittest.TestCase):
+    def test_prompt_request_converts_to_chat_request(self):
+        request = chat_request_from_payload({
+            "prompt": "hello",
+            "model": "gpt-5-mini",
+            "web_search": True,
+        })
+
+        self.assertEqual(request.prompt, "hello")
+        self.assertEqual(request.model, "gpt-5-mini")
+        self.assertTrue(request.web_search)
+
+    def test_messages_request_keeps_only_latest_user_message_for_existing_conversation(self):
+        request = chat_request_from_payload({
+            "conversation_id": "conversation-1",
+            "messages": [
+                {"role": "system", "content": "be brief"},
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": [{"type": "text", "text": "new question"}]},
+            ],
+        })
+
+        self.assertEqual(request.prompt, "new question")
+        self.assertEqual(request.conversation_id, "conversation-1")
+
+
+class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.client = TestClient(TestServer(create_http_app(ChatService(_FakeBackend()), api_key="test-key")))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_completion_and_stream_routes(self):
+        headers = {"Authorization": "Bearer test-key"}
+        completion = await self.client.post("/v1/chat/completions", json={"prompt": "hello"}, headers=headers)
+        completion_body = await completion.json()
+
+        self.assertEqual(completion.status, 200)
+        self.assertEqual(completion_body["choices"][0]["message"]["content"], "service response")
+        self.assertEqual(completion_body["chatgptweb"]["used_model"], "gpt-5-5-mini")
+
+        stream = await self.client.post(
+            "/v1/chat/completions",
+            json={"prompt": "hello", "stream": True},
+            headers=headers,
+        )
+        stream_body = await stream.text()
+
+        self.assertEqual(stream.status, 200)
+        self.assertIn("stream response", stream_body)
+        self.assertIn("event: chatgptweb.final", stream_body)
+        self.assertTrue(stream_body.endswith("data: [DONE]\n\n"))
+
+    async def test_auth_and_health_routes(self):
+        unauthorized = await self.client.get("/v1/models")
+        health = await self.client.get("/health")
+
+        self.assertEqual(unauthorized.status, 401)
+        self.assertEqual(health.status, 200)
 
 
 if __name__ == "__main__":
