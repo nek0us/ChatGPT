@@ -1,4 +1,3 @@
-import json
 from logging import Logger
 from typing import Literal
 from playwright_firefox.stealth import Stealth
@@ -141,40 +140,6 @@ class AsyncAuth0:
             await self.save_screen(path=f"{self.email_address}_ point_login_button_{self.mode}_exception",page=self.login_page)
             # raise e
         
-    async def make_google_cookie_file(self):
-        with open(f"{self.email_address}_google_cookie.txt","w") as code_file:
-            code_file.write("")
-            self.logger.info(f"please input google cookie to {self.email_address}_google_cookie.txt,this file will exist for 5 minutes.")
-        with open(f"{self.email_address}_google_cookie.txt","r") as code_file:
-            while 1:
-                await asyncio.sleep(1)
-                code = code_file.read()
-                if code != "":
-                    tmp = json.loads(code)
-                    tmp1 = []
-                    for cookie in tmp:
-                        if "sameSite" in cookie:
-                            del cookie["sameSite"]
-                        if 'firstPartyDomain' in cookie:
-                            del cookie['firstPartyDomain']
-                        if 'partitionKey' in cookie:
-                            del cookie['partitionKey']
-                        if 'storeId' in cookie:
-                            del cookie['storeId']
-                        tmp1.append(cookie)
-                    await self.browser_contexts.add_cookies(tmp1)
-                    break
-
-    async def google_cookie(self):
-        try:
-            await asyncio.wait_for(self.make_google_cookie_file(),timeout=300)
-        except TimeoutError:
-            self.logger.debug(f"{self.email_address}_google_cookie.txt timout,it will be closed")
-        except Exception:
-            pass
-        finally:
-            os.unlink(f"{self.email_address}_google_cookie.txt")
-
     async def mc_help_email_verify(self):
         await self.login_page.wait_for_load_state('load')
         await asyncio.sleep(1)
@@ -376,50 +341,34 @@ class AsyncAuth0:
             self.logger.info(f"{self.email_address} verify code {text} exception: {e}")
             raise e
     
-    async def google_login(self,page = None):
-        if not page:
-            page = self.login_page
-        await page.wait_for_load_state('networkidle')
+    async def google_login(self, page: Page | None = None):
+        """Complete the current OpenAI OAuth redirect without opening a second Google page."""
+        page = page or getattr(self, "login_page", self.page)
         google_login_history = page.locator('//html/body/div[1]/div[1]/div[2]/div/div/div[2]/div/div/div[1]/form/span/section/div/div/div/div/ul/li[1]/div')
-        await page.wait_for_load_state('networkidle')
-        if await google_login_history.count() > 0:
-            self.logger.debug(f"{self.email_address} google old login,will point email history")
-            await google_login_history.click()
-            await page.wait_for_load_state('networkidle')
-        else:
-        
-            self.logger.debug(f"{self.email_address} google new login,will set email")
-            google_email_input = page.locator("input[type='email']")
+        google_email_input = page.locator("input[type='email']")
+        if await google_email_input.count() > 0:
+            self.logger.debug(f"{self.email_address} google login,will set email")
+            await google_email_input.wait_for(state="visible", timeout=30000)
             await google_email_input.fill(self.email_address)
             await page.keyboard.press(self.EnterKey)
-            await page.wait_for_load_state('networkidle')
-            # await self.login_page.fill('//*[@id="identifierId"]', self.email_address)
-            # await self.login_page.click('//html/body/div[1]/div[1]/div[2]/c-wiz/div/div[3]/div/div[1]/div/div/button/span')
-            # await self.login_page.keyboard.press(self.EnterKey)
-        await page.wait_for_load_state()
+        elif await google_login_history.count() > 0:
+            self.logger.debug(f"{self.email_address} google old login,will point email history")
+            await google_login_history.click()
+        else:
+            raise Error("Google login error", 1, "Google account chooser and email input were not found")
+
         try:
-            # enter passwd
             self.logger.debug(f"{self.email_address} google login,will set password")
-            # await self.login_page.locator(
-            #     "#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").fill(
-            #     self.password)
             google_password_input = page.locator("input[type='password']")
+            await google_password_input.wait_for(state="visible", timeout=30000)
             await google_password_input.fill(self.password)
         except Exception as e:
             self.logger.warning(f"{self.email_address} google set password error{e}")
-            await self.save_screen(path=f"{self.email_address}_google_set_password_error",page=self.login_page)
+            await self.save_screen(path=f"{self.email_address}_google_set_password_error", page=page)
+            raise
 
-        # await self.page.locator("#password > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > input:nth-child(1)").first.fill(self.password)
-        await asyncio.sleep(1)
         self.logger.debug(f"{self.email_address} google login,will point enter")
         await page.keyboard.press(self.EnterKey)
-        await page.wait_for_load_state()
-
-    async def google_page_login(self):
-        context: BrowserContext = self.page.context
-        google_page = await context.new_page()
-        await google_page.goto("https://accounts.google.com/")
-        await self.google_login(google_page)
 
     async def normal_begin(self,logger,retry: int = 1):
         if retry < 0:
@@ -528,19 +477,7 @@ class AsyncAuth0:
                 # await asyncio.sleep(2)
                 if self.mode == "google":
                     self.logger.debug(f"{self.email_address} login with google")
-                    new_login = True
-                    for cookie in cookies:
-                        if cookie['name'] == '__Secure-1PSIDTS': # type: ignore
-                            new_login = False
-                            break
-                    
-                    if new_login:
-                        self.logger.debug(f"{self.email_address} google new login,a new Google cookie file will be created. Please fill in the cookie according to the instructions. At the same time, you will try to log in directly with your account.")
-                        loop = asyncio.get_event_loop()
-                        asyncio.run_coroutine_threadsafe(self.google_cookie(),loop)
-                        # await asyncio.wait_for(self.google_cookie(),timeout=10)
-                        
-                    
+                    self.logger.debug(f"{self.email_address} Google OAuth uses the current redirect page; no Google cookie import is attempted")
                 await self.find_cf(self.login_page)
                 await asyncio.sleep(2)
                 # await self.login_page.wait_for_load_state('networkidle')
@@ -624,9 +561,7 @@ class AsyncAuth0:
 
 
                 elif self.mode == "google":
-                    # enter google email
-
-                    await self.google_page_login()
+                    await self.login_page.wait_for_url("https://accounts.google.com/**", timeout=30000)
                     await self.google_login()
 
                     

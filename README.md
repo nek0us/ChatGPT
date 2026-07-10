@@ -408,10 +408,9 @@ Same microsoft.A file will be generated in the startup directory. Please put the
 和上面微软邮箱一样。启动目录下会生成文件，请将验证码填入其中并保存，注意日志提示
 
 ### 谷歌登录 | google login 
-Please log in to chatgpt manually using Google from your browser once, then visit `https://myaccount.google.com/` and use the browser plug-in Cookie-Editor to export the cookies of this page in json format.
-When the "\{email_address\}_google_cookie.txt" file appears, paste the copied json into it and save it.
+Google may block browser automation during sign-in. Do not export or paste Google cookies into this project. If direct Google OAuth cannot complete, log in to ChatGPT manually in a trusted browser and configure the resulting ChatGPT session token for reuse.
 
-请先从你的浏览器手动使用google登录chatgpt一次，然后访问`https://myaccount.google.com/`，使用浏览器插件Cookie-Editor导出该页面的Cookie为json格式。 当"\{email_address\}_google_cookie.txt"文件出现时，将复制的json粘贴进去并保存。
+Google 可能拦截浏览器自动化登录。请不要把 Google Cookie 导出或粘贴到本项目中。若直接 Google OAuth 无法完成，请在可信浏览器中手动登录 ChatGPT，再配置生成的 ChatGPT session token 复用。
 
 ### cloudflare checkbox 验证挑战
 When using for the first time, if cloudflare exists, use headless=False and manually click Verify. After the session file is generated, switch it to True

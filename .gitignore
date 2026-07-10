@@ -5,6 +5,7 @@ screen/
 data
 test.py
 local_sessions.json
+*_google_cookie.txt
 example/local_sessions.json
 setup.py
 ChatGPTWeb/ChatGPTWebTest.py

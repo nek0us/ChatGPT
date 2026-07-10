@@ -80,6 +80,17 @@ $env:CHATGPTWEB_SMOKE_STREAM='true'
 uv run python example\local_smoke.py
 ```
 
+Google-only login diagnosis with optional local screenshots:
+
+```powershell
+$env:CHATGPTWEB_SESSION_MODE='google'
+$env:CHATGPTWEB_SMOKE_SAVE_SCREEN='true'
+$env:CHATGPTWEB_SMOKE_TIMEOUT='180'
+uv run python example\local_smoke.py
+```
+
+This isolates one login mode without printing session credentials. Screenshots are local diagnostics only and are ignored by Git.
+
 Two-turn buffered send:
 
 ```powershell
@@ -139,6 +150,7 @@ Expected streaming shape:
 - Add targeted screenshots and page text capture for failed login attempts.
 - Offline coverage now verifies failure classification, cooldowns, permanent stops, unknown-failure thresholds, and `Auth()` state transitions with a mocked provider.
 - Persisted session state now keeps only safety-critical `Stop`/`Update` status; legacy saved failures without a status are restored as `Stop` or `Update` from their failure metadata so locked accounts stay disabled after restart. Ready/login state is re-established by the new browser context.
+- Google OAuth diagnosis confirmed the old flow opened a second unrelated `accounts.google.com` page after the OpenAI redirect, then attempted locators on that page while screenshots captured the original page. The flow now stays on the current OAuth redirect page, waits for the Google URL after clicking the provider button, avoids `networkidle` waits and automatic Google-cookie import files, and fails once into the existing risk-block cooldown. A July 2026 Google test reached the normal OpenAI OAuth identifier page but hit the old redirect/locator race before submitting credentials; do not repeat live attempts until this fix has been committed and the account cooldown has elapsed. Direct Google sign-in remains a best-effort compatibility path because Google can block software-controlled browsers; the supported fallback is a manually obtained ChatGPT session token.
 
 ## Phase 2: Error And Retry Model
 

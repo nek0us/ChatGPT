@@ -9,6 +9,8 @@ from ChatGPTWeb.config import MsgData
 
 
 SESSIONS_FILE = Path(os.getenv("CHATGPTWEB_SESSIONS_FILE", "example/local_sessions.json"))
+SESSION_MODE = os.getenv("CHATGPTWEB_SESSION_MODE", "").strip().lower()
+SESSION_EMAIL = os.getenv("CHATGPTWEB_SESSION_EMAIL", "").strip().lower()
 PROMPT = os.getenv("CHATGPTWEB_SMOKE_PROMPT", "Say hello in one short sentence.")
 PROMPTS = json.loads(os.getenv("CHATGPTWEB_SMOKE_PROMPTS", "null") or "null")
 HEADLESS = os.getenv("CHATGPTWEB_HEADLESS", "false").lower() in ("1", "true", "yes")
@@ -22,14 +24,19 @@ MODELS = os.getenv("CHATGPTWEB_SMOKE_MODELS", "false").lower() in ("1", "true", 
 WEB_SEARCH = os.getenv("CHATGPTWEB_SMOKE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
 STREAM_IDLE_TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_IDLE_TIMEOUT", "0"))
 STREAM_STATUS_INTERVAL = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_STATUS_INTERVAL", "15"))
+SAVE_SCREEN = os.getenv("CHATGPTWEB_SMOKE_SAVE_SCREEN", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
     if not SESSIONS_FILE.exists():
         raise FileNotFoundError(f"Missing local sessions file: {SESSIONS_FILE}")
     sessions = json.loads(SESSIONS_FILE.read_text("utf8"))
+    if SESSION_MODE:
+        sessions = [session for session in sessions if str(session.get("mode", "openai")).lower() == SESSION_MODE]
+    if SESSION_EMAIL:
+        sessions = [session for session in sessions if str(session.get("email", "")).lower() == SESSION_EMAIL]
     if not sessions:
-        raise ValueError(f"{SESSIONS_FILE} does not contain any sessions")
+        raise ValueError(f"{SESSIONS_FILE} does not contain a session matching the requested filter")
     return sessions
 
 
@@ -53,6 +60,7 @@ async def main():
         httpx_status=False,
         logger_level="DEBUG",
         stdout_flush=True,
+        save_screen=SAVE_SCREEN,
         local_js=True,
         ready_timeout=TIMEOUT,
     )
@@ -166,6 +174,9 @@ async def main():
                 "model_catalog_mode": MODELS,
                 "web_search": WEB_SEARCH,
                 "stream_idle_timeout_seconds": STREAM_IDLE_TIMEOUT,
+                "session_mode_filter": SESSION_MODE,
+                "session_email_filter": bool(SESSION_EMAIL),
+                "save_screen": SAVE_SCREEN,
                 "model_catalog": model_catalog,
                 "probe": probe,
                 "post_probe": post_probe,
