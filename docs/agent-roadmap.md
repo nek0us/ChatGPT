@@ -132,6 +132,8 @@ Expected streaming shape:
 - Expose login diagnostics in `token_status()`.
 - Persist enough login failure metadata to understand account health after restart.
 - Add targeted screenshots and page text capture for failed login attempts.
+- Offline coverage now verifies failure classification, cooldowns, permanent stops, unknown-failure thresholds, and `Auth()` state transitions with a mocked provider.
+- Persisted session state now keeps only safety-critical `Stop`/`Update` status; legacy saved failures without a status are restored as `Stop` or `Update` from their failure metadata so locked accounts stay disabled after restart. Ready/login state is re-established by the new browser context.
 
 ## Phase 2: Error And Retry Model
 
@@ -193,7 +195,7 @@ Expected streaming shape:
 
 ## Phase 8: Test Harness
 
-- Add unit tests for login failure classification.
+- Add unit tests for login failure classification. Initial offline coverage is implemented for classification and session state transitions.
 - Add parser tests using saved websocket/SSE fixtures. Initial offline coverage added for text, overlapping patches, empty early final events, image patches, model metadata, usage, and citations.
 - Add state-machine tests for session transitions.
 - Add a fake transport for `send()` and `stream()` so most tests do not need a browser.

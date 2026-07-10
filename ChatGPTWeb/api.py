@@ -927,6 +927,11 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.last_wss = session.last_wss
         tmp.mode = session.mode
         tmp.password = session.password
+        tmp.status = (
+            session.status
+            if session.status in (Status.Stop.value, Status.Update.value)
+            else ""
+        )
         tmp.login_fail_count = session.login_fail_count
         tmp.max_login_failures = session.max_login_failures
         tmp.login_failure_kind = session.login_failure_kind
@@ -960,6 +965,22 @@ def get_session_token(session: Session,chat_file: Path,logger):
             session.login_failure_kind = getattr(load_session, "login_failure_kind", "")
             session.last_login_error = getattr(load_session, "last_login_error", "")
             session.disabled_until = getattr(load_session, "disabled_until", None)
+            saved_status = getattr(load_session, "status", "")
+            if saved_status in (Status.Stop.value, Status.Update.value):
+                session.status = saved_status
+            if not session.status:
+                permanent_kinds = {
+                    LoginFailureKind.BadCredentials.value,
+                    LoginFailureKind.AccountLocked.value,
+                    LoginFailureKind.NeedVerification.value,
+                }
+                if (
+                    session.login_failure_kind in permanent_kinds
+                    or session.login_fail_count >= session.max_login_failures
+                ):
+                    session.status = Status.Stop.value
+                elif session.disabled_until:
+                    session.status = Status.Update.value
             return session
     except FileNotFoundError:
         session.device_id = str(uuid.uuid4())
