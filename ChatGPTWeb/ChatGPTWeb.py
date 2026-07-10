@@ -8,6 +8,7 @@ import random
 import asyncio
 import threading
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from aiohttp import ClientSession
 from playwright_firefox.stealth import Stealth
@@ -306,6 +307,8 @@ class chatgpt:
         session.login_state_first = False
         session.status = Status.Update.value
         session.last_login_error = f"runtime {source} closed unexpectedly"
+        session.runtime_last_closed_source = source
+        session.runtime_last_closed_at = datetime.now()
         if source == "context":
             session.browser_contexts = None
             session.page = None
@@ -343,10 +346,12 @@ class chatgpt:
             self._mark_session_runtime_closed(session, "browser")
             return False
 
+        recovered = False
         context = session.browser_contexts
         if not context:
             self.logger.warning(f"{session.email} runtime context missing, recreate it")
             session.browser_contexts = await self._new_context_with_timeout(f"runtime_{session.email}")
+            recovered = True
             await Stealth().apply_stealth_async(session.browser_contexts)
             self._watch_context_events(session)
             if session.login_cookies:
@@ -360,7 +365,12 @@ class chatgpt:
         if not page or page.is_closed():
             self.logger.warning(f"{session.email} runtime page missing or closed, recreate it")
             session.page = await self._new_page_with_timeout(session.browser_contexts, f"runtime_{session.email}") # type: ignore
+            recovered = True
             self._watch_page_events(session, session.page)
+
+        if recovered:
+            session.runtime_recovery_count += 1
+            session.runtime_last_recovered_at = datetime.now()
 
         return True
     
@@ -2544,6 +2554,33 @@ class chatgpt:
         cid_all = json.loads(self.cc_map.read_text("utf8"))
         # cid_num may not match the number of sessions, because it only records sessions with successful sessions, which will be automatically resolved after a period of time.
         # cid_num 可能和session数量对不上，因为它只记录会话成功的session，这在允许一段时间后会自动解决
+        accounts = []
+        for session in self.Sessions:
+            if session.type == "script":
+                continue
+            page = session.page
+            page_ready = bool(page and not page.is_closed())
+            disabled = session.is_login_disabled()
+            accounts.append({
+                "email": session.email,
+                "status": session.status,
+                "login_state": session.login_state,
+                "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),
+                "disabled": disabled,
+                "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
+                "gptplus": session.gptplus,
+                "conversation_count": len(cid_all.get(session.email, [])),
+                "login_failure_kind": session.login_failure_kind,
+                "last_login_error": session.last_login_error,
+                "runtime": {
+                    "context_ready": bool(session.browser_contexts),
+                    "page_ready": page_ready,
+                    "last_closed_source": session.runtime_last_closed_source,
+                    "last_closed_at": session.runtime_last_closed_at.isoformat() if session.runtime_last_closed_at else "",
+                    "last_recovered_at": session.runtime_last_recovered_at.isoformat() if session.runtime_last_recovered_at else "",
+                    "recovery_count": session.runtime_recovery_count,
+                },
+            })
         return {
             "account": [session.email  for session in self.Sessions if session.type != "script"],
             "token": [True if session.login_state else False for session in self.Sessions if session.type != "script"],
@@ -2555,6 +2592,7 @@ class chatgpt:
             "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
             "model_catalog": self._local_model_catalog(),
+            "accounts": accounts,
         }
 
 

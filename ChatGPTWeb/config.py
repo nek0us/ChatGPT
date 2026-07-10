@@ -144,6 +144,10 @@ class Session:
     login_failure_kind: str = ""
     last_login_error: str = ""
     disabled_until: Optional[datetime.datetime] = None
+    runtime_last_closed_source: str = ""
+    runtime_last_closed_at: Optional[datetime.datetime] = None
+    runtime_last_recovered_at: Optional[datetime.datetime] = None
+    runtime_recovery_count: int = 0
     input_session_token = session_token
     
     def __post_init__(self):

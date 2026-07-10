@@ -938,6 +938,10 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.login_failure_kind = session.login_failure_kind
         tmp.last_login_error = session.last_login_error
         tmp.disabled_until = session.disabled_until
+        tmp.runtime_last_closed_source = session.runtime_last_closed_source
+        tmp.runtime_last_closed_at = session.runtime_last_closed_at
+        tmp.runtime_last_recovered_at = session.runtime_last_recovered_at
+        tmp.runtime_recovery_count = session.runtime_recovery_count
         tmp.session_token = session.session_token
         tmp.browser_contexts = None
         tmp.page = None
@@ -966,6 +970,10 @@ def get_session_token(session: Session,chat_file: Path,logger):
             session.login_failure_kind = getattr(load_session, "login_failure_kind", "")
             session.last_login_error = getattr(load_session, "last_login_error", "")
             session.disabled_until = getattr(load_session, "disabled_until", None)
+            session.runtime_last_closed_source = getattr(load_session, "runtime_last_closed_source", "")
+            session.runtime_last_closed_at = getattr(load_session, "runtime_last_closed_at", None)
+            session.runtime_last_recovered_at = getattr(load_session, "runtime_last_recovered_at", None)
+            session.runtime_recovery_count = getattr(load_session, "runtime_recovery_count", 0)
             saved_status = getattr(load_session, "status", "")
             if saved_status in (Status.Stop.value, Status.Update.value):
                 session.status = saved_status
