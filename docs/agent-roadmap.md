@@ -20,6 +20,7 @@ Reasons:
 - `ChatStreamParser` parses ChatGPT SSE/WebSocket patch events into `ChatStreamEvent` objects.
 - `ChatStreamDecoder` incrementally decodes raw SSE chunks and feeds `ChatStreamParser`.
 - Buffered browser fetch send works through endpoint candidates: `/backend-api/f/conversation`, `/backend-api/conversation`, `/api` variants, and singular conversation paths discovered from browser performance resources.
+- Buffered browser fetch now uses `ChatStreamDecoder`/`ChatStreamParser` directly instead of the legacy `recive_handle()` hard parser.
 - `continue_chat_stream()` streams events from browser `fetch` by exposing a temporary Playwright binding and pushing `ReadableStream` chunks back to Python.
 - Stream event noise is filtered:
   - empty early `final` events are hidden;
@@ -45,7 +46,7 @@ Reasons:
 - Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
 - The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
 - After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
-- Buffered browser fetch can receive a 200 event stream but still fail parsing in `recive_handle()` for some old-conversation responses, then legacy fallback succeeds. Treat this as a parser-fixture task, not an endpoint discovery failure.
+- Keep legacy `recive_handle()` only for the old route/goto fallback until that transport is retired. New browser fetch paths should parse stream text through `ChatStreamDecoder`.
 
 ## Verified Smoke Commands
 

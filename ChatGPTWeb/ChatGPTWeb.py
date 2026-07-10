@@ -33,6 +33,7 @@ from .load import load_js
 from .api import (
     async_send_msg,
     recive_handle,
+    handle_event_stream,
     create_session,
     retry_keep_alive,
     Auth,
@@ -1009,12 +1010,13 @@ class chatgpt:
         )
         msg_data.post_data = data
         msg_data.header = {}
-        return await recive_handle(
-            session,
+        msg_data = await handle_event_stream(
             MockResponse(bridge_result.get("text", ""), bridge_result.get("status", 200)),
             msg_data,
-            self.logger,
         )
+        if not msg_data.status:
+            raise RuntimeError("browser fetch stream parsed no final message")
+        return msg_data
 
     async def _stream_msg_by_browser_fetch(
             self,
@@ -1062,7 +1064,7 @@ class chatgpt:
         def should_emit(event: ChatStreamEvent) -> bool:
             if event.type != "final":
                 return True
-            if not (event.text or event.message_id or event.image_urls):
+            if not (event.text or event.image_urls):
                 return False
             signature = (event.text, event.message_id, event.conversation_id, tuple(event.image_urls))
             if signature in emitted_final_signatures:

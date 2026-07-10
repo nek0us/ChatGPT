@@ -48,6 +48,17 @@ class ChatStreamParser:
         self.image_gen = False
         self.image_urls: List[str] = []
 
+    def _record_ids(self, item: Dict[str, Any]):
+        conversation_id = item.get("conversation_id")
+        if isinstance(conversation_id, str) and conversation_id:
+            self.conversation_id = conversation_id
+        message_id = item.get("message_id")
+        if isinstance(message_id, str) and message_id:
+            self.message_id = message_id
+
+    def _is_finished(self, value: Any) -> bool:
+        return value in ("finished_successfully", "completed", "complete", "done")
+
     def _append_delta(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         if not value:
             return []
@@ -86,12 +97,11 @@ class ChatStreamParser:
         if not isinstance(message, dict):
             return events
 
-        if item.get("conversation_id"):
-            self.conversation_id = item["conversation_id"]
+        self._record_ids(item)
 
         author = message.get("author")
         role = author.get("role") if isinstance(author, dict) else ""
-        if message.get("id") and role == "assistant":
+        if message.get("id") and (role == "assistant" or not self.message_id):
             self.message_id = message["id"]
 
         if role == "tool":
@@ -105,9 +115,56 @@ class ChatStreamParser:
             parts = content.get("parts")
             if parts and isinstance(parts[0], str):
                 events.extend(self._merge_full_text(parts[0], raw))
+        elif not role and isinstance(content, dict):
+            parts = content.get("parts")
+            if parts and isinstance(parts[0], str):
+                events.extend(self._merge_full_text(parts[0], raw))
 
-        if message.get("is_complete") or message.get("status") == "finished_successfully":
+        if message.get("is_complete") or self._is_finished(message.get("status")):
             events.append(self.final_event(raw=raw))
+        return events
+
+    def _handle_image_results(self, value: List[Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        for image in value:
+            if isinstance(image, dict):
+                url = image.get("content_url") or image.get("url")
+                if url and url not in self.image_urls:
+                    self.image_urls.append(url)
+        if self.image_urls:
+            self.image_gen = True
+            return [ChatStreamEvent(type="image", image_urls=self.image_urls.copy(), raw=raw)]
+        return []
+
+    def _handle_patch(self, patch: Dict[str, Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        events: List[ChatStreamEvent] = []
+        path = patch.get("p") or patch.get("path") or ""
+        op = patch.get("o") or patch.get("op") or ""
+        value = patch.get("v") if "v" in patch else patch.get("value")
+
+        if path in ("/conversation_id", "conversation_id") and isinstance(value, str):
+            self.conversation_id = value
+        elif path in ("/message/id", "message_id") and isinstance(value, str):
+            self.message_id = value
+
+        if path.endswith("/message/content/parts/0") and isinstance(value, str):
+            events.extend(self._append_delta(value, raw))
+        elif path.endswith("/message/content/parts") and isinstance(value, list):
+            if value and isinstance(value[0], str):
+                events.extend(self._merge_full_text(value[0], raw))
+        elif path.endswith("/message/status") and self._is_finished(value):
+            events.append(self.final_event(raw=raw))
+        elif path.endswith("/message/metadata/image_results") and isinstance(value, list):
+            events.extend(self._handle_image_results(value, raw))
+        elif path == "/message" and isinstance(value, dict):
+            events.extend(self._handle_message({"message": value}, raw))
+        elif path == "" and op == "patch" and isinstance(value, list):
+            events.extend(self._handle_patch_list(value, raw))
+        elif isinstance(value, dict):
+            events.extend(self._handle_message(value, raw))
+            if any(key in value for key in ("p", "path", "v", "value")):
+                events.extend(self._handle_patch(value, raw))
+        elif isinstance(value, list):
+            events.extend(self._handle_patch_list(value, raw))
         return events
 
     def _handle_patch_list(self, patches: List[Dict[str, Any]], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
@@ -115,40 +172,33 @@ class ChatStreamParser:
         for patch in patches:
             if not isinstance(patch, dict):
                 continue
-            path = patch.get("p")
-            value = patch.get("v")
-            if path == "/message/content/parts/0" and isinstance(value, str):
-                events.extend(self._append_delta(value, raw))
-            elif path == "/message/status" and value == "finished_successfully":
-                events.append(self.final_event(raw=raw))
-            elif path == "/message/metadata/image_results" and isinstance(value, list):
-                for image in value:
-                    if isinstance(image, dict) and image.get("content_url"):
-                        self.image_urls.append(image["content_url"])
-                if self.image_urls:
-                    events.append(ChatStreamEvent(type="image", image_urls=self.image_urls.copy(), raw=raw))
+            events.extend(self._handle_patch(patch, raw))
         return events
 
     def feed(self, item: Dict[str, Any]) -> List[ChatStreamEvent]:
         events: List[ChatStreamEvent] = []
         if not isinstance(item, dict):
             return events
+        self._record_ids(item)
         path = item.get("p")
         op = item.get("o")
         value = item.get("v")
 
-        if path == "/message/content/parts/0" and isinstance(value, str):
-            events.extend(self._append_delta(value, item))
-        elif isinstance(value, list):
-            for patch in value:
-                if not isinstance(patch, dict):
-                    continue
-                if patch.get("p") == "/message/content/parts/0" and isinstance(patch.get("v"), str):
-                    events.extend(self._append_delta(patch["v"], item))
-                elif patch.get("p") == "" and patch.get("o") == "patch" and isinstance(patch.get("v"), list):
-                    events.extend(self._handle_patch_list(patch["v"], item))
-                elif patch.get("p") == "/message/status" and patch.get("v") == "finished_successfully":
-                    events.append(self.final_event(raw=item))
+        if "message" in item:
+            events.extend(self._handle_message(item, item))
+
+        for key in ("delta", "data", "event"):
+            wrapped = item.get(key)
+            if isinstance(wrapped, dict):
+                events.extend(self.feed(wrapped))
+            elif isinstance(wrapped, list):
+                events.extend(self._handle_patch_list(wrapped, item))
+
+        if "patches" in item and isinstance(item["patches"], list):
+            events.extend(self._handle_patch_list(item["patches"], item))
+
+        if path is not None or op is not None or "v" in item:
+            events.extend(self._handle_patch(item, item))
         elif isinstance(value, dict):
             events.extend(self._handle_message(value, item))
 
@@ -201,7 +251,7 @@ class ChatStreamDecoder:
             payload = payload.replace("\\\\", "\\")
             item = json.loads(payload)
         events.extend(self.parser.feed(item))
-        if events and events[-1].type == "final":
+        if events and events[-1].type == "final" and (events[-1].text or events[-1].image_urls):
             self._final_sent = True
         return events
 
