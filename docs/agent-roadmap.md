@@ -30,6 +30,7 @@ Reasons:
 - Startup watchdog wraps Playwright start, Firefox launch, and startup context/page creation with timeouts and one browser launch retry.
 - `probe_browser_runtime()` inspects bridge capabilities after frontend updates without sending a message.
 - `continue_chat()` and `continue_chat_stream()` now share `_prepare_chat_session()` for startup wait, account selection, old conversation routing, parent message restore, runtime recovery, and session reservation.
+- Buffered and streaming browser fetch now share `_browser_fetch_bridge_script()` so endpoint discovery and proof/turnstile/arkose provider handling are maintained in one browser-side script.
 
 ## Known Traps
 
@@ -44,6 +45,7 @@ Reasons:
 - Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
 - The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
 - After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
+- Buffered browser fetch can receive a 200 event stream but still fail parsing in `recive_handle()` for some old-conversation responses, then legacy fallback succeeds. Treat this as a parser-fixture task, not an endpoint discovery failure.
 
 ## Verified Smoke Commands
 
@@ -179,7 +181,6 @@ Expected streaming shape:
 
 ## Next Engineering Steps
 
-- Extract duplicated browser JS for buffered and streaming fetch into one maintained script template.
 - Add parser fixtures for saved SSE streams, including:
   - normal text;
   - overlapping text patches;

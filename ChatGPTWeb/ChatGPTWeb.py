@@ -775,6 +775,204 @@ class chatgpt:
             probes.append(info)
         return probes
 
+    def _browser_fetch_bridge_script(self) -> str:
+        return """
+        async (options) => {
+            const errors = [];
+            const emit = async (payload) => {
+                if (options.stream && options.emitBinding) {
+                    await window[options.emitBinding](payload);
+                }
+            };
+
+            const unique = (items) => [...new Set(items.filter(Boolean))];
+            const toPath = (url) => {
+                try {
+                    const parsed = new URL(url, location.origin);
+                    return parsed.pathname + parsed.search;
+                } catch (_) {
+                    return url;
+                }
+            };
+            const readText = async (response) => {
+                if (!response.body) {
+                    return await response.text();
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let text = "";
+                while (true) {
+                    const chunk = await reader.read();
+                    if (chunk.done) {
+                        break;
+                    }
+                    text += decoder.decode(chunk.value, { stream: true });
+                }
+                text += decoder.decode();
+                return text;
+            };
+            const streamResponse = async (response) => {
+                if (!response.body) {
+                    await emit({ type: "chunk", text: await response.text() });
+                    await emit({ type: "done" });
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                    const item = await reader.read();
+                    if (item.done) {
+                        break;
+                    }
+                    const text = decoder.decode(item.value, { stream: true });
+                    if (text) {
+                        await emit({ type: "chunk", text });
+                    }
+                }
+                const tail = decoder.decode();
+                if (tail) {
+                    await emit({ type: "chunk", text: tail });
+                }
+                await emit({ type: "done" });
+            };
+            const fetchWithTimeout = async (url, init, timeoutMs) => {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    return await fetch(url, { ...init, signal: controller.signal });
+                } finally {
+                    clearTimeout(timer);
+                }
+            };
+            const resourceUrls = performance.getEntriesByType("resource").map((entry) => entry.name);
+            const sentinelEntries = resourceUrls
+                .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
+                .map(toPath);
+            const conversationEntries = resourceUrls
+                .filter((name) => name.includes("conversation"))
+                .map(toPath)
+                .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation"));
+            const requirementsUrls = unique([
+                toPath(options.requirementsUrl),
+                "/backend-api/sentinel/chat-requirements",
+                ...sentinelEntries,
+            ]);
+            const baseHeaders = {
+                "accept": "*/*",
+                "content-type": "application/json",
+                "oai-language": "en-US",
+            };
+            if (options.accessToken) {
+                baseHeaders["authorization"] = `Bearer ${options.accessToken}`;
+            }
+            if (options.deviceId) {
+                baseHeaders["oai-device-id"] = options.deviceId;
+            }
+
+            let requirements = null;
+            for (const reqUrl of requirementsUrls) {
+                try {
+                    const response = await fetchWithTimeout(reqUrl, {
+                        method: "POST",
+                        credentials: "include",
+                        headers: baseHeaders,
+                        body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
+                    }, options.timeoutMs);
+                    const text = await response.text();
+                    if (!response.ok) {
+                        errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
+                        continue;
+                    }
+                    const parsed = JSON.parse(text);
+                    if (parsed && parsed.token) {
+                        requirements = parsed;
+                        break;
+                    }
+                    errors.push(`requirements ${reqUrl} returned no token`);
+                } catch (error) {
+                    errors.push(`requirements ${reqUrl}: ${error && error.message ? error.message : String(error)}`);
+                }
+            }
+            if (!requirements || !requirements.token) {
+                throw new Error(`requirements token unavailable: ${errors.join(" | ")}`);
+            }
+
+            const getToken = async (names, methodName, errorName) => {
+                for (const name of names) {
+                    let provider = window;
+                    for (const part of name.split(".")) {
+                        provider = provider && provider[part];
+                    }
+                    if (provider && typeof provider[methodName] === "function") {
+                        return await provider[methodName](requirements);
+                    }
+                }
+                throw new Error(`${errorName} provider is not ready`);
+            };
+
+            const proof = await getToken(["_chatp_old", "_proof", "_proof.Z"], "getEnforcementToken", "proof");
+            const conversationHeaders = {
+                ...baseHeaders,
+                "accept": "text/event-stream",
+                "openai-sentinel-chat-requirements-token": requirements.token,
+                "openai-sentinel-proof-token": proof,
+            };
+            if (requirements.turnstile) {
+                conversationHeaders["openai-sentinel-turnstile-token"] = await getToken(
+                    ["_turnstile", "_turnstile.Z"],
+                    "getEnforcementToken",
+                    "turnstile"
+                );
+            }
+            if (requirements.arkose) {
+                const arkose = await getToken(["_ark", "_ark.ZP"], "startEnforcement", "arkose");
+                conversationHeaders["openai-sentinel-arkose-token"] = arkose && arkose.token ? arkose.token : arkose;
+            }
+
+            const conversationUrls = unique([
+                "/backend-api/f/conversation",
+                toPath(options.conversationUrl),
+                "/backend-api/conversation",
+                "/api/backend-api/f/conversation",
+                "/api/backend-api/conversation",
+                ...conversationEntries,
+            ]);
+            for (const conversationUrl of conversationUrls) {
+                try {
+                    const response = await fetchWithTimeout(conversationUrl, {
+                        method: "POST",
+                        credentials: "include",
+                        headers: conversationHeaders,
+                        body: options.payload,
+                    }, options.timeoutMs);
+                    const contentType = response.headers.get("content-type") || "";
+                    if (!response.ok) {
+                        const text = await response.text();
+                        errors.push(`conversation ${conversationUrl} ${response.status}: ${text.slice(0, 500)}`);
+                        continue;
+                    }
+                    if (options.stream) {
+                        await emit({ type: "meta", url: conversationUrl, status: response.status, contentType });
+                        await streamResponse(response);
+                        return { ok: true, url: conversationUrl, status: response.status, contentType };
+                    }
+                    const text = await readText(response);
+                    return {
+                        ok: true,
+                        url: conversationUrl,
+                        status: response.status,
+                        contentType,
+                        text,
+                        requirementsKeys: Object.keys(requirements),
+                    };
+                } catch (error) {
+                    errors.push(`conversation ${conversationUrl}: ${error && error.message ? error.message : String(error)}`);
+                }
+            }
+            throw new Error(`conversation fetch failed: ${errors.join(" | ")}`);
+        }
+        """
+
     async def _send_msg_by_browser_fetch(self, msg_data: MsgData, session: Session, attempt: int) -> MsgData:
         page = session.page
         if not page:
@@ -788,168 +986,7 @@ class chatgpt:
 
         bridge_result = await asyncio.wait_for(
             page.evaluate(
-                """
-                async (options) => {
-                    const errors = [];
-
-                    const unique = (items) => [...new Set(items.filter(Boolean))];
-                    const toPath = (url) => {
-                        try {
-                            const parsed = new URL(url, location.origin);
-                            return parsed.pathname + parsed.search;
-                        } catch (_) {
-                            return url;
-                        }
-                    };
-                    const readText = async (response) => {
-                        if (!response.body) {
-                            return await response.text();
-                        }
-                        const reader = response.body.getReader();
-                        const decoder = new TextDecoder();
-                        let text = "";
-                        while (true) {
-                            const chunk = await reader.read();
-                            if (chunk.done) {
-                                break;
-                            }
-                            text += decoder.decode(chunk.value, { stream: true });
-                        }
-                        text += decoder.decode();
-                        return text;
-                    };
-                    const fetchWithTimeout = async (url, init, timeoutMs) => {
-                        const controller = new AbortController();
-                        const timer = setTimeout(() => controller.abort(), timeoutMs);
-                        try {
-                            return await fetch(url, { ...init, signal: controller.signal });
-                        } finally {
-                            clearTimeout(timer);
-                        }
-                    };
-                    const sentinelEntries = performance.getEntriesByType("resource")
-                        .map((entry) => entry.name)
-                        .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
-                        .map(toPath);
-                    const conversationEntries = performance.getEntriesByType("resource")
-                        .map((entry) => entry.name)
-                        .filter((name) => name.includes("conversation"))
-                        .map(toPath)
-                        .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation"));
-                    const requirementsUrls = unique([
-                        toPath(options.requirementsUrl),
-                        "/backend-api/sentinel/chat-requirements",
-                        ...sentinelEntries,
-                    ]);
-                    const baseHeaders = {
-                        "accept": "*/*",
-                        "content-type": "application/json",
-                        "oai-language": "en-US",
-                    };
-                    if (options.accessToken) {
-                        baseHeaders["authorization"] = `Bearer ${options.accessToken}`;
-                    }
-                    if (options.deviceId) {
-                        baseHeaders["oai-device-id"] = options.deviceId;
-                    }
-
-                    let requirements = null;
-                    for (const reqUrl of requirementsUrls) {
-                        try {
-                            const response = await fetchWithTimeout(reqUrl, {
-                                method: "POST",
-                                credentials: "include",
-                                headers: baseHeaders,
-                                body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
-                            }, options.timeoutMs);
-                            const text = await response.text();
-                            if (!response.ok) {
-                                errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
-                                continue;
-                            }
-                            const parsed = JSON.parse(text);
-                            if (parsed && parsed.token) {
-                                requirements = parsed;
-                                break;
-                            }
-                            errors.push(`requirements ${reqUrl} returned no token`);
-                        } catch (error) {
-                            errors.push(`requirements ${reqUrl}: ${error && error.message ? error.message : String(error)}`);
-                        }
-                    }
-                    if (!requirements || !requirements.token) {
-                        throw new Error(`requirements token unavailable: ${errors.join(" | ")}`);
-                    }
-
-                    const getToken = async (names, methodName, errorName) => {
-                        for (const name of names) {
-                            let provider = window;
-                            for (const part of name.split(".")) {
-                                provider = provider && provider[part];
-                            }
-                            if (provider && typeof provider[methodName] === "function") {
-                                return await provider[methodName](requirements);
-                            }
-                        }
-                        throw new Error(`${errorName} provider is not ready`);
-                    };
-
-                    const proof = await getToken(["_chatp_old", "_proof", "_proof.Z"], "getEnforcementToken", "proof");
-                    const conversationHeaders = {
-                        ...baseHeaders,
-                        "accept": "text/event-stream",
-                        "openai-sentinel-chat-requirements-token": requirements.token,
-                        "openai-sentinel-proof-token": proof,
-                    };
-                    if (requirements.turnstile) {
-                        conversationHeaders["openai-sentinel-turnstile-token"] = await getToken(
-                            ["_turnstile", "_turnstile.Z"],
-                            "getEnforcementToken",
-                            "turnstile"
-                        );
-                    }
-                    if (requirements.arkose) {
-                        const arkose = await getToken(["_ark", "_ark.ZP"], "startEnforcement", "arkose");
-                        conversationHeaders["openai-sentinel-arkose-token"] = arkose && arkose.token ? arkose.token : arkose;
-                    }
-
-                    const conversationUrls = unique([
-                        "/backend-api/f/conversation",
-                        toPath(options.conversationUrl),
-                        "/backend-api/conversation",
-                        "/api/backend-api/f/conversation",
-                        "/api/backend-api/conversation",
-                        ...conversationEntries,
-                    ]);
-                    for (const conversationUrl of conversationUrls) {
-                        try {
-                            const response = await fetchWithTimeout(conversationUrl, {
-                                method: "POST",
-                                credentials: "include",
-                                headers: conversationHeaders,
-                                body: options.payload,
-                            }, options.timeoutMs);
-                            const text = await readText(response);
-                            const contentType = response.headers.get("content-type") || "";
-                            if (!response.ok) {
-                                errors.push(`conversation ${conversationUrl} ${response.status}: ${text.slice(0, 500)}`);
-                                continue;
-                            }
-                            return {
-                                ok: true,
-                                url: conversationUrl,
-                                status: response.status,
-                                contentType,
-                                text,
-                                requirementsKeys: Object.keys(requirements),
-                            };
-                        } catch (error) {
-                            errors.push(`conversation ${conversationUrl}: ${error && error.message ? error.message : String(error)}`);
-                        }
-                    }
-                    throw new Error(`conversation fetch failed: ${errors.join(" | ")}`);
-                }
-                """,
+                self._browser_fetch_bridge_script(),
                 {
                     "payload": data,
                     "accessToken": session.access_token,
@@ -957,6 +994,7 @@ class chatgpt:
                     "conversationUrl": url_chatgpt,
                     "requirementsUrl": url_requirements,
                     "timeoutMs": 120000,
+                    "stream": False,
                 },
             ),
             timeout=150,
@@ -1003,171 +1041,7 @@ class chatgpt:
         await page.expose_binding(binding_name, emit_chunk)
         stream_task = asyncio.create_task(
             page.evaluate(
-                """
-                async (options) => {
-                    const errors = [];
-                    const emit = async (payload) => {
-                        await window[options.emitBinding](payload);
-                    };
-                    const unique = (items) => [...new Set(items.filter(Boolean))];
-                    const toPath = (url) => {
-                        try {
-                            const parsed = new URL(url, location.origin);
-                            return parsed.pathname + parsed.search;
-                        } catch (_) {
-                            return url;
-                        }
-                    };
-                    const fetchWithTimeout = async (url, init, timeoutMs) => {
-                        const controller = new AbortController();
-                        const timer = setTimeout(() => controller.abort(), timeoutMs);
-                        try {
-                            return await fetch(url, { ...init, signal: controller.signal });
-                        } finally {
-                            clearTimeout(timer);
-                        }
-                    };
-                    const sentinelEntries = performance.getEntriesByType("resource")
-                        .map((entry) => entry.name)
-                        .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
-                        .map(toPath);
-                    const conversationEntries = performance.getEntriesByType("resource")
-                        .map((entry) => entry.name)
-                        .filter((name) => name.includes("conversation"))
-                        .map(toPath)
-                        .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation"));
-                    const requirementsUrls = unique([
-                        toPath(options.requirementsUrl),
-                        "/backend-api/sentinel/chat-requirements",
-                        ...sentinelEntries,
-                    ]);
-                    const baseHeaders = {
-                        "accept": "*/*",
-                        "content-type": "application/json",
-                        "oai-language": "en-US",
-                    };
-                    if (options.accessToken) {
-                        baseHeaders["authorization"] = `Bearer ${options.accessToken}`;
-                    }
-                    if (options.deviceId) {
-                        baseHeaders["oai-device-id"] = options.deviceId;
-                    }
-
-                    let requirements = null;
-                    for (const reqUrl of requirementsUrls) {
-                        try {
-                            const response = await fetchWithTimeout(reqUrl, {
-                                method: "POST",
-                                credentials: "include",
-                                headers: baseHeaders,
-                                body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
-                            }, options.timeoutMs);
-                            const text = await response.text();
-                            if (!response.ok) {
-                                errors.push(`requirements ${reqUrl} ${response.status}: ${text.slice(0, 300)}`);
-                                continue;
-                            }
-                            const parsed = JSON.parse(text);
-                            if (parsed && parsed.token) {
-                                requirements = parsed;
-                                break;
-                            }
-                            errors.push(`requirements ${reqUrl} returned no token`);
-                        } catch (error) {
-                            errors.push(`requirements ${reqUrl}: ${error && error.message ? error.message : String(error)}`);
-                        }
-                    }
-                    if (!requirements || !requirements.token) {
-                        throw new Error(`requirements token unavailable: ${errors.join(" | ")}`);
-                    }
-
-                    const getToken = async (names, methodName, errorName) => {
-                        for (const name of names) {
-                            let provider = window;
-                            for (const part of name.split(".")) {
-                                provider = provider && provider[part];
-                            }
-                            if (provider && typeof provider[methodName] === "function") {
-                                return await provider[methodName](requirements);
-                            }
-                        }
-                        throw new Error(`${errorName} provider is not ready`);
-                    };
-
-                    const proof = await getToken(["_chatp_old", "_proof", "_proof.Z"], "getEnforcementToken", "proof");
-                    const conversationHeaders = {
-                        ...baseHeaders,
-                        "accept": "text/event-stream",
-                        "openai-sentinel-chat-requirements-token": requirements.token,
-                        "openai-sentinel-proof-token": proof,
-                    };
-                    if (requirements.turnstile) {
-                        conversationHeaders["openai-sentinel-turnstile-token"] = await getToken(
-                            ["_turnstile", "_turnstile.Z"],
-                            "getEnforcementToken",
-                            "turnstile"
-                        );
-                    }
-                    if (requirements.arkose) {
-                        const arkose = await getToken(["_ark", "_ark.ZP"], "startEnforcement", "arkose");
-                        conversationHeaders["openai-sentinel-arkose-token"] = arkose && arkose.token ? arkose.token : arkose;
-                    }
-
-                    const conversationUrls = unique([
-                        "/backend-api/f/conversation",
-                        toPath(options.conversationUrl),
-                        "/backend-api/conversation",
-                        "/api/backend-api/f/conversation",
-                        "/api/backend-api/conversation",
-                        ...conversationEntries,
-                    ]);
-                    let lastError = "";
-                    for (const conversationUrl of conversationUrls) {
-                        try {
-                            const response = await fetchWithTimeout(conversationUrl, {
-                                method: "POST",
-                                credentials: "include",
-                                headers: conversationHeaders,
-                                body: options.payload,
-                            }, options.timeoutMs);
-                            const contentType = response.headers.get("content-type") || "";
-                            if (!response.ok) {
-                                const text = await response.text();
-                                errors.push(`conversation ${conversationUrl} ${response.status}: ${text.slice(0, 500)}`);
-                                continue;
-                            }
-                            await emit({ type: "meta", url: conversationUrl, status: response.status, contentType });
-                            if (!response.body) {
-                                await emit({ type: "chunk", text: await response.text() });
-                                await emit({ type: "done" });
-                                return { ok: true, url: conversationUrl, status: response.status, contentType };
-                            }
-                            const reader = response.body.getReader();
-                            const decoder = new TextDecoder();
-                            while (true) {
-                                const item = await reader.read();
-                                if (item.done) {
-                                    break;
-                                }
-                                const text = decoder.decode(item.value, { stream: true });
-                                if (text) {
-                                    await emit({ type: "chunk", text });
-                                }
-                            }
-                            const tail = decoder.decode();
-                            if (tail) {
-                                await emit({ type: "chunk", text: tail });
-                            }
-                            await emit({ type: "done" });
-                            return { ok: true, url: conversationUrl, status: response.status, contentType };
-                        } catch (error) {
-                            lastError = error && error.message ? error.message : String(error);
-                            errors.push(`conversation ${conversationUrl}: ${lastError}`);
-                        }
-                    }
-                    throw new Error(`conversation fetch failed: ${errors.join(" | ")}`);
-                }
-                """,
+                self._browser_fetch_bridge_script(),
                 {
                     "payload": data,
                     "accessToken": session.access_token,
@@ -1175,6 +1049,7 @@ class chatgpt:
                     "conversationUrl": url_chatgpt,
                     "requirementsUrl": url_requirements,
                     "timeoutMs": 120000,
+                    "stream": True,
                     "emitBinding": binding_name,
                 },
             )
