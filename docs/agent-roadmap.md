@@ -41,6 +41,7 @@ Reasons:
 - `ChatService.stream_to_callback()` adapts ordered stream events to synchronous or asynchronous bot callbacks and returns the final `ChatResult` after the stream closes.
 - `create_http_app()` is an opt-in aiohttp application factory over `ChatService`. It provides OpenAI-shaped `/v1/chat/completions`, SSE, local health/model/status routes, optional bearer-key protection, and bounded base64 JSON attachments without starting a network listener itself.
 - Streaming browser fetches now register a per-request `AbortController`; closing the Python generator or losing an HTTP SSE client aborts the matching page-side fetch and removes the controller entry.
+- `McpServiceAdapter` and `create_mcp_server()` provide an optional FastMCP server over `ChatService`, never browser internals. The initial tools are `chat_send`, `list_accounts`, `list_models`, and `get_conversation`; `chat_send` requires explicit `confirm=true`, while output is recursively redacted for credential-shaped keys.
 
 ## Known Traps
 
@@ -183,17 +184,19 @@ Expected streaming shape:
 
 ## Phase 6: MCP And Agent Integration
 
-- Expose a minimal MCP server after the service API stabilizes.
-- Start with tools:
-  - `chat_send`
-  - `chat_stream` if the MCP client supports the chosen transport pattern
-  - `list_accounts`
+- A minimal optional FastMCP server is implemented as `create_mcp_server(service)`. It uses the official `mcp` Python package only when the factory is called, so base package users do not need the extra dependency.
+- Implemented tools:
+  - `chat_send` with explicit `confirm=true`
+  - `list_accounts` with credential-free diagnostics
+  - `list_models` with opt-in remote refresh
   - `get_conversation`
-  - `upload_file`
+- Deferred tools:
+  - `chat_stream`, until target MCP clients' progress/cancellation semantics are exercised end to end
+  - `upload_file`, until explicit user approval and file-size/content policy are designed
 - Keep tool schemas compact and explicit.
 - Never expose raw cookies, access tokens, or account passwords through MCP.
 - Add approval-sensitive tools for actions that spend account quota or upload files.
-- For Codex/agent usage, prefer streaming events over buffered responses so the caller can observe partial progress and cancellation.
+- For Codex/agent usage, prefer streaming events over buffered responses once the client transport can preserve partial progress and cancellation.
 
 ## Phase 7: Storage And State
 
@@ -230,4 +233,4 @@ Expected streaming shape:
 - Add platform-specific NoneBot message-edit/send adapters on top of `stream_to_callback()`.
 - Add HTTP API fixture coverage for malformed attachment payloads and real client-disconnect cancellation. Do not let HTTP handlers call browser internals directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
-- Add MCP prototype only after service-layer request/response objects are stable.
+- Exercise the MCP prototype with a real stdio client, then design `chat_stream` around verified MCP progress/cancellation behavior instead of returning a fake buffered stream.

@@ -1,0 +1,165 @@
+"""Optional MCP tools backed only by the stable :mod:`service` facade.
+
+The adapter intentionally has no access to Playwright pages, stored session
+tokens, passwords, or browser contexts. This keeps the agent boundary small
+and makes the core behavior testable without installing the MCP SDK.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from .service import ChatRequest, ChatResult, ChatService
+
+
+_SENSITIVE_KEY_PARTS = ("token", "cookie", "password", "secret", "authorization")
+
+
+def _redact_sensitive(value: Any) -> Any:
+    """Recursively drop accidental credential-shaped fields from tool output."""
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_sensitive(item)
+            for key, item in value.items()
+            if not any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
+def _result_to_dict(result: ChatResult) -> Dict[str, Any]:
+    return _redact_sensitive(
+        {
+            "ok": result.ok,
+            "text": result.text,
+            "conversation_id": result.conversation_id,
+            "message_id": result.message_id,
+            "requested_model": result.requested_model,
+            "used_model": result.used_model,
+            "image_urls": result.image_urls,
+            "usage": result.usage,
+            "metadata": result.metadata,
+            "errors": result.errors,
+            "account": result.account,
+            "content": result.content.to_dict(),
+        }
+    )
+
+
+class McpServiceAdapter:
+    """Small, confirmation-aware agent facade over :class:`ChatService`."""
+
+    def __init__(self, service: ChatService):
+        self._service = service
+
+    async def chat_send(
+        self,
+        prompt: str,
+        *,
+        model: str = "auto",
+        conversation_id: str = "",
+        parent_message_id: str = "",
+        web_search: bool = False,
+        confirm: bool = False,
+    ) -> Dict[str, Any]:
+        """Send one buffered chat request after the caller explicitly confirms it."""
+        if not prompt.strip():
+            return {"ok": False, "error": "prompt must not be empty"}
+        if not confirm:
+            return {
+                "ok": False,
+                "error": "This action can consume account quota. Call again with confirm=true to send it.",
+                "requires_confirmation": True,
+            }
+        result = await self._service.send(
+            ChatRequest(
+                prompt=prompt,
+                model=model,
+                conversation_id=conversation_id,
+                parent_message_id=parent_message_id,
+                web_search=web_search,
+            )
+        )
+        return _result_to_dict(result)
+
+    async def list_accounts(self) -> Dict[str, Any]:
+        """Return account availability diagnostics without credentials."""
+        status = await self._service.get_account_status()
+        accounts = status.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = [{"email": email} for email in status.get("account", []) if isinstance(email, str)]
+        allowed = {
+            "email", "status", "login_state", "available", "disabled", "disabled_until",
+            "gptplus", "conversation_count", "login_failure_kind", "last_login_error", "runtime",
+        }
+        return {
+            "accounts": [
+                _redact_sensitive({key: value for key, value in account.items() if key in allowed})
+                for account in accounts
+                if isinstance(account, dict)
+            ]
+        }
+
+    async def list_models(self, fetch_remote: bool = False) -> Dict[str, Any]:
+        """Return cached models, or explicitly request an authenticated refresh."""
+        return _redact_sensitive(await self._service.get_model_catalog(fetch_remote=fetch_remote))
+
+    async def get_conversation(self, conversation_id: str) -> List[Dict[str, str]]:
+        """Return locally stored history for a known conversation identifier."""
+        if not conversation_id.strip():
+            return []
+        return _redact_sensitive(await self._service.get_history(conversation_id))
+
+
+def create_mcp_server(service: ChatService):
+    """Create a FastMCP server without importing the optional SDK at package import time."""
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:
+        raise RuntimeError("MCP support is optional. Install it with: pip install 'ChatGPTWeb[mcp]'") from exc
+
+    adapter = McpServiceAdapter(service)
+    server = FastMCP(
+        "ChatGPTWeb",
+        instructions=(
+            "ChatGPTWeb tools use an existing logged-in browser runtime. "
+            "chat_send requires confirm=true because it can consume account quota."
+        ),
+    )
+
+    @server.tool()
+    async def chat_send(
+        prompt: str,
+        model: str = "auto",
+        conversation_id: str = "",
+        parent_message_id: str = "",
+        web_search: bool = False,
+        confirm: bool = False,
+    ) -> Dict[str, Any]:
+        """Send a ChatGPT request. Set confirm=true only after approving the quota spend."""
+        return await adapter.chat_send(
+            prompt,
+            model=model,
+            conversation_id=conversation_id,
+            parent_message_id=parent_message_id,
+            web_search=web_search,
+            confirm=confirm,
+        )
+
+    @server.tool()
+    async def list_accounts() -> Dict[str, Any]:
+        """List account availability and runtime diagnostics without credentials."""
+        return await adapter.list_accounts()
+
+    @server.tool()
+    async def list_models(fetch_remote: bool = False) -> Dict[str, Any]:
+        """List model capabilities; remote refresh is opt-in because it uses the browser runtime."""
+        return await adapter.list_models(fetch_remote=fetch_remote)
+
+    @server.tool()
+    async def get_conversation(conversation_id: str) -> List[Dict[str, str]]:
+        """Read locally stored history for one conversation."""
+        return await adapter.get_conversation(conversation_id)
+
+    return server

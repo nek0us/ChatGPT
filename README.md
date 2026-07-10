@@ -263,6 +263,22 @@ result = await service.stream_to_callback(
 `ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
 `result.content` keeps the original Markdown and exposes optional plain-text, links, code blocks, citations, and image URLs for platform-specific rendering.
 
+### Optional MCP Server
+```bash
+pip install "ChatGPTWeb[mcp]"
+```
+
+```python
+from ChatGPTWeb import ChatService, chatgpt, create_mcp_server
+
+runtime = chatgpt(sessions=sessions, plugin=True, log_status=False)
+service = ChatService(runtime)
+server = create_mcp_server(service)
+server.run(transport="stdio")
+```
+
+The MCP server is intentionally an adapter over an already initialized runtime; it does not create a second browser or expose browser/session credentials. Its initial tools are `chat_send`, `list_accounts`, `list_models`, and `get_conversation`. `chat_send` requires `confirm=true` because it can consume account quota. Keep protocol stdout clean when using the `stdio` transport; send application logs to stderr or a file. Streaming and file-upload MCP tools are deliberately deferred until client progress/cancellation behavior is validated.
+
 ### Optional HTTP API
 ```python
 from aiohttp import web

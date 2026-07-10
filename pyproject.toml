@@ -10,6 +10,9 @@ dependencies = ["playwright_firefox >= 1.0.4","httpx>= 0.28.1","aioconsole","aio
 requires-python = ">=3.10"
 readme = "README.md"
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+
 [project.urls]
 Homepage = "https://github.com/nek0us/ChatGPT"
 Repository = "https://github.com/nek0us/ChatGPT"
