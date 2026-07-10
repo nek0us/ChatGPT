@@ -699,6 +699,139 @@ class chatgpt:
             "source": "local_static",
         }
 
+    async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, typing.Any]:
+        """Return model catalogs discovered from authenticated browser sessions."""
+        startup_wait_seconds = 0
+        while not self.manage["start"]:
+            await asyncio.sleep(0.5)
+            startup_wait_seconds += 0.5
+            if startup_wait_seconds >= self.ready_timeout:
+                return {
+                    "source": "startup_timeout",
+                    "local": self._local_model_catalog(),
+                    "accounts": [],
+                }
+
+        accounts = []
+        for session in self.Sessions:
+            if session.type == "script":
+                continue
+            info: Dict[str, typing.Any] = {
+                "email": session.email,
+                "status": session.status,
+                "login_state": session.login_state,
+                "gptplus": session.gptplus,
+                "remote": None,
+                "cached": [],
+                "errors": [],
+            }
+            if not await self._ensure_session_runtime(session):
+                info["errors"].append("session runtime is not available")
+                accounts.append(info)
+                continue
+            page = session.page
+            if not page or page.is_closed():
+                info["errors"].append("page is not ready")
+                accounts.append(info)
+                continue
+            try:
+                discovered = await page.evaluate(
+                    """
+                    async (options) => {
+                        const summarizeModelCatalog = (data, source) => {
+                            const value = data && data.value && typeof data.value === "object" ? data.value : data;
+                            const categories = Array.isArray(value && value.categories) ? value.categories : [];
+                            const models = Array.isArray(value && value.models) ? value.models : [];
+                            if (!categories.length && !models.length) {
+                                return null;
+                            }
+                            return {
+                                source,
+                                title: value && value.title ? value.title : "",
+                                categories: categories.map((category) => ({
+                                    categoryId: category.categoryId || category.id || "",
+                                    label: category.label || "",
+                                    shortLabel: category.shortLabel || "",
+                                    defaultModel: category.defaultModel || "",
+                                    subscriptionLevel: category.subscriptionLevel || "",
+                                })),
+                                models: models.map((model) => ({
+                                    slug: model.slug || "",
+                                    title: model.title || "",
+                                    description: model.description || "",
+                                    maxTokens: model.max_tokens || model.maxTokens || null,
+                                    tags: Array.isArray(model.tags) ? model.tags : [],
+                                })),
+                            };
+                        };
+                        const parseJsonOrNull = (text) => {
+                            try {
+                                return JSON.parse(text);
+                            } catch (_) {
+                                return null;
+                            }
+                        };
+                        const cached = Object.keys(localStorage)
+                            .filter((key) => key.endsWith("/models") || key.includes("/models"))
+                            .map((key) => {
+                                const parsed = parseJsonOrNull(localStorage.getItem(key));
+                                return parsed ? summarizeModelCatalog(parsed, `localStorage:${key}`) : null;
+                            })
+                            .filter(Boolean);
+
+                        let remote = null;
+                        const errors = [];
+                        if (options.fetchRemote) {
+                            try {
+                                const headers = { "accept": "application/json, text/plain, */*" };
+                                if (options.accessToken) {
+                                    headers["authorization"] = `Bearer ${options.accessToken}`;
+                                }
+                                if (options.deviceId) {
+                                    headers["oai-device-id"] = options.deviceId;
+                                }
+                                const response = await fetch(options.modelsUrl, {
+                                    method: "GET",
+                                    credentials: "include",
+                                    headers,
+                                });
+                                const text = await response.text();
+                                if (!response.ok) {
+                                    errors.push(`models ${response.status}: ${text.slice(0, 300)}`);
+                                } else {
+                                    remote = summarizeModelCatalog(parseJsonOrNull(text), `fetch:${options.modelsUrl}`);
+                                    if (!remote) {
+                                        errors.push("models response did not contain catalog fields");
+                                    }
+                                }
+                            } catch (error) {
+                                errors.push(error && error.message ? error.message : String(error));
+                            }
+                        }
+                        return { remote, cached, errors };
+                    }
+                    """,
+                    {
+                        "fetchRemote": fetch_remote,
+                        "modelsUrl": "/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
+                        "accessToken": session.access_token,
+                        "deviceId": session.device_id,
+                    },
+                )
+                if isinstance(discovered, dict):
+                    info["remote"] = discovered.get("remote")
+                    info["cached"] = discovered.get("cached") or []
+                    info["errors"].extend(discovered.get("errors") or [])
+            except Exception as e:
+                info["errors"].append(str(e))
+            accounts.append(info)
+
+        return {
+            "source": "browser_authenticated",
+            "local": self._local_model_catalog(),
+            "accounts": accounts,
+        }
+
     async def probe_browser_runtime(self, fetch_capabilities: bool = False) -> List[Dict[str, typing.Any]]:
         """Inspect browser-side capabilities required by the fetch bridge."""
         probes = []

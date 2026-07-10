@@ -36,6 +36,7 @@ Reasons:
 - Runtime probe records model/quota/usage/entitlement/rate-limit related browser resources and storage keys. Optional probe fetch only reads already-observed capability resources.
 - Runtime probe has verified `/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true` returns the authenticated model catalog, while localStorage also caches model categories under `.../models`.
 - Runtime probe has verified `/backend-api/pageConfigs/billing` returns billing/usage-limit eligibility configuration with authorization, but not necessarily live remaining quota.
+- `get_model_catalog()` exposes authenticated remote model catalog, cached browser model categories, and static local aliases in one API for bot/API/agent callers.
 
 ## Known Traps
 
@@ -98,6 +99,14 @@ Runtime capability probe with read-only capability fetch:
 
 ```powershell
 $env:CHATGPTWEB_SMOKE_PROBE='true'
+$env:CHATGPTWEB_SMOKE_PROBE_FETCH='true'
+uv run python example\local_smoke.py
+```
+
+Authenticated model catalog:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_MODELS='true'
 $env:CHATGPTWEB_SMOKE_PROBE_FETCH='true'
 uv run python example\local_smoke.py
 ```
@@ -200,7 +209,7 @@ Expected streaming shape:
 
 ## Next Engineering Steps
 
-- Add authenticated runtime probes for model catalog and account usage/quota. Start by discovering endpoints from browser resources instead of guessing private paths.
+- Add authenticated runtime probes for account usage/quota. Start by discovering endpoints from browser resources instead of guessing private paths.
 - Add parser fixtures for saved SSE streams, including:
   - normal text;
   - overlapping text patches;

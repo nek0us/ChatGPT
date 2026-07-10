@@ -17,6 +17,7 @@ STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", 
 DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
 PROBE = os.getenv("CHATGPTWEB_SMOKE_PROBE", "false").lower() in ("1", "true", "yes")
 PROBE_FETCH = os.getenv("CHATGPTWEB_SMOKE_PROBE_FETCH", "false").lower() in ("1", "true", "yes")
+MODELS = os.getenv("CHATGPTWEB_SMOKE_MODELS", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
@@ -55,8 +56,11 @@ async def main():
     stream_events = []
     results = []
     probe = []
+    model_catalog = {}
     try:
-        if PROBE:
+        if MODELS:
+            model_catalog = await chat.get_model_catalog(fetch_remote=PROBE_FETCH)
+        elif PROBE:
             startup_wait = 0
             while not chat.manage["start"] and startup_wait < TIMEOUT:
                 await asyncio.sleep(0.5)
@@ -140,6 +144,8 @@ async def main():
                 "stream": STREAM,
                 "probe_mode": PROBE,
                 "probe_fetch": PROBE_FETCH,
+                "model_catalog_mode": MODELS,
+                "model_catalog": model_catalog,
                 "probe": probe,
                 "stream_events": stream_events,
                 "results": results,
