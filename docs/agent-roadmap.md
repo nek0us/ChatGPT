@@ -191,7 +191,7 @@ Expected streaming shape:
 
 - Replace ad-hoc JSON files with a repository class.
 - Keep the first implementation file-backed for easy migration.
-- Add file locks or async locks around conversation map writes.
+- Add file locks or async locks around conversation map writes. Initial implementation uses per-conversation async locks, a map lock, and atomic JSON replacement; it preserves the existing file format.
 - Consider SQLite only after the storage interface is stable.
 
 ## Phase 8: Test Harness

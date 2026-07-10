@@ -123,6 +123,9 @@ class chatgpt:
         self._alive_task: Optional[asyncio.Future] = None
         self._watched_contexts = set()
         self._watched_pages = set()
+        self._conversation_locks: Dict[str, asyncio.Lock] = {}
+        self._conversation_locks_guard = asyncio.Lock()
+        self._conversation_map_lock = asyncio.Lock()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -380,6 +383,29 @@ class chatgpt:
         self.cc_map.touch()
         if not self.cc_map.stat().st_size:
             self.cc_map.write_text("{}")
+
+    def _conversation_path(self, conversation_id: str) -> Path:
+        if not conversation_id or "/" in conversation_id or "\\" in conversation_id or conversation_id in (".", ".."):
+            raise ValueError("conversation_id must be a non-empty file name")
+        return self.conversation_dir / conversation_id
+
+    async def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
+        async with self._conversation_locks_guard:
+            lock = self._conversation_locks.get(conversation_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._conversation_locks[conversation_id] = lock
+            return lock
+
+    @staticmethod
+    def _write_json_atomic(path: Path, data: Dict[str, typing.Any]):
+        temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary_path.write_text(json.dumps(data), encoding="utf8")
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
 
     async def __keep_alive__(self, session: Session):
         url = url_check
@@ -1906,46 +1932,39 @@ class chatgpt:
     async def save_chat(self, msg_data: MsgData, context_num: str):
         """save chat file
         保存聊天文件"""
-        path = self.conversation_dir / msg_data.conversation_id
-        path.touch()
-        if not path.stat().st_size:
-            tmp = {
-                "conversation_id": msg_data.conversation_id,
-                "message": [{
-                    "input": msg_data.msg_send,
-                    "output": msg_data.msg_recv,
-                    "type": msg_data.msg_type,
-                    "next_msg_id": msg_data.next_msg_id,
-                }]
-            }
-            path.write_text(json.dumps(tmp))
-        else:
-            tmp = json.loads(path.read_text("utf8"))
-            tmp["message"].append({
+        path = self._conversation_path(msg_data.conversation_id)
+        lock = await self._conversation_lock(msg_data.conversation_id)
+        async with lock:
+            if not path.exists() or not path.stat().st_size:
+                history = {
+                    "conversation_id": msg_data.conversation_id,
+                    "message": [],
+                }
+            else:
+                history = json.loads(path.read_text("utf8"))
+            message = {
                 "input": msg_data.msg_send,
                 "output": msg_data.msg_recv,
                 "type": msg_data.msg_type,
                 "next_msg_id": msg_data.next_msg_id,
-                "p_msg_id": msg_data.p_msg_id,
-            })
-            path.write_text(json.dumps(tmp))
+            }
+            if msg_data.p_msg_id:
+                message["p_msg_id"] = msg_data.p_msg_id
+            history["message"].append(message)
+            self._write_json_atomic(path, history)
 
-        map_tmp = json.loads(self.cc_map.read_text("utf8"))
-        if str(context_num) in map_tmp:
-            if msg_data.conversation_id not in map_tmp[str(context_num)]:
-                map_tmp[str(context_num)].append(msg_data.conversation_id)
-                self.cc_map.write_text(json.dumps(map_tmp))
-        else:
-            map_tmp[str(context_num)] = []
-            map_tmp[str(context_num)].append(msg_data.conversation_id)
-            self.cc_map.write_text(json.dumps(map_tmp))
+        async with self._conversation_map_lock:
+            map_tmp = json.loads(self.cc_map.read_text("utf8"))
+            conversations = map_tmp.setdefault(str(context_num), [])
+            if msg_data.conversation_id not in conversations:
+                conversations.append(msg_data.conversation_id)
+                self._write_json_atomic(self.cc_map, map_tmp)
 
     async def load_chat(self, msg_data: MsgData):
         """load chat file
         读取聊天文件"""
-        path = self.conversation_dir.joinpath(msg_data.conversation_id)
-        path.touch()
-        if not path.stat().st_size:
+        path = self._conversation_path(msg_data.conversation_id)
+        if not path.exists() or not path.stat().st_size:
             # self.logger.warning(f"不存在{msg_data.conversation_id}历史记录文件")
             return {
                 "conversation_id": msg_data.conversation_id,
