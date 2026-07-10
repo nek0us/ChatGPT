@@ -692,7 +692,14 @@ class chatgpt:
             files=msg_data.upload_file,
         )
 
-    async def probe_browser_runtime(self) -> List[Dict[str, typing.Any]]:
+    def _local_model_catalog(self) -> Dict[str, typing.Any]:
+        return {
+            "free": model_list(False),
+            "plus": model_list(True),
+            "source": "local_static",
+        }
+
+    async def probe_browser_runtime(self, fetch_capabilities: bool = False) -> List[Dict[str, typing.Any]]:
         """Inspect browser-side capabilities required by the fetch bridge."""
         probes = []
         for session in self.Sessions:
@@ -713,7 +720,7 @@ class chatgpt:
                 info.update(
                     await session.page.evaluate(
                         """
-                        () => {
+                        async (options) => {
                             const typeOf = (name) => {
                                 let value = window;
                                 for (const part of name.split(".")) {
@@ -736,6 +743,70 @@ class chatgpt:
                                     return url;
                                 }
                             };
+                            const keywordPattern = /model|quota|usage|limit|rate|entitlement|subscription|plan|account|billing/i;
+                            const safePreview = (value) => {
+                                try {
+                                    const text = String(value);
+                                    return text.length > 300 ? text.slice(0, 300) : text;
+                                } catch (_) {
+                                    return "";
+                                }
+                            };
+                            const storageMatches = (storage) => Object.keys(storage)
+                                .filter((key) => keywordPattern.test(key))
+                                .slice(0, 30)
+                                .map((key) => ({ key, valuePreview: safePreview(storage.getItem(key)) }));
+                            const summarizeModelCatalog = (data, source) => {
+                                const value = data && data.value && typeof data.value === "object" ? data.value : data;
+                                const categories = Array.isArray(value && value.categories) ? value.categories : [];
+                                const models = Array.isArray(value && value.models) ? value.models : [];
+                                if (!categories.length && !models.length) {
+                                    return null;
+                                }
+                                return {
+                                    source,
+                                    title: value && value.title ? value.title : "",
+                                    categories: categories.slice(0, 40).map((category) => ({
+                                        categoryId: category.categoryId || category.id || "",
+                                        label: category.label || "",
+                                        shortLabel: category.shortLabel || "",
+                                        defaultModel: category.defaultModel || "",
+                                        subscriptionLevel: category.subscriptionLevel || "",
+                                    })),
+                                    models: models.slice(0, 80).map((model) => ({
+                                        slug: model.slug || "",
+                                        title: model.title || "",
+                                        description: model.description || "",
+                                        maxTokens: model.max_tokens || model.maxTokens || null,
+                                        tags: Array.isArray(model.tags) ? model.tags.slice(0, 10) : [],
+                                    })),
+                                };
+                            };
+                            const parseJsonOrNull = (text) => {
+                                try {
+                                    return JSON.parse(text);
+                                } catch (_) {
+                                    return null;
+                                }
+                            };
+                            const storageModelCatalogs = Object.keys(localStorage)
+                                .filter((key) => key.endsWith("/models") || key.includes("/models"))
+                                .slice(0, 5)
+                                .map((key) => {
+                                    const parsed = parseJsonOrNull(localStorage.getItem(key));
+                                    const catalog = parsed ? summarizeModelCatalog(parsed, `localStorage:${key}`) : null;
+                                    return catalog;
+                                })
+                                .filter(Boolean);
+                            const knownCapabilityCandidates = [
+                                "/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true",
+                                "/backend-api/pageConfigs/billing",
+                            ];
+                            const capabilityResources = [...new Set(resources
+                                .filter((name) => keywordPattern.test(name))
+                                .map(toPath)
+                                .concat(knownCapabilityCandidates))]
+                                .slice(-40);
                             const conversationEndpointCandidates = [...new Set([
                                 "/backend-api/f/conversation",
                                 "/backend-api/conversation",
@@ -746,6 +817,52 @@ class chatgpt:
                                     .map(toPath)
                                     .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation")),
                             ])];
+                            const capabilityFetchResults = [];
+                            if (options.fetchCapabilities) {
+                                const getCandidates = capabilityResources
+                                    .filter((path) => path.startsWith("/"))
+                                    .filter((path) => !path.includes("/conversation/"))
+                                    .slice(-10);
+                                for (const path of getCandidates) {
+                                    try {
+                                        const headers = { "accept": "application/json, text/plain, */*" };
+                                        if (options.accessToken) {
+                                            headers["authorization"] = `Bearer ${options.accessToken}`;
+                                        }
+                                        if (options.deviceId) {
+                                            headers["oai-device-id"] = options.deviceId;
+                                        }
+                                        const response = await fetch(path, {
+                                            method: "GET",
+                                            credentials: "include",
+                                            headers,
+                                        });
+                                        const contentType = response.headers.get("content-type") || "";
+                                        let preview = "";
+                                        let modelCatalog = null;
+                                        if (contentType.includes("json") || contentType.includes("text")) {
+                                            const text = await response.text();
+                                            preview = text.slice(0, 500);
+                                            if (path.includes("/models")) {
+                                                const parsed = parseJsonOrNull(text);
+                                                modelCatalog = parsed ? summarizeModelCatalog(parsed, `fetch:${path}`) : null;
+                                            }
+                                        }
+                                        capabilityFetchResults.push({
+                                            url: path,
+                                            status: response.status,
+                                            contentType,
+                                            preview,
+                                            modelCatalog,
+                                        });
+                                    } catch (error) {
+                                        capabilityFetchResults.push({
+                                            url: path,
+                                            error: error && error.message ? error.message : String(error),
+                                        });
+                                    }
+                                }
+                            }
                             return {
                                 url: location.href,
                                 userAgent: navigator.userAgent,
@@ -766,11 +883,23 @@ class chatgpt:
                                     .filter((name) => name.includes("/backend-api/") && name.includes("conversation"))
                                     .slice(-10),
                                 conversationEndpointCandidates,
+                                capabilityResources,
+                                capabilityFetchResults,
+                                modelCatalogObserved: storageModelCatalogs,
+                                modelCatalogLocal: options.localModelCatalog,
+                                localStorageCapabilityKeys: storageMatches(localStorage),
+                                sessionStorageCapabilityKeys: storageMatches(sessionStorage),
                                 localStorageKeys: Object.keys(localStorage).slice(0, 30),
                                 sessionStorageKeys: Object.keys(sessionStorage).slice(0, 30),
                             };
                         }
-                        """
+                        """,
+                        {
+                            "fetchCapabilities": fetch_capabilities,
+                            "localModelCatalog": self._local_model_catalog(),
+                            "accessToken": session.access_token,
+                            "deviceId": session.device_id,
+                        },
                     )
                 )
             except Exception as e:
@@ -2136,11 +2265,7 @@ class chatgpt:
             "disabled_until": [session.disabled_until.isoformat() if session.disabled_until else "" for session in self.Sessions if session.type != "script"],
             "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
-            "model_catalog": {
-                "free": model_list(False),
-                "plus": model_list(True),
-                "source": "local_static",
-            },
+            "model_catalog": self._local_model_catalog(),
         }
 
 

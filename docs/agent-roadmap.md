@@ -33,6 +33,9 @@ Reasons:
 - `continue_chat()` and `continue_chat_stream()` now share `_prepare_chat_session()` for startup wait, account selection, old conversation routing, parent message restore, runtime recovery, and session reservation.
 - Buffered and streaming browser fetch now share `_browser_fetch_bridge_script()` so endpoint discovery and proof/turnstile/arkose provider handling are maintained in one browser-side script.
 - `MsgData` and `ChatStreamEvent` reserve `model_requested`, `model_used`, `usage`, and response metadata fields for bot/API/agent callers. Bot adapters can hide them by default; agent/API layers can expose them.
+- Runtime probe records model/quota/usage/entitlement/rate-limit related browser resources and storage keys. Optional probe fetch only reads already-observed capability resources.
+- Runtime probe has verified `/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true` returns the authenticated model catalog, while localStorage also caches model categories under `.../models`.
+- Runtime probe has verified `/backend-api/pageConfigs/billing` returns billing/usage-limit eligibility configuration with authorization, but not necessarily live remaining quota.
 
 ## Known Traps
 
@@ -49,6 +52,8 @@ Reasons:
 - After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
 - Keep legacy `recive_handle()` only for the old route/goto fallback until that transport is retired. New browser fetch paths should parse stream text through `ChatStreamDecoder`.
 - Do not hard-code dynamic model/quota behavior beyond the local fallback catalog. Prefer browser runtime discovery or authenticated API probes, then merge remote capabilities with local aliases.
+- Usage/quota may not be available as a realtime standalone endpoint. It can appear only after certain UI states, model picker interactions, or rate-limit responses, so treat missing quota data as unknown rather than zero.
+- For model catalog, prefer authenticated `/backend-api/models?...` when available, then localStorage model cache, then the static local alias catalog.
 
 ## Verified Smoke Commands
 
@@ -86,6 +91,14 @@ Runtime capability probe after frontend updates:
 
 ```powershell
 $env:CHATGPTWEB_SMOKE_PROBE='true'
+uv run python example\local_smoke.py
+```
+
+Runtime capability probe with read-only capability fetch:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_PROBE='true'
+$env:CHATGPTWEB_SMOKE_PROBE_FETCH='true'
 uv run python example\local_smoke.py
 ```
 

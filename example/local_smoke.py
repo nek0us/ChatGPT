@@ -16,6 +16,7 @@ TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_TIMEOUT", "600"))
 STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", "yes")
 DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
 PROBE = os.getenv("CHATGPTWEB_SMOKE_PROBE", "false").lower() in ("1", "true", "yes")
+PROBE_FETCH = os.getenv("CHATGPTWEB_SMOKE_PROBE_FETCH", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
@@ -60,7 +61,7 @@ async def main():
             while not chat.manage["start"] and startup_wait < TIMEOUT:
                 await asyncio.sleep(0.5)
                 startup_wait += 0.5
-            probe = await chat.probe_browser_runtime()
+            probe = await chat.probe_browser_runtime(fetch_capabilities=PROBE_FETCH)
         else:
             for index, prompt in enumerate(get_prompts()):
                 if index > 0:
@@ -138,6 +139,7 @@ async def main():
                 "error_list": data.error_list,
                 "stream": STREAM,
                 "probe_mode": PROBE,
+                "probe_fetch": PROBE_FETCH,
                 "probe": probe,
                 "stream_events": stream_events,
                 "results": results,
