@@ -900,7 +900,8 @@ class chatgpt:
                                     hasStartEnforcement: !!(value && typeof value.startEnforcement === "function"),
                                 };
                             };
-                            const resources = performance.getEntriesByType("resource").map((entry) => entry.name);
+                            const resourceEntries = performance.getEntriesByType("resource");
+                            const resources = resourceEntries.map((entry) => entry.name);
                             const toPath = (url) => {
                                 try {
                                     const parsed = new URL(url, location.origin);
@@ -910,6 +911,7 @@ class chatgpt:
                                 }
                             };
                             const keywordPattern = /model|quota|usage|limit|rate|entitlement|subscription|plan|account|billing/i;
+                            const richMediaPattern = /image|media|file|download|upload|task|generation/i;
                             const safePreview = (value) => {
                                 try {
                                     const text = String(value);
@@ -922,6 +924,24 @@ class chatgpt:
                                 .filter((key) => keywordPattern.test(key))
                                 .slice(0, 30)
                                 .map((key) => ({ key, valuePreview: safePreview(storage.getItem(key)) }));
+                            const richMediaStorageKeys = (storage) => Object.keys(storage)
+                                .filter((key) => richMediaPattern.test(key))
+                                .slice(0, 30);
+                            const safeResourcePath = (url) => {
+                                try {
+                                    return new URL(url, location.origin).pathname;
+                                } catch (_) {
+                                    return url.split("?")[0];
+                                }
+                            };
+                            const richMediaResources = resourceEntries
+                                .filter((entry) => richMediaPattern.test(entry.name))
+                                .slice(-50)
+                                .map((entry) => ({
+                                    path: safeResourcePath(entry.name),
+                                    initiatorType: entry.initiatorType || "",
+                                    durationMs: Math.round(entry.duration || 0),
+                                }));
                             const summarizeModelCatalog = (data, source) => {
                                 const value = data && data.value && typeof data.value === "object" ? data.value : data;
                                 const categories = Array.isArray(value && value.categories) ? value.categories : [];
@@ -1051,6 +1071,11 @@ class chatgpt:
                                 conversationEndpointCandidates,
                                 capabilityResources,
                                 capabilityFetchResults,
+                                richMediaResources,
+                                richMediaStorage: {
+                                    localStorageKeys: richMediaStorageKeys(localStorage),
+                                    sessionStorageKeys: richMediaStorageKeys(sessionStorage),
+                                },
                                 modelCatalogObserved: storageModelCatalogs,
                                 modelCatalogLocal: options.localModelCatalog,
                                 localStorageCapabilityKeys: storageMatches(localStorage),
