@@ -19,7 +19,7 @@ Reasons:
 - Send retries are iterative and write structured errors into `MsgData.error_list`.
 - `ChatStreamParser` parses ChatGPT SSE/WebSocket patch events into `ChatStreamEvent` objects.
 - `ChatStreamDecoder` incrementally decodes raw SSE chunks and feeds `ChatStreamParser`.
-- Buffered browser fetch send works through `/backend-api/f/conversation`, with `/backend-api/conversation` as a fallback candidate.
+- Buffered browser fetch send works through endpoint candidates: `/backend-api/f/conversation`, `/backend-api/conversation`, `/api` variants, and singular conversation paths discovered from browser performance resources.
 - `continue_chat_stream()` streams events from browser `fetch` by exposing a temporary Playwright binding and pushing `ReadableStream` chunks back to Python.
 - Stream event noise is filtered:
   - empty early `final` events are hidden;
@@ -34,6 +34,7 @@ Reasons:
 
 - Do not make `httpx` the default path for protected ChatGPT endpoints. It can trigger Cloudflare verification and account risk behavior.
 - Do not assume `/backend-api/sentinel/chat-requirements` is the only requirements URL forever. The browser bridge gathers resource entries containing `/backend-api/sentinel/chat-requirements` and also keeps the known path as a candidate.
+- Do not assume conversation endpoints stay exactly under `/backend-api`. The bridge keeps known paths, `/api` variants, and resource-discovered singular conversation candidates.
 - Do not assume stream `data:` payloads are always one clean dict. Some chunks can contain non-dict payloads or status-only patches.
 - Do not emit every parser `final` event directly to bot/agent callers. Some early final-like patches contain only a conversation id and no useful assistant content.
 - Do not listen to every new page in a context as if it were the long-lived session page. Upload, login, markdown rendering, and keep-alive temporary pages close normally.

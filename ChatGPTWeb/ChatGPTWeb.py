@@ -725,6 +725,24 @@ class chatgpt:
                                 };
                             };
                             const resources = performance.getEntriesByType("resource").map((entry) => entry.name);
+                            const toPath = (url) => {
+                                try {
+                                    const parsed = new URL(url, location.origin);
+                                    return parsed.pathname + parsed.search;
+                                } catch (_) {
+                                    return url;
+                                }
+                            };
+                            const conversationEndpointCandidates = [...new Set([
+                                "/backend-api/f/conversation",
+                                "/backend-api/conversation",
+                                "/api/backend-api/f/conversation",
+                                "/api/backend-api/conversation",
+                                ...resources
+                                    .filter((name) => name.includes("conversation"))
+                                    .map(toPath)
+                                    .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation")),
+                            ])];
                             return {
                                 url: location.href,
                                 userAgent: navigator.userAgent,
@@ -744,6 +762,7 @@ class chatgpt:
                                 conversationResources: resources
                                     .filter((name) => name.includes("/backend-api/") && name.includes("conversation"))
                                     .slice(-10),
+                                conversationEndpointCandidates,
                                 localStorageKeys: Object.keys(localStorage).slice(0, 30),
                                 sessionStorageKeys: Object.keys(sessionStorage).slice(0, 30),
                             };
@@ -812,6 +831,11 @@ class chatgpt:
                         .map((entry) => entry.name)
                         .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
                         .map(toPath);
+                    const conversationEntries = performance.getEntriesByType("resource")
+                        .map((entry) => entry.name)
+                        .filter((name) => name.includes("conversation"))
+                        .map(toPath)
+                        .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation"));
                     const requirementsUrls = unique([
                         toPath(options.requirementsUrl),
                         "/backend-api/sentinel/chat-requirements",
@@ -893,6 +917,9 @@ class chatgpt:
                         "/backend-api/f/conversation",
                         toPath(options.conversationUrl),
                         "/backend-api/conversation",
+                        "/api/backend-api/f/conversation",
+                        "/api/backend-api/conversation",
+                        ...conversationEntries,
                     ]);
                     for (const conversationUrl of conversationUrls) {
                         try {
@@ -1004,6 +1031,11 @@ class chatgpt:
                         .map((entry) => entry.name)
                         .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
                         .map(toPath);
+                    const conversationEntries = performance.getEntriesByType("resource")
+                        .map((entry) => entry.name)
+                        .filter((name) => name.includes("conversation"))
+                        .map(toPath)
+                        .filter((path) => path.endsWith("/conversation") || path.endsWith("/f/conversation"));
                     const requirementsUrls = unique([
                         toPath(options.requirementsUrl),
                         "/backend-api/sentinel/chat-requirements",
@@ -1085,6 +1117,9 @@ class chatgpt:
                         "/backend-api/f/conversation",
                         toPath(options.conversationUrl),
                         "/backend-api/conversation",
+                        "/api/backend-api/f/conversation",
+                        "/api/backend-api/conversation",
+                        ...conversationEntries,
                     ]);
                     let lastError = "";
                     for (const conversationUrl of conversationUrls) {
