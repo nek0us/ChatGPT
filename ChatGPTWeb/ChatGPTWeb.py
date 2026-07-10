@@ -1466,15 +1466,16 @@ class chatgpt:
                 return await self._send_msg_once(msg_data, session, send_status=send_status, attempt=attempt)
             except Exception as e:
                 retryable = self._is_retryable_send_error(e, session)
-                if not retryable or attempt >= max_attempts:
-                    if attempt >= max_attempts:
-                        msg_data.add_error(
-                            kind="send_retry_max",
-                            message="send msg retry max",
-                            retryable=False,
-                            attempt=attempt,
-                            session_email=session.email,
-                        )
+                if not retryable:
+                    return msg_data
+                if attempt >= max_attempts:
+                    msg_data.add_error(
+                        kind="send_retry_max",
+                        message="send msg retry max",
+                        retryable=False,
+                        attempt=attempt,
+                        session_email=session.email,
+                    )
                     return msg_data
                 await asyncio.sleep(min(attempt, 3))
         return msg_data

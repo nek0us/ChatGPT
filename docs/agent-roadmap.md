@@ -142,6 +142,7 @@ Expected streaming shape:
 - Keep `MsgData.error_info` as a compatibility field generated from structured errors.
 - Retry only known retryable errors: timeout, websocket disconnect, token expiration, and transient network failures.
 - Avoid marking a session Ready after token-expired paths that set it to Update.
+- Offline coverage now verifies transient retry, retry exhaustion, and token-expired/Update paths that must stop without being mislabeled as retry exhaustion.
 
 ## Phase 3: Streaming Output
 
