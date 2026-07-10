@@ -1,6 +1,7 @@
 import json
 import unittest
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
@@ -203,10 +204,25 @@ class HttpApiRequestTests(unittest.TestCase):
         self.assertEqual(request.prompt, "new question")
         self.assertEqual(request.conversation_id, "conversation-1")
 
+    def test_base64_attachment_becomes_iofile_and_respects_limit(self):
+        request = chat_request_from_payload({
+            "prompt": "read this",
+            "attachments": [{"name": "note.txt", "content_base64": "aGVsbG8="}],
+        })
+
+        self.assertEqual(request.files[0].name, "note.txt")
+        self.assertEqual(request.files[0].content, b"hello")
+        with self.assertRaises(web.HTTPRequestEntityTooLarge):
+            chat_request_from_payload({
+                "prompt": "too large",
+                "attachments": [{"name": "note.txt", "content_base64": "aGVsbG8="}],
+            }, max_attachment_bytes=4)
+
 
 class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.client = TestClient(TestServer(create_http_app(ChatService(_FakeBackend()), api_key="test-key")))
+        self.backend = _FakeBackend()
+        self.client = TestClient(TestServer(create_http_app(ChatService(self.backend), api_key="test-key")))
         await self.client.start_server()
 
     async def asyncTearDown(self):
@@ -220,6 +236,17 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completion.status, 200)
         self.assertEqual(completion_body["choices"][0]["message"]["content"], "service response")
         self.assertEqual(completion_body["chatgptweb"]["used_model"], "gpt-5-5-mini")
+
+        attachment = await self.client.post(
+            "/v1/chat/completions",
+            json={
+                "prompt": "read attachment",
+                "attachments": [{"name": "note.txt", "content_base64": "aGVsbG8="}],
+            },
+            headers=headers,
+        )
+        self.assertEqual(attachment.status, 200)
+        self.assertEqual(self.backend.sent[-1].upload_file[0].content, b"hello")
 
         stream = await self.client.post(
             "/v1/chat/completions",

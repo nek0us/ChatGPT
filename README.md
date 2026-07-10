@@ -263,11 +263,15 @@ result = await service.stream_to_callback(
 from aiohttp import web
 from ChatGPTWeb import create_http_app
 
-app = create_http_app(service, api_key="replace-with-a-local-secret")
+app = create_http_app(
+    service,
+    api_key="replace-with-a-local-secret",
+    max_attachment_bytes=20 * 1024 * 1024,
+)
 web.run_app(app, host="127.0.0.1", port=8000)
 ```
 
-The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, and `/health`. Keep an API key when binding beyond localhost.
+The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
 
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData
 ```bash

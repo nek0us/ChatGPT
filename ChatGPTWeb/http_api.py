@@ -1,5 +1,7 @@
 """Optional aiohttp adapter over :mod:`ChatGPTWeb.service`."""
 
+import base64
+import binascii
 import hmac
 import json
 import time
@@ -9,6 +11,7 @@ from typing import Any, Dict, List
 from aiohttp import web
 
 from .api import ChatStreamEvent
+from .config import IOFile
 from .service import ChatRequest, ChatResult, ChatService
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
@@ -61,7 +64,41 @@ def _prompt_from_payload(payload: Dict[str, Any]) -> str:
     return "\n\n".join(rendered)
 
 
-def chat_request_from_payload(payload: Dict[str, Any]) -> ChatRequest:
+def _attachment_files(payload: Dict[str, Any], max_attachment_bytes: int) -> List[IOFile]:
+    attachments = payload.get("attachments", [])
+    if attachments is None:
+        return []
+    if not isinstance(attachments, list):
+        raise web.HTTPBadRequest(text="attachments must be an array")
+
+    files = []
+    total_size = 0
+    for index, attachment in enumerate(attachments):
+        if not isinstance(attachment, dict):
+            raise web.HTTPBadRequest(text=f"attachment {index} must be an object")
+        name = attachment.get("name")
+        encoded = attachment.get("content_base64")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise web.HTTPBadRequest(text=f"attachment {index} requires a file name up to 255 characters")
+        if not isinstance(encoded, str):
+            raise web.HTTPBadRequest(text=f"attachment {index} requires base64 content")
+
+        # Check the decoded-size upper bound before allocating decoded bytes.
+        estimated_size = (len(encoded) * 3) // 4
+        if total_size + estimated_size > max_attachment_bytes + 2:
+            raise web.HTTPRequestEntityTooLarge(max_size=max_attachment_bytes, actual_size=total_size + estimated_size)
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            raise web.HTTPBadRequest(text=f"attachment {index} has invalid base64 content")
+        total_size += len(content)
+        if total_size > max_attachment_bytes:
+            raise web.HTTPRequestEntityTooLarge(max_size=max_attachment_bytes, actual_size=total_size)
+        files.append(IOFile(content=content, name=name))
+    return files
+
+
+def chat_request_from_payload(payload: Dict[str, Any], max_attachment_bytes: int = 20 * 1024 * 1024) -> ChatRequest:
     if not isinstance(payload, dict):
         raise web.HTTPBadRequest(text="request body must be a JSON object")
     model = payload.get("model", "auto")
@@ -72,6 +109,7 @@ def chat_request_from_payload(payload: Dict[str, Any]) -> ChatRequest:
         conversation_id=str(payload.get("conversation_id") or ""),
         parent_message_id=str(payload.get("parent_message_id") or ""),
         model=model,
+        files=_attachment_files(payload, max_attachment_bytes),
         web_search=bool(payload.get("web_search", False)),
         deep_research=bool(payload.get("deep_research", False)),
     )
@@ -122,8 +160,14 @@ def _chunk_payload(event: ChatStreamEvent, request_id: str, model: str, finish_r
     }
 
 
-def create_http_app(service: ChatService, api_key: str | None = None) -> web.Application:
+def create_http_app(
+    service: ChatService,
+    api_key: str | None = None,
+    max_attachment_bytes: int = 20 * 1024 * 1024,
+) -> web.Application:
     """Create an opt-in local API application without opening a listening port."""
+    if max_attachment_bytes <= 0:
+        raise ValueError("max_attachment_bytes must be positive")
 
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
@@ -152,7 +196,7 @@ def create_http_app(service: ChatService, api_key: str | None = None) -> web.App
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
-        chat_request = chat_request_from_payload(payload)
+        chat_request = chat_request_from_payload(payload, max_attachment_bytes=max_attachment_bytes)
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
         if not payload.get("stream", False):
             result = await service.send(chat_request)
@@ -195,7 +239,11 @@ def create_http_app(service: ChatService, api_key: str | None = None) -> web.App
         await response.write_eof()
         return response
 
-    app = web.Application(middlewares=[auth_middleware])
+    # JSON base64 is larger than decoded attachment bytes.
+    app = web.Application(
+        middlewares=[auth_middleware],
+        client_max_size=(max_attachment_bytes * 4 // 3) + 1024 * 1024,
+    )
     app[SERVICE_KEY] = service
     app.router.add_get("/health", health)
     app.router.add_get("/v1/models", models)
