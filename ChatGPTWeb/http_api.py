@@ -113,6 +113,8 @@ def chat_request_from_payload(payload: Dict[str, Any], max_attachment_bytes: int
         files=_attachment_files(payload, max_attachment_bytes),
         web_search=bool(payload.get("web_search", False)),
         deep_research=bool(payload.get("deep_research", False)),
+        stream_idle_timeout_seconds=max(0, int(payload.get("stream_idle_timeout_seconds", 0) or 0)),
+        stream_status_interval_seconds=max(0, int(payload.get("stream_status_interval_seconds", 15) or 0)),
     )
 
 
@@ -237,6 +239,8 @@ def create_http_app(
                         "image_urls": event.image_urls,
                         "metadata": event.metadata,
                     }))
+                elif event.type == "status":
+                    await response.write(_sse("chatgptweb.status", event.metadata))
                 elif event.type == "error":
                     await response.write(_sse("error", {"message": event.text}))
             await response.write(_sse(None, "[DONE]"))

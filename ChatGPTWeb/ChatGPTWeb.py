@@ -1365,6 +1365,11 @@ class chatgpt:
         decoder = ChatStreamDecoder()
         done = False
         emitted_final_signatures = set()
+        loop = asyncio.get_running_loop()
+        last_content_event_at = loop.time()
+        last_status_event_at = last_content_event_at
+        idle_timeout = max(0, msg_data.stream_idle_timeout_seconds)
+        status_interval = max(0, msg_data.stream_status_interval_seconds)
 
         def should_emit(event: ChatStreamEvent) -> bool:
             if event.type != "final":
@@ -1384,6 +1389,19 @@ class chatgpt:
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=0.5)
                 except TimeoutError:
+                    now = loop.time()
+                    idle_seconds = now - last_content_event_at
+                    if idle_timeout and idle_seconds >= idle_timeout:
+                        raise TimeoutError(f"stream received no upstream chunks for {int(idle_seconds)} seconds")
+                    if status_interval and now - last_status_event_at >= status_interval:
+                        last_status_event_at = now
+                        yield ChatStreamEvent(
+                            type="status",
+                            metadata={
+                                "phase": "waiting_for_upstream",
+                                "idle_seconds": int(idle_seconds),
+                            },
+                        )
                     continue
                 if not isinstance(payload, dict):
                     continue
@@ -1394,7 +1412,10 @@ class chatgpt:
                     )
                     continue
                 if payload.get("type") == "chunk":
-                    for event in decoder.feed(payload.get("text", "")):
+                    events = decoder.feed(payload.get("text", ""))
+                    if any(event.type != "final" or event.text or event.image_urls for event in events):
+                        last_content_event_at = loop.time()
+                    for event in events:
                         if not should_emit(event):
                             continue
                         self._apply_stream_event(msg_data, event)

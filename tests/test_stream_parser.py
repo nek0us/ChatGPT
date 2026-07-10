@@ -5,8 +5,9 @@ import unittest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
-from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.config import MsgData, Session
 from ChatGPTWeb.http_api import chat_request_from_payload, create_http_app
 from ChatGPTWeb.service import ChatRequest, ChatService
 
@@ -115,6 +116,7 @@ class _FakeBackend:
         return msg_data
 
     async def continue_chat_stream(self, msg_data):
+        yield ChatStreamEvent(type="status", metadata={"phase": "waiting_for_upstream", "idle_seconds": 15})
         yield ChatStreamEvent(type="delta", text="stream response", raw={"request": msg_data.msg_send})
         parser = ChatStreamParser()
         parser.feed({"conversation_id": "conversation-stream", "message_id": "message-stream"})
@@ -132,6 +134,11 @@ class _FakeBackend:
         return {"fetch_remote": fetch_remote}
 
 
+class _Logger:
+    def debug(self, _message):
+        pass
+
+
 class _ClosableStreamBackend(_FakeBackend):
     def __init__(self):
         super().__init__()
@@ -144,6 +151,24 @@ class _ClosableStreamBackend(_FakeBackend):
             await self.release.wait()
         finally:
             self.stream_closed = True
+
+
+class _SilentPage:
+    def __init__(self):
+        self.release = asyncio.Event()
+
+    async def expose_binding(self, _name, _callback):
+        return None
+
+    async def evaluate(self, _script, argument=None):
+        if isinstance(argument, dict) and "streamId" in argument and "abort" in argument:
+            return True
+        await self.release.wait()
+        return {"ok": True}
+
+
+class _CoreStreamRuntime(chatgpt):
+    pass
 
 
 class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -174,7 +199,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
 
         events = [event async for event in service.stream(ChatRequest(prompt="stream me"))]
 
-        self.assertEqual([event.type for event in events], ["delta", "final"])
+        self.assertEqual([event.type for event in events], ["status", "delta", "final"])
         self.assertEqual(events[-1].raw["request"], "stream me")
 
     async def test_stream_to_callback_preserves_event_order_and_returns_result(self):
@@ -186,7 +211,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.stream_to_callback(ChatRequest(prompt="callback me"), callback)
 
-        self.assertEqual(event_types, ["delta", "final"])
+        self.assertEqual(event_types, ["status", "delta", "final"])
         self.assertTrue(result.ok)
         self.assertEqual(result.text, "stream response")
         self.assertEqual(result.conversation_id, "conversation-stream")
@@ -201,6 +226,28 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(event.text, "first")
         self.assertTrue(backend.stream_closed)
+
+    async def test_core_stream_emits_status_then_aborts_after_idle_timeout(self):
+        runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
+        runtime.logger = _Logger()
+        page = _SilentPage()
+        session = Session(email="silent@example.com", page=page)
+        data = MsgData(
+            msg_send="wait",
+            stream_idle_timeout_seconds=2,
+            stream_status_interval_seconds=1,
+        )
+        stream = runtime._stream_msg_by_browser_fetch(data, session)
+
+        status = await anext(stream)
+        error = await anext(stream)
+
+        self.assertEqual(status.type, "status")
+        self.assertEqual(status.metadata["phase"], "waiting_for_upstream")
+        self.assertEqual(error.type, "error")
+        self.assertIn("no upstream chunks", error.text)
+        with self.assertRaises(TimeoutError):
+            await anext(stream)
 
 
 class HttpApiRequestTests(unittest.TestCase):
@@ -283,6 +330,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stream.status, 200)
         self.assertIn("stream response", stream_body)
+        self.assertIn("event: chatgptweb.status", stream_body)
         self.assertIn("event: chatgptweb.final", stream_body)
         self.assertTrue(stream_body.endswith("data: [DONE]\n\n"))
 

@@ -92,3 +92,15 @@ class ConversationPayloadTests(unittest.TestCase):
         self.assertEqual(new_payload["messages"][0]["metadata"]["system_hints"], ["search"])
         self.assertTrue(old_payload["force_use_search"])
         self.assertEqual(old_payload["messages"][0]["metadata"]["system_hints"], ["search"])
+
+    def test_stream_controls_reach_message_data(self):
+        from ChatGPTWeb.service import ChatRequest
+
+        data = ChatRequest(
+            prompt="wait",
+            stream_idle_timeout_seconds=90,
+            stream_status_interval_seconds=10,
+        ).to_msg_data()
+
+        self.assertEqual(data.stream_idle_timeout_seconds, 90)
+        self.assertEqual(data.stream_status_interval_seconds, 10)

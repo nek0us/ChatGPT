@@ -437,6 +437,15 @@ class MsgData(BaseModel):
         description="是否启用深度研究"
     )
 
+    stream_idle_timeout_seconds: int = Field(
+        0,
+        description="stop a stream after this many seconds without parsed content events; zero disables it",
+    )
+    stream_status_interval_seconds: int = Field(
+        15,
+        description="emit waiting status events at this interval while a stream is silent; zero disables it",
+    )
+
     def is_plus_model(self) -> bool:
         """检查当前模型是否属于Plus模型"""
         return self.gpt_model in all_models_values() and self.gpt_model not in all_free_models_values()
