@@ -15,6 +15,7 @@ HEADLESS = os.getenv("CHATGPTWEB_HEADLESS", "false").lower() in ("1", "true", "y
 TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_TIMEOUT", "600"))
 STREAM = os.getenv("CHATGPTWEB_SMOKE_STREAM", "false").lower() in ("1", "true", "yes")
 DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
+PROBE = os.getenv("CHATGPTWEB_SMOKE_PROBE", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
@@ -52,53 +53,61 @@ async def main():
     data = MsgData(msg_send=get_prompts()[0])
     stream_events = []
     results = []
+    probe = []
     try:
-        for index, prompt in enumerate(get_prompts()):
-            if index > 0:
-                data = MsgData(
-                    msg_send=prompt,
-                    conversation_id=data.conversation_id,
-                    p_msg_id=data.next_msg_id,
+        if PROBE:
+            startup_wait = 0
+            while not chat.manage["start"] and startup_wait < TIMEOUT:
+                await asyncio.sleep(0.5)
+                startup_wait += 0.5
+            probe = await chat.probe_browser_runtime()
+        else:
+            for index, prompt in enumerate(get_prompts()):
+                if index > 0:
+                    data = MsgData(
+                        msg_send=prompt,
+                        conversation_id=data.conversation_id,
+                        p_msg_id=data.next_msg_id,
+                    )
+                else:
+                    data.msg_send = prompt
+
+                if STREAM:
+                    async def run_stream():
+                        events = []
+                        async for event in chat.continue_chat_stream(data):
+                            events.append(
+                                {
+                                    "type": event.type,
+                                    "text": event.text,
+                                    "conversation_id": event.conversation_id,
+                                    "message_id": event.message_id,
+                                    "image_urls": event.image_urls,
+                                }
+                            )
+                        return events
+
+                    stream_events = await asyncio.wait_for(run_stream(), timeout=TIMEOUT)
+                else:
+                    data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
+
+                results.append(
+                    {
+                        "prompt": prompt,
+                        "status": data.status,
+                        "from_email": data.from_email,
+                        "conversation_id": data.conversation_id,
+                        "next_msg_id": data.next_msg_id,
+                        "msg_recv": data.msg_recv,
+                        "error_info": data.error_info,
+                        "error_list": data.error_list,
+                        "stream_events": stream_events,
+                    }
                 )
-            else:
-                data.msg_send = prompt
-
-            if STREAM:
-                async def run_stream():
-                    events = []
-                    async for event in chat.continue_chat_stream(data):
-                        events.append(
-                            {
-                                "type": event.type,
-                                "text": event.text,
-                                "conversation_id": event.conversation_id,
-                                "message_id": event.message_id,
-                                "image_urls": event.image_urls,
-                            }
-                        )
-                    return events
-
-                stream_events = await asyncio.wait_for(run_stream(), timeout=TIMEOUT)
-            else:
-                data = await asyncio.wait_for(chat.continue_chat(data), timeout=TIMEOUT)
-
-            results.append(
-                {
-                    "prompt": prompt,
-                    "status": data.status,
-                    "from_email": data.from_email,
-                    "conversation_id": data.conversation_id,
-                    "next_msg_id": data.next_msg_id,
-                    "msg_recv": data.msg_recv,
-                    "error_info": data.error_info,
-                    "error_list": data.error_list,
-                    "stream_events": stream_events,
-                }
-            )
-            if not data.status:
-                break
-            if index < len(get_prompts()) - 1 and DELAY > 0:
-                await asyncio.sleep(DELAY)
+                if not data.status:
+                    break
+                if index < len(get_prompts()) - 1 and DELAY > 0:
+                    await asyncio.sleep(DELAY)
     except TimeoutError:
         data.add_error(
             kind="local_smoke_timeout",
@@ -117,6 +126,8 @@ async def main():
                 "error_info": data.error_info,
                 "error_list": data.error_list,
                 "stream": STREAM,
+                "probe_mode": PROBE,
+                "probe": probe,
                 "stream_events": stream_events,
                 "results": results,
             },

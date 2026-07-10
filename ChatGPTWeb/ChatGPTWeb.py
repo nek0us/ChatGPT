@@ -689,6 +689,73 @@ class chatgpt:
             files=msg_data.upload_file,
         )
 
+    async def probe_browser_runtime(self) -> List[Dict[str, typing.Any]]:
+        """Inspect browser-side capabilities required by the fetch bridge."""
+        probes = []
+        for session in self.Sessions:
+            if session.type == "script":
+                continue
+            info: Dict[str, typing.Any] = {
+                "email": session.email,
+                "status": session.status,
+                "login_state": session.login_state,
+                "page_ready": bool(session.page and not session.page.is_closed()),
+                "context_ready": bool(session.browser_contexts),
+            }
+            if not session.page or session.page.is_closed():
+                info["error"] = "page is not ready"
+                probes.append(info)
+                continue
+            try:
+                info.update(
+                    await session.page.evaluate(
+                        """
+                        () => {
+                            const typeOf = (name) => {
+                                let value = window;
+                                for (const part of name.split(".")) {
+                                    value = value && value[part];
+                                }
+                                return {
+                                    name,
+                                    type: typeof value,
+                                    keys: value && typeof value === "object" ? Object.keys(value).slice(0, 20) : [],
+                                    hasGetEnforcementToken: !!(value && typeof value.getEnforcementToken === "function"),
+                                    hasStartEnforcement: !!(value && typeof value.startEnforcement === "function"),
+                                };
+                            };
+                            const resources = performance.getEntriesByType("resource").map((entry) => entry.name);
+                            return {
+                                url: location.href,
+                                userAgent: navigator.userAgent,
+                                providers: [
+                                    typeOf("_chatp"),
+                                    typeOf("_chatp_old"),
+                                    typeOf("_proof"),
+                                    typeOf("_proof.Z"),
+                                    typeOf("_turnstile"),
+                                    typeOf("_turnstile.Z"),
+                                    typeOf("_ark"),
+                                    typeOf("_ark.ZP"),
+                                ],
+                                requirementsResources: resources
+                                    .filter((name) => name.includes("/backend-api/sentinel/chat-requirements"))
+                                    .slice(-10),
+                                conversationResources: resources
+                                    .filter((name) => name.includes("/backend-api/") && name.includes("conversation"))
+                                    .slice(-10),
+                                localStorageKeys: Object.keys(localStorage).slice(0, 30),
+                                sessionStorageKeys: Object.keys(sessionStorage).slice(0, 30),
+                            };
+                        }
+                        """
+                    )
+                )
+            except Exception as e:
+                info["error"] = str(e)
+            probes.append(info)
+        return probes
+
     async def _send_msg_by_browser_fetch(self, msg_data: MsgData, session: Session, attempt: int) -> MsgData:
         page = session.page
         if not page:

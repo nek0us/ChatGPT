@@ -28,6 +28,7 @@ Reasons:
 - `chat.close()` now cancels keep-alive work and closes browser resources without forcibly stopping the event loop.
 - Runtime watchers record unexpected browser/context/page closure and can recreate missing session context/page before keep-alive or send.
 - Startup watchdog wraps Playwright start, Firefox launch, and startup context/page creation with timeouts and one browser launch retry.
+- `probe_browser_runtime()` inspects bridge capabilities after frontend updates without sending a message.
 
 ## Known Traps
 
@@ -40,6 +41,7 @@ Reasons:
 - Do not immediately fallback to the legacy route when browser fetch returns `Unusual activity`/403. Treat it as a risk block and cool the session down.
 - Do not use rapid-fire live smoke tests as evidence that `old_payload` is broken. A no-delay two-turn test triggered `Unusual activity`; the same prompts passed with a 15 second delay in both buffered and streaming modes.
 - The Firefox/Playwright blank startup hang appears to happen around initial browser/context/page startup, not normal per-request page creation. Keep it documented as a runtime/library risk and prefer bounded startup retry over restarting the whole bot process immediately.
+- After a ChatGPT frontend update, do not assume a full reverse is required. First run the browser runtime probe. If backend endpoints and proof/turnstile/arkose providers are still present, the browser fetch bridge should keep working. If providers disappear or signatures change, then redo frontend capability discovery.
 
 ## Verified Smoke Commands
 
@@ -70,6 +72,13 @@ Two-turn streaming send:
 $env:CHATGPTWEB_SMOKE_STREAM='true'
 $env:CHATGPTWEB_SMOKE_PROMPTS='["Say hello in one short sentence.", "Reply with exactly four words."]'
 $env:CHATGPTWEB_SMOKE_DELAY='15'
+uv run python example\local_smoke.py
+```
+
+Runtime capability probe after frontend updates:
+
+```powershell
+$env:CHATGPTWEB_SMOKE_PROBE='true'
 uv run python example\local_smoke.py
 ```
 
