@@ -261,7 +261,7 @@ result = await service.stream_to_callback(
 ```
 
 `ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
-`result.content` keeps the original Markdown and exposes optional plain-text, links, code blocks, citations, and image URLs for platform-specific rendering.
+`result.content` keeps the original Markdown and exposes optional plain-text, links, code blocks, citations, image URLs, and `rich_items` for platform-specific rendering. `rich_items` preserves upstream weather/tool/attachment payloads without assuming every bot platform can render them.
 
 ### Optional MCP Server
 ```bash

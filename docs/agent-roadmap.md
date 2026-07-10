@@ -172,7 +172,7 @@ Expected streaming shape:
 
 ## Phase 5: Bot-Facing Formatting
 
-- `ChatContent` now preserves raw Markdown while exposing plain-text fallback, links, code blocks, citations, and image URLs as platform-neutral rendering hints.
+- `ChatContent` now preserves raw Markdown while exposing plain-text fallback, links, code blocks, citations, image URLs, and opaque `rich_items` as platform-neutral rendering hints. Known upstream aggregate/tool/attachment payloads are retained structurally but core code does not assume a renderer.
 - Live web-search SSE verified private `genui`/`url`/`cite` tokens. `ChatContent.markdown` removes them for display while `raw_markdown` and `source_references` retain source labels and opaque source IDs.
 - Image-generation smoke received a 200 SSE response but no displayable events for 300 seconds. Streams now emit platform-neutral `status` events while no parsed content is available and support an opt-in `stream_idle_timeout_seconds`; timeout aborts local browser fetch consumption but cannot guarantee cancellation of a remote generation already started upstream.
 - Runtime probe now records sanitized image/media/task/file/download resource paths and storage keys without issuing speculative requests. Use this trace after a future image test before implementing any task polling endpoint.

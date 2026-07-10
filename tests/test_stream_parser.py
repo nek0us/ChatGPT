@@ -29,6 +29,7 @@ class ChatStreamParserTests(unittest.TestCase):
                         "default_model_slug": "auto",
                         "content_references": [{"url": "https://example.com"}],
                         "citations": [{"title": "Example"}],
+                        "aggregate_result": {"type": "weather", "temperature": 22},
                     },
                 },
             }
@@ -43,6 +44,7 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual(final.usage, {"input_tokens": 12, "output_tokens": 5})
         self.assertEqual(final.metadata["default_model_slug"], "auto")
         self.assertEqual(final.metadata["citations"][0]["title"], "Example")
+        self.assertEqual(final.metadata["aggregate_result"]["type"], "weather")
 
     def test_patches_append_overlap_without_repeating_text(self):
         parser = ChatStreamParser()

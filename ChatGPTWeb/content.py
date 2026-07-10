@@ -31,6 +31,14 @@ class SourceReference:
 
 
 @dataclass
+class RichContentItem:
+    """An upstream UI payload kept intact for a caller-specific renderer."""
+
+    kind: str
+    payload: Any
+
+
+@dataclass
 class ChatContent:
     """Lossless Markdown plus optional hints for platform-specific renderers."""
 
@@ -42,6 +50,7 @@ class ChatContent:
     citations: List[Any] = field(default_factory=list)
     image_urls: List[str] = field(default_factory=list)
     source_references: List[SourceReference] = field(default_factory=list)
+    rich_items: List[RichContentItem] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -64,6 +73,18 @@ def _citation_values(metadata: Dict[str, Any]) -> List[Any]:
         elif isinstance(value, dict):
             citations.append(value)
     return citations
+
+
+def _rich_content_items(metadata: Dict[str, Any]) -> List[RichContentItem]:
+    """Expose known non-Markdown payloads without imposing a display format."""
+    items = []
+    for key in ("aggregate_result", "tool_calls", "tool_results", "attachments"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            items.extend(RichContentItem(kind=key, payload=item) for item in value)
+        elif isinstance(value, (dict, str, int, float, bool)):
+            items.append(RichContentItem(kind=key, payload=value))
+    return items
 
 
 def _plain_text(markdown: str) -> str:
@@ -151,4 +172,5 @@ def build_chat_content(
         citations=_citation_values(metadata or {}),
         image_urls=_unique_strings(image_urls or []),
         source_references=_source_references(raw_markdown),
+        rich_items=_rich_content_items(metadata or {}),
     )

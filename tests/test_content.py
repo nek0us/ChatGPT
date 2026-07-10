@@ -21,6 +21,25 @@ class ChatContentTests(unittest.TestCase):
         self.assertEqual(content.citations[0]["title"], "Docs")
         self.assertEqual(content.image_urls, ["https://images.example/result.png"])
 
+    def test_content_keeps_structured_rich_items_for_callers_to_render(self):
+        content = build_chat_content(
+            "Forecast follows.",
+            metadata={
+                "aggregate_result": {"type": "weather", "temperature": 22},
+                "tool_results": [{"tool": "search", "count": 3}],
+                "attachments": [{"name": "report.pdf"}],
+            },
+        )
+
+        self.assertEqual(
+            [(item.kind, item.payload) for item in content.rich_items],
+            [
+                ("aggregate_result", {"type": "weather", "temperature": 22}),
+                ("tool_results", {"tool": "search", "count": 3}),
+                ("attachments", {"name": "report.pdf"}),
+            ],
+        )
+
     def test_chat_result_keeps_content_optional_for_backwards_compatible_construction(self):
         result = ChatResult(ok=True, text="plain", conversation_id="c", message_id="m")
 

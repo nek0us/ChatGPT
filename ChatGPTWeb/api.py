@@ -67,6 +67,9 @@ class ChatStreamParser:
                 "content_references",
                 "citations",
                 "aggregate_result",
+                "tool_calls",
+                "tool_results",
+                "attachments",
             ):
                 if key in metadata:
                     selected[key] = metadata[key]
