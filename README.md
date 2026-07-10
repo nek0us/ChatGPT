@@ -226,6 +226,25 @@ save_screen: bool = False
 ```bash
 chat = chatgpt(sessions=sessions)
 ```
+### ChatService (bot / HTTP / agent facade)
+```python
+from ChatGPTWeb import ChatRequest, ChatService, chatgpt
+
+runtime = chatgpt(sessions=sessions, plugin=True)
+service = ChatService(runtime)
+
+result = await service.send(ChatRequest(prompt="hello", model="auto"))
+print(result.text)
+
+async for event in service.stream(ChatRequest(prompt="stream a short reply")):
+    if event.type == "delta":
+        print(event.text, end="", flush=True)
+    elif event.type == "error":
+        print(event.text)
+```
+
+`ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
+
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData
 ```bash
 # 聊天处理入口，一般用这个

@@ -2139,6 +2139,15 @@ class chatgpt:
             if not msg_data.error_info:
                 msg_data.add_error(kind="continue_chat_stream_error", message=str(e), session_email=session.email)
             self.logger.error(msg_data.error_info)
+            yield ChatStreamEvent(
+                type="error",
+                text=msg_data.error_info or str(e),
+                message_id=msg_data.next_msg_id,
+                conversation_id=msg_data.conversation_id,
+                model=msg_data.model_used,
+                usage=msg_data.usage.copy(),
+                metadata=msg_data.response_metadata.copy(),
+            )
         finally:
             if session.status not in (Status.Update.value, Status.Stop.value):
                 session.status = Status.Ready.value

@@ -37,6 +37,7 @@ Reasons:
 - Runtime probe has verified `/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true` returns the authenticated model catalog, while localStorage also caches model categories under `.../models`.
 - Runtime probe has verified `/backend-api/pageConfigs/billing` returns billing/usage-limit eligibility configuration with authorization, but not necessarily live remaining quota.
 - `get_model_catalog()` exposes authenticated remote model catalog, cached browser model categories, and static local aliases in one API for bot/API/agent callers.
+- `ChatService` now provides a transport-neutral facade: `send()`, `stream()`, `get_history()`, `get_account_status()`, `get_model_catalog()`, and an explicitly unknown-safe `get_usage_status()`. It converts between caller-owned `ChatRequest`/`ChatResult` objects and legacy `MsgData` internally.
 
 ## Known Traps
 
@@ -146,10 +147,10 @@ Expected streaming shape:
 
 ## Phase 4: Stable Core Service API
 
-- Introduce a small internal service layer:
+- Introduce a small internal service layer. Initial `ChatService` facade is implemented:
   - `send()`
   - `stream()`
-  - `upload_file()`
+  - file attachments carried by `send()`
   - `get_history()`
   - `get_account_status()`
   - `get_model_catalog()`
@@ -213,5 +214,6 @@ Expected streaming shape:
 - Capture sanitized real SSE samples after future frontend changes and add them as regression fixtures. Current tests intentionally use synthetic, secret-free protocol fixtures.
 - Add fixture coverage for unsupported rich UI payloads and tool-result blocks.
 - Add an optional `stream_callback` or adapter helper for callers that cannot consume async generators directly.
+- Add an HTTP adapter over `ChatService` only after its request/response behavior has fixture coverage; do not let HTTP handlers call browser internals directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
 - Add MCP prototype only after service-layer request/response objects are stable.

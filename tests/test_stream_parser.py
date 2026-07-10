@@ -2,6 +2,8 @@ import json
 import unittest
 
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamParser
+from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.service import ChatRequest, ChatService
 
 
 class ChatStreamParserTests(unittest.TestCase):
@@ -89,6 +91,68 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual([event.type for event in events], ["image"])
         self.assertEqual(len(events[0].image_urls), 2)
         self.assertEqual(parser.final_event().image_urls, events[0].image_urls)
+
+
+class _FakeBackend:
+    def __init__(self):
+        self.sent = []
+
+    async def continue_chat(self, msg_data):
+        self.sent.append(msg_data)
+        msg_data.status = True
+        msg_data.msg_recv = "service response"
+        msg_data.conversation_id = "conversation-service"
+        msg_data.next_msg_id = "message-service"
+        msg_data.model_requested = msg_data.gpt_model
+        msg_data.model_used = "gpt-5-5-mini"
+        msg_data.usage = {"output_tokens": 3}
+        msg_data.response_metadata = {"finish_details": {"type": "stop"}}
+        return msg_data
+
+    async def continue_chat_stream(self, msg_data):
+        yield ChatStreamParser().final_event({"request": msg_data.msg_send})
+
+    async def show_chat_history(self, msg_data):
+        return [{"index": "1", "Q": "question", "A": msg_data.conversation_id, "next_msg_id": "m"}]
+
+    async def token_status(self):
+        return {"account": ["account@example.com"]}
+
+    async def get_model_catalog(self, fetch_remote=True):
+        return {"fetch_remote": fetch_remote}
+
+
+class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_converts_request_and_normalizes_response(self):
+        backend = _FakeBackend()
+        service = ChatService(backend)
+
+        result = await service.send(ChatRequest(prompt="hello", model="auto"))
+
+        self.assertEqual(backend.sent[0].msg_send, "hello")
+        self.assertEqual(result.text, "service response")
+        self.assertEqual(result.used_model, "gpt-5-5-mini")
+        self.assertEqual(result.usage, {"output_tokens": 3})
+        self.assertTrue(result.ok)
+
+    async def test_status_and_history_do_not_expose_backend_details(self):
+        service = ChatService(_FakeBackend())
+
+        history = await service.get_history("conversation-history")
+        usage = await service.get_usage_status()
+
+        self.assertEqual(history[0]["A"], "conversation-history")
+        self.assertEqual(usage["accounts"][0]["email"], "account@example.com")
+        self.assertIsNone(usage["accounts"][0]["usage"])
+
+    async def test_stream_forwards_normalized_request_to_backend(self):
+        service = ChatService(_FakeBackend())
+
+        events = [event async for event in service.stream(ChatRequest(prompt="stream me"))]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].type, "final")
+        self.assertEqual(events[0].raw["request"], "stream me")
 
 
 if __name__ == "__main__":
