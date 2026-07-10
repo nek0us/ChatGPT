@@ -41,6 +41,7 @@ class ChatStreamEvent:
     usage: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     raw: Optional[Dict[str, Any]] = None
+    raw_text: str = ""
 
 
 class ChatStreamParser:

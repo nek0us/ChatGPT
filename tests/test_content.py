@@ -1,6 +1,6 @@
 import unittest
 
-from ChatGPTWeb.content import build_chat_content
+from ChatGPTWeb.content import UpstreamMarkupNormalizer, build_chat_content
 from ChatGPTWeb.service import ChatResult
 
 
@@ -25,3 +25,18 @@ class ChatContentTests(unittest.TestCase):
         result = ChatResult(ok=True, text="plain", conversation_id="c", message_id="m")
 
         self.assertEqual(result.content.raw_markdown, "")
+
+    def test_search_markup_is_removed_and_source_reference_is_preserved(self):
+        markup = "\ue200genui\ue202abc\ue201Sources: \ue200url\ue202Example source\ue202turn0search0\ue201 \ue200cite\ue202turn0search0\ue201"
+        content = build_chat_content(markup)
+
+        self.assertEqual(content.markdown, "Sources: Example source ")
+        self.assertEqual(content.source_references[0].label, "Example source")
+        self.assertEqual(content.source_references[0].source_id, "turn0search0")
+
+    def test_stream_normalizer_handles_protocol_token_split_across_deltas(self):
+        normalizer = UpstreamMarkupNormalizer()
+
+        self.assertEqual(normalizer.feed("Sources: \ue200url\ue202Example"), "Sources: ")
+        self.assertEqual(normalizer.feed(" source\ue202turn0search0"), "")
+        self.assertEqual(normalizer.feed("\ue201 done"), "Example source done")

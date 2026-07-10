@@ -710,13 +710,19 @@ class chatgpt:
     def _build_conversation_payload(self, msg_data: MsgData) -> str:
         msg_data.model_requested = msg_data.gpt_model
         if not msg_data.conversation_id:
-            return Payload.new_payload(msg_data.msg_send, gpt_model=msg_data.gpt_model, files=msg_data.upload_file)
+            return Payload.new_payload(
+                msg_data.msg_send,
+                gpt_model=msg_data.gpt_model,
+                files=msg_data.upload_file,
+                search=msg_data.web_search,
+            )
         return Payload.old_payload(
             msg_data.msg_send,
             msg_data.conversation_id,
             msg_data.p_msg_id,
             gpt_model=msg_data.gpt_model,
             files=msg_data.upload_file,
+            search=msg_data.web_search,
         )
 
     def _local_model_catalog(self) -> Dict[str, typing.Any]:

@@ -1,12 +1,12 @@
 """Stable, transport-neutral service API for bot, HTTP, and agent adapters."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import inspect
 
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Protocol, Union
 
 from .api import ChatStreamEvent
-from .content import ChatContent, build_chat_content
+from .content import ChatContent, UpstreamMarkupNormalizer, build_chat_content
 from .config import IOFile, MsgData
 
 
@@ -81,9 +81,10 @@ class ChatService:
     def _result_from_msg_data(msg_data: MsgData) -> ChatResult:
         metadata = dict(msg_data.response_metadata)
         image_urls = list(msg_data.img_list)
+        content = build_chat_content(msg_data.msg_recv, image_urls, metadata)
         return ChatResult(
             ok=bool(msg_data.status and not msg_data.error_list),
-            text=msg_data.msg_recv,
+            text=content.markdown,
             conversation_id=msg_data.conversation_id,
             message_id=msg_data.next_msg_id,
             requested_model=msg_data.model_requested or msg_data.gpt_model,
@@ -93,7 +94,7 @@ class ChatService:
             metadata=metadata,
             errors=list(msg_data.error_list),
             account=msg_data.from_email,
-            content=build_chat_content(msg_data.msg_recv, image_urls, metadata),
+            content=content,
         )
 
     async def send(self, request: ChatRequest) -> ChatResult:
@@ -104,8 +105,19 @@ class ChatService:
     async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
         """Yield upstream stream events without exposing Playwright objects."""
         upstream = self._backend.continue_chat_stream(request.to_msg_data())
+        normalizer = UpstreamMarkupNormalizer()
         try:
             async for event in upstream:
+                if event.type == "delta":
+                    text = normalizer.feed(event.text)
+                    if not text:
+                        continue
+                    yield replace(event, text=text, raw_text=event.text)
+                    continue
+                if event.type == "final":
+                    content = build_chat_content(event.text, event.image_urls, event.metadata)
+                    yield replace(event, text=content.markdown, raw_text=event.text)
+                    continue
                 yield event
         finally:
             close = getattr(upstream, "aclose", None)
@@ -144,6 +156,8 @@ class ChatService:
         terminal = final_event or last_event
         text = final_event.text if final_event and final_event.text else "".join(chunks)
         metadata = dict(terminal.metadata) if terminal else {}
+        raw_text = final_event.raw_text if final_event and final_event.raw_text else text
+        content = build_chat_content(raw_text, image_urls, metadata)
         return ChatResult(
             ok=bool(final_event and not errors),
             text=text,
@@ -155,7 +169,7 @@ class ChatService:
             usage=dict(terminal.usage) if terminal else {},
             metadata=metadata,
             errors=errors,
-            content=build_chat_content(text, image_urls, metadata),
+            content=content,
         )
 
     async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:

@@ -168,7 +168,9 @@ Expected streaming shape:
 ## Phase 5: Bot-Facing Formatting
 
 - `ChatContent` now preserves raw Markdown while exposing plain-text fallback, links, code blocks, citations, and image URLs as platform-neutral rendering hints.
+- Live web-search SSE verified private `genui`/`url`/`cite` tokens. `ChatContent.markdown` removes them for display while `raw_markdown` and `source_references` retain source labels and opaque source IDs.
 - Keep platform-specific Markdown normalization and message composition in the NoneBot plugin, after it can inspect the active OneBot v11, Satori, or Telegram driver.
+- `web_search=True` now reaches both new and existing conversation payloads; live web-search SSE samples remain the preferred source for extending citation/tool-event parsing.
 - Move markdown-to-image behind an interface so different renderers can be plugged in.
 - Return generated image URLs and downloaded bytes separately.
 - Add platform-specific adapters for NoneBot instead of baking display logic into core chat code.

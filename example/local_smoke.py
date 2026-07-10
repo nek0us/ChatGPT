@@ -18,6 +18,7 @@ DELAY = float(os.getenv("CHATGPTWEB_SMOKE_DELAY", "3"))
 PROBE = os.getenv("CHATGPTWEB_SMOKE_PROBE", "false").lower() in ("1", "true", "yes")
 PROBE_FETCH = os.getenv("CHATGPTWEB_SMOKE_PROBE_FETCH", "false").lower() in ("1", "true", "yes")
 MODELS = os.getenv("CHATGPTWEB_SMOKE_MODELS", "false").lower() in ("1", "true", "yes")
+WEB_SEARCH = os.getenv("CHATGPTWEB_SMOKE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
 
 
 def load_sessions() -> list[dict]:
@@ -52,7 +53,7 @@ async def main():
         local_js=True,
         ready_timeout=TIMEOUT,
     )
-    data = MsgData(msg_send=get_prompts()[0])
+    data = MsgData(msg_send=get_prompts()[0], web_search=WEB_SEARCH)
     stream_events = []
     results = []
     probe = []
@@ -73,6 +74,7 @@ async def main():
                         msg_send=prompt,
                         conversation_id=data.conversation_id,
                         p_msg_id=data.next_msg_id,
+                        web_search=WEB_SEARCH,
                     )
                 else:
                     data.msg_send = prompt
@@ -145,6 +147,7 @@ async def main():
                 "probe_mode": PROBE,
                 "probe_fetch": PROBE_FETCH,
                 "model_catalog_mode": MODELS,
+                "web_search": WEB_SEARCH,
                 "model_catalog": model_catalog,
                 "probe": probe,
                 "stream_events": stream_events,

@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -74,3 +75,20 @@ class SendRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, [1])
         self.assertEqual(session.status, Status.Update.value)
         self.assertFalse(any(error["kind"] == "send_retry_max" for error in result.error_list))
+
+
+class ConversationPayloadTests(unittest.TestCase):
+    def test_web_search_flag_reaches_new_and_existing_conversation_payloads(self):
+        runtime = chatgpt.__new__(chatgpt)
+        new_payload = json.loads(runtime._build_conversation_payload(MsgData(msg_send="search", web_search=True)))
+        old_payload = json.loads(runtime._build_conversation_payload(MsgData(
+            msg_send="search again",
+            conversation_id="conversation-1",
+            p_msg_id="message-1",
+            web_search=True,
+        )))
+
+        self.assertTrue(new_payload["force_use_search"])
+        self.assertEqual(new_payload["messages"][0]["metadata"]["system_hints"], ["search"])
+        self.assertTrue(old_payload["force_use_search"])
+        self.assertEqual(old_payload["messages"][0]["metadata"]["system_hints"], ["search"])
