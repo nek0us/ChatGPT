@@ -29,6 +29,7 @@ Reasons:
 - Runtime watchers record unexpected browser/context/page closure and can recreate missing session context/page before keep-alive or send.
 - Startup watchdog wraps Playwright start, Firefox launch, and startup context/page creation with timeouts and one browser launch retry.
 - `probe_browser_runtime()` inspects bridge capabilities after frontend updates without sending a message.
+- `continue_chat()` and `continue_chat_stream()` now share `_prepare_chat_session()` for startup wait, account selection, old conversation routing, parent message restore, runtime recovery, and session reservation.
 
 ## Known Traps
 
@@ -178,7 +179,6 @@ Expected streaming shape:
 
 ## Next Engineering Steps
 
-- Extract duplicated session-selection code from `continue_chat()` and `continue_chat_stream()` into a shared internal helper.
 - Extract duplicated browser JS for buffered and streaming fetch into one maintained script template.
 - Add parser fixtures for saved SSE streams, including:
   - normal text;

@@ -1789,14 +1789,8 @@ class chatgpt:
         
         return msg_data
 
-    async def continue_chat(self, msg_data: MsgData) -> MsgData:
-        """
-        Message processing entry, please use this
-        聊天处理入口，一般用这个
-        """
-        # script_session: Session = [s for s in self.Sessions if s.type == "script"][0]
-        # while not script_session.login_state:
-        #     await asyncio.sleep(0.5)
+    async def _prepare_chat_session(self, msg_data: MsgData) -> Optional[Session]:
+        """Select and reserve the session that should handle this request."""
         startup_wait_seconds = 0
         while not self.manage["start"]:
             await asyncio.sleep(0.5)
@@ -1807,40 +1801,32 @@ class chatgpt:
                     message=f"chatgpt startup did not finish within {self.ready_timeout} seconds",
                 )
                 self.logger.error(msg_data.error_info)
-                return msg_data
-        session:Session = Session(status=Status.Working.value)
-        # We need to get c_id back to the session that created it
+                return None
+
+        session: Session = Session(status=Status.Working.value)
         if not msg_data.conversation_id:
-            # new chat
-            # gpt4 ready
-            gpt4_list = [s for s in self.Sessions if s.gptplus==True]
+            gpt4_list = [s for s in self.Sessions if s.gptplus is True]
             if gpt4_list == [] and msg_data.gpt_plus:
-                # no plus account
                 msg_data.add_error(
                     kind="no_plus_account",
                     message="you use gptplus model,but gptplus account not found",
                 )
                 self.logger.error(msg_data.error_info)
-                return msg_data
+                return None
             elif msg_data.gpt_model in all_models_values():
-                # free model
                 pass
             elif msg_data.gpt_plus:
-                # plus model 
                 pass
             else:
-                # unknown model in this version, try it
                 self.logger.warning(f"unknown model: {msg_data.gpt_model} ,try to use it")
-                
+
             session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
-            
             wait_ready_seconds = 0
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
-                    s for s in session_list 
-                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value 
+                    s for s in session_list
+                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value
                 ]
-                
                 if filtered_sessions:
                     session = random.choice(filtered_sessions)
                 else:
@@ -1858,8 +1844,8 @@ class chatgpt:
                             message="no login-capable session is available",
                         )
                         self.logger.error(msg_data.error_info)
-                        return msg_data
-                    
+                        return None
+
                 await asyncio.sleep(0.5)
                 wait_ready_seconds += 0.5
                 if wait_ready_seconds >= self.ready_timeout:
@@ -1868,25 +1854,12 @@ class chatgpt:
                         message=f"no ready session found within {self.ready_timeout} seconds",
                     )
                     self.logger.error(msg_data.error_info)
-                    return msg_data
-            if not await self._ensure_session_runtime(session):
-                msg_data.add_error(
-                    kind="session_runtime_unavailable",
-                    message=f"session runtime is not available: {session.email}",
-                    session_email=session.email,
-                )
-                self.logger.error(msg_data.error_info)
-                return msg_data
-            session.status = Status.Working.value
-            self.logger.debug(f"session {session.email} begin work")
+                    return None
         else:
-            # if input c_id,find old session from c_id to continue | 根据输入内容定位c_id所在session
             map_tmp = json.loads(self.cc_map.read_text("utf8"))
             for context_name in map_tmp:
-                # 遍历环境的cid
                 if msg_data.conversation_id in map_tmp[context_name]:
-                    # find c_id from all session如果cid在这个环境里
-                    sessions = [session for session in self.Sessions if session.email == context_name]
+                    sessions = [s for s in self.Sessions if s.email == context_name]
                     if sessions:
                         session = sessions[0]
                     else:
@@ -1895,14 +1868,7 @@ class chatgpt:
                             message=f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed.",
                         )
                         self.logger.error(msg_data.error_info)
-                        return msg_data
-                    if not session:
-                        self.logger.error(f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.")
-                        msg_data.add_error(
-                            kind="conversation_not_found",
-                            message=f"not found conversation_id:{msg_data.conversation_id} in all sessions,pleases check it.",
-                        )
-                        return msg_data
+                        return None
                     if session.status == Status.Stop.value:
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
                         msg_data.add_error(
@@ -1910,10 +1876,9 @@ class chatgpt:
                             message=f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.",
                             session_email=session.email,
                         )
-                        return msg_data
+                        return None
                     wait_ready_seconds = 0
                     while session.status != Status.Ready.value:
-                        # if this session is working or updating,waitting | 如果它还没准备好，那就等
                         await asyncio.sleep(0.5)
                         wait_ready_seconds += 0.5
                         if wait_ready_seconds >= self.ready_timeout:
@@ -1923,27 +1888,23 @@ class chatgpt:
                                 session_email=session.email,
                             )
                             self.logger.error(msg_data.error_info)
-                            return msg_data
-                    if not await self._ensure_session_runtime(session):
-                        msg_data.add_error(
-                            kind="session_runtime_unavailable",
-                            message=f"session runtime is not available: {session.email}",
-                            session_email=session.email,
-                        )
-                        self.logger.error(msg_data.error_info)
-                        return msg_data
-                    session.status = Status.Working.value
-                    self.logger.debug(f"session {session.email} begin work")
+                            return None
                     break
 
+            if not session.email:
+                msg_data.add_error(
+                    kind="session_not_found",
+                    message="Not session found,please check your conversation_id input",
+                )
+                self.logger.error(msg_data.error_info)
+                return None
+
             if not msg_data.p_msg_id:
-                # Not entered, try to restore from file | 未输入，尝试从文件里恢复
                 try:
                     msg_history = await self.load_chat(msg_data)
                     msg_data.p_msg_id = msg_history["message"][-1]["next_msg_id"]
                     msg_data.msg_type = "old_session"
-                except Exception as e:
-                    # Recovery failed | 恢复失败
+                except Exception:
                     a, b, exc_traceback = sys.exc_info()
                     self.logger.error(f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found,line number {exc_traceback.tb_lineno}.") # type: ignore
                     msg_data.add_error(
@@ -1951,19 +1912,34 @@ class chatgpt:
                         message=f"ur p_msg_id:{msg_data.p_msg_id} 'chatfile not found",
                         line=exc_traceback.tb_lineno, # type: ignore
                     )
-                    return msg_data
+                    return None
+
         if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
             msg_data.msg_type = "old_session"
 
-        if not session.email:
+        if not await self._ensure_session_runtime(session):
             msg_data.add_error(
-                kind="session_not_found",
-                message="Not session found,please check your conversation_id input",
+                kind="session_runtime_unavailable",
+                message=f"session runtime is not available: {session.email}",
+                session_email=session.email,
             )
             self.logger.error(msg_data.error_info)
+            return None
+
+        session.status = Status.Working.value
+        self.logger.debug(f"session {session.email} begin work")
+        return session
+
+    async def continue_chat(self, msg_data: MsgData) -> MsgData:
+        """
+        Message processing entry, please use this
+        """
+        session = await self._prepare_chat_session(msg_data)
+        if not session:
             return msg_data
+
         try:
-            msg_data =await asyncio.wait_for(self.send_msg(msg_data, session),timeout=180) 
+            msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
             session.status = Status.Ready.value
         except TimeoutError:
             msg_data.add_error(
@@ -1996,115 +1972,11 @@ class chatgpt:
 
     async def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
         """Stream chat events from the browser fetch transport."""
-        startup_wait_seconds = 0
-        while not self.manage["start"]:
-            await asyncio.sleep(0.5)
-            startup_wait_seconds += 0.5
-            if startup_wait_seconds >= self.ready_timeout:
-                message = f"chatgpt startup did not finish within {self.ready_timeout} seconds"
-                msg_data.add_error(kind="startup_timeout", message=message)
-                yield ChatStreamEvent(type="error", text=message)
-                return
-
-        session: Session = Session(status=Status.Working.value)
-        if not msg_data.conversation_id:
-            gpt4_list = [s for s in self.Sessions if s.gptplus is True]
-            if gpt4_list == [] and msg_data.gpt_plus:
-                message = "you use gptplus model,but gptplus account not found"
-                msg_data.add_error(kind="no_plus_account", message=message)
-                yield ChatStreamEvent(type="error", text=message)
-                return
-            elif msg_data.gpt_model not in all_models_values() and not msg_data.gpt_plus:
-                self.logger.warning(f"unknown model: {msg_data.gpt_model} ,try to use it")
-
-            session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
-            wait_ready_seconds = 0
-            while not session or session.status == Status.Working.value:
-                filtered_sessions = [
-                    s for s in session_list
-                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value
-                ]
-                if filtered_sessions:
-                    session = random.choice(filtered_sessions)
-                else:
-                    pending_sessions = [
-                        s for s in session_list
-                        if (
-                            s.type != "script"
-                            and s.status in (Status.Login.value, Status.Update.value, Status.Working.value)
-                            and not s.is_login_disabled()
-                        )
-                    ]
-                    if not pending_sessions:
-                        message = "no login-capable session is available"
-                        msg_data.add_error(kind="no_available_session", message=message)
-                        yield ChatStreamEvent(type="error", text=message)
-                        return
-                await asyncio.sleep(0.5)
-                wait_ready_seconds += 0.5
-                if wait_ready_seconds >= self.ready_timeout:
-                    message = f"no ready session found within {self.ready_timeout} seconds"
-                    msg_data.add_error(kind="no_ready_session", message=message)
-                    yield ChatStreamEvent(type="error", text=message)
-                    return
-        else:
-            map_tmp = json.loads(self.cc_map.read_text("utf8"))
-            for context_name in map_tmp:
-                if msg_data.conversation_id in map_tmp[context_name]:
-                    sessions = [session for session in self.Sessions if session.email == context_name]
-                    if sessions:
-                        session = sessions[0]
-                    else:
-                        message = f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed."
-                        msg_data.add_error(kind="conversation_session_missing", message=message)
-                        yield ChatStreamEvent(type="error", text=message)
-                        return
-                    if session.status == Status.Stop.value:
-                        message = f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work."
-                        msg_data.add_error(kind="conversation_session_stopped", message=message, session_email=session.email)
-                        yield ChatStreamEvent(type="error", text=message)
-                        return
-                    wait_ready_seconds = 0
-                    while session.status != Status.Ready.value:
-                        await asyncio.sleep(0.5)
-                        wait_ready_seconds += 0.5
-                        if wait_ready_seconds >= self.ready_timeout:
-                            message = f"conversation session is not ready within {self.ready_timeout} seconds, status:{session.status}"
-                            msg_data.add_error(
-                                kind="conversation_session_not_ready",
-                                message=message,
-                                session_email=session.email,
-                            )
-                            yield ChatStreamEvent(type="error", text=message)
-                            return
-                    break
-
-            if not session.email:
-                message = "Not session found,please check your conversation_id input"
-                msg_data.add_error(kind="session_not_found", message=message)
-                yield ChatStreamEvent(type="error", text=message)
-                return
-
-            if not msg_data.p_msg_id:
-                try:
-                    msg_history = await self.load_chat(msg_data)
-                    msg_data.p_msg_id = msg_history["message"][-1]["next_msg_id"]
-                    msg_data.msg_type = "old_session"
-                except Exception as e:
-                    msg_data.add_error(kind="parent_message_restore_failed", message=str(e))
-                    yield ChatStreamEvent(type="error", text=str(e))
-                    return
-
-        if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
-            msg_data.msg_type = "old_session"
-
-        if not await self._ensure_session_runtime(session):
-            message = f"session runtime is not available: {session.email}"
-            msg_data.add_error(kind="session_runtime_unavailable", message=message, session_email=session.email)
-            yield ChatStreamEvent(type="error", text=message)
+        session = await self._prepare_chat_session(msg_data)
+        if not session:
+            yield ChatStreamEvent(type="error", text=msg_data.error_info or "failed to prepare chat session")
             return
 
-        session.status = Status.Working.value
         context_num = session.email
         msg_data.from_email = session.email
         self.logger.debug(f"session {session.email} begin stream work")
