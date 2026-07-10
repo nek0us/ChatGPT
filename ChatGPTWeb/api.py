@@ -222,9 +222,9 @@ class ChatStreamParser:
         if not isinstance(item, dict):
             return events
         self._record_ids(item)
-        path = item.get("p")
-        op = item.get("o")
-        value = item.get("v")
+        path = item.get("p", item.get("path"))
+        op = item.get("o", item.get("op"))
+        value = item.get("v") if "v" in item else item.get("value")
 
         if "message" in item:
             events.extend(self._handle_message(item, item))
@@ -243,12 +243,6 @@ class ChatStreamParser:
             events.extend(self._handle_patch(item, item))
         elif isinstance(value, dict):
             events.extend(self._handle_message(value, item))
-
-        if path == "/message/metadata/image_results" and isinstance(value, list):
-            events.extend(self._handle_patch_list([item], item))
-
-        if op == "patch" and isinstance(value, list):
-            events.extend(self._handle_patch_list(value, item))
 
         return events
 

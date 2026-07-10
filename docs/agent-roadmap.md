@@ -190,7 +190,7 @@ Expected streaming shape:
 ## Phase 8: Test Harness
 
 - Add unit tests for login failure classification.
-- Add parser tests using saved websocket/SSE fixtures.
+- Add parser tests using saved websocket/SSE fixtures. Initial offline coverage added for text, overlapping patches, empty early final events, image patches, model metadata, usage, and citations.
 - Add state-machine tests for session transitions.
 - Add a fake transport for `send()` and `stream()` so most tests do not need a browser.
 - Keep live Playwright tests manual or opt-in because login flows are unstable and account-specific.
@@ -210,12 +210,8 @@ Expected streaming shape:
 ## Next Engineering Steps
 
 - Add authenticated runtime probes for account usage/quota. Start by discovering endpoints from browser resources instead of guessing private paths.
-- Add parser fixtures for saved SSE streams, including:
-  - normal text;
-  - overlapping text patches;
-  - empty early final patches;
-  - image generation status and image URL patches.
-- Add fixture coverage for model metadata, usage/quota metadata, citations/content references, and unsupported rich UI payloads.
+- Capture sanitized real SSE samples after future frontend changes and add them as regression fixtures. Current tests intentionally use synthetic, secret-free protocol fixtures.
+- Add fixture coverage for unsupported rich UI payloads and tool-result blocks.
 - Add an optional `stream_callback` or adapter helper for callers that cannot consume async generators directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
 - Add MCP prototype only after service-layer request/response objects are stable.
