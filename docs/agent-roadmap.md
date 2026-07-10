@@ -41,7 +41,9 @@ Reasons:
 - `ChatService.stream_to_callback()` adapts ordered stream events to synchronous or asynchronous bot callbacks and returns the final `ChatResult` after the stream closes.
 - `create_http_app()` is an opt-in aiohttp application factory over `ChatService`. It provides OpenAI-shaped `/v1/chat/completions`, SSE, local health/model/status routes, optional bearer-key protection, and bounded base64 JSON attachments without starting a network listener itself.
 - Streaming browser fetches now register a per-request `AbortController`; closing the Python generator or losing an HTTP SSE client aborts the matching page-side fetch and removes the controller entry.
-- `McpServiceAdapter` and `create_mcp_server()` provide an optional FastMCP server over `ChatService`, never browser internals. The initial tools are `chat_send`, `list_accounts`, `list_models`, and `get_conversation`; `chat_send` requires explicit `confirm=true`, while output is recursively redacted for credential-shaped keys.
+- `McpServiceAdapter` and `create_mcp_server()` provide an optional FastMCP server over `ChatService`, never browser internals. The initial tools are `chat_send`, `chat_stream`, `list_accounts`, `list_models`, and `get_conversation`; both chat tools require explicit `confirm=true`, while output is recursively redacted for credential-shaped keys.
+- `chat_stream` forwards each upstream `delta` through MCP progress notifications and returns the final normalized response. If a host delivers tool cancellation to the coroutine, `ChatService.stream_to_callback()` closes the browser-fetch generator and reaches the existing AbortController path; host-specific cancellation signaling still needs a live-client check.
+- The MCP test suite now runs a real stdio server subprocess with the official SDK client, verifies initialization/tool discovery, and calls `chat_stream` through the JSON-RPC transport with real progress callbacks, without touching a browser or account.
 
 ## Known Traps
 
@@ -191,7 +193,6 @@ Expected streaming shape:
   - `list_models` with opt-in remote refresh
   - `get_conversation`
 - Deferred tools:
-  - `chat_stream`, until target MCP clients' progress/cancellation semantics are exercised end to end
   - `upload_file`, until explicit user approval and file-size/content policy are designed
 - Keep tool schemas compact and explicit.
 - Never expose raw cookies, access tokens, or account passwords through MCP.
@@ -233,4 +234,4 @@ Expected streaming shape:
 - Add platform-specific NoneBot message-edit/send adapters on top of `stream_to_callback()`.
 - Add HTTP API fixture coverage for malformed attachment payloads and real client-disconnect cancellation. Do not let HTTP handlers call browser internals directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
-- Exercise the MCP prototype with a real stdio client, then design `chat_stream` around verified MCP progress/cancellation behavior instead of returning a fake buffered stream.
+- Test `chat_stream` with a target client such as Codex and verify its cancellation request reaches the browser AbortController. The base stdio handshake, progress callback, and final tool response are now covered by an offline integration test.

@@ -277,7 +277,7 @@ server = create_mcp_server(service)
 server.run(transport="stdio")
 ```
 
-The MCP server is intentionally an adapter over an already initialized runtime; it does not create a second browser or expose browser/session credentials. Its initial tools are `chat_send`, `list_accounts`, `list_models`, and `get_conversation`. `chat_send` requires `confirm=true` because it can consume account quota. Keep protocol stdout clean when using the `stdio` transport; send application logs to stderr or a file. Streaming and file-upload MCP tools are deliberately deferred until client progress/cancellation behavior is validated.
+The MCP server is intentionally an adapter over an already initialized runtime; it does not create a second browser or expose browser/session credentials. Its initial tools are `chat_send`, `chat_stream`, `list_accounts`, `list_models`, and `get_conversation`. Both chat tools require `confirm=true` because they can consume account quota. `chat_stream` forwards upstream text deltas as MCP progress notifications, then returns the final structured result. Keep protocol stdout clean when using the `stdio` transport; send application logs to stderr or a file. File-upload MCP tools are deliberately deferred until explicit approval and file-size/content policy are designed.
 
 ### Optional HTTP API
 ```python

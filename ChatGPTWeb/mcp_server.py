@@ -7,12 +7,14 @@ and makes the core behavior testable without installing the MCP SDK.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
+from .api import ChatStreamEvent
 from .service import ChatRequest, ChatResult, ChatService
 
 
 _SENSITIVE_KEY_PARTS = ("token", "cookie", "password", "secret", "authorization")
+StreamProgressCallback = Callable[[ChatStreamEvent], Awaitable[None]]
 
 
 def _redact_sensitive(value: Any) -> Any:
@@ -101,6 +103,43 @@ class McpServiceAdapter:
             ]
         }
 
+    async def chat_stream(
+        self,
+        prompt: str,
+        *,
+        model: str = "auto",
+        conversation_id: str = "",
+        parent_message_id: str = "",
+        web_search: bool = False,
+        confirm: bool = False,
+        progress_callback: StreamProgressCallback | None = None,
+    ) -> Dict[str, Any]:
+        """Stream a request through a callback and return its final normalized result."""
+        if not prompt.strip():
+            return {"ok": False, "error": "prompt must not be empty"}
+        if not confirm:
+            return {
+                "ok": False,
+                "error": "This action can consume account quota. Call again with confirm=true to send it.",
+                "requires_confirmation": True,
+            }
+
+        async def on_event(event: ChatStreamEvent) -> None:
+            if progress_callback:
+                await progress_callback(event)
+
+        result = await self._service.stream_to_callback(
+            ChatRequest(
+                prompt=prompt,
+                model=model,
+                conversation_id=conversation_id,
+                parent_message_id=parent_message_id,
+                web_search=web_search,
+            ),
+            on_event,
+        )
+        return _result_to_dict(result)
+
     async def list_models(self, fetch_remote: bool = False) -> Dict[str, Any]:
         """Return cached models, or explicitly request an authenticated refresh."""
         return _redact_sensitive(await self._service.get_model_catalog(fetch_remote=fetch_remote))
@@ -115,9 +154,12 @@ class McpServiceAdapter:
 def create_mcp_server(service: ChatService):
     """Create a FastMCP server without importing the optional SDK at package import time."""
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
     except ImportError as exc:
         raise RuntimeError("MCP support is optional. Install it with: pip install 'ChatGPTWeb[mcp]'") from exc
+
+    # FastMCP evaluates nested tool annotations against this module's globals.
+    globals()["Context"] = Context
 
     adapter = McpServiceAdapter(service)
     server = FastMCP(
@@ -145,6 +187,38 @@ def create_mcp_server(service: ChatService):
             parent_message_id=parent_message_id,
             web_search=web_search,
             confirm=confirm,
+        )
+
+    @server.tool()
+    async def chat_stream(
+        prompt: str,
+        ctx: Context,
+        model: str = "auto",
+        conversation_id: str = "",
+        parent_message_id: str = "",
+        web_search: bool = False,
+        confirm: bool = False,
+    ) -> Dict[str, Any]:
+        """Stream text deltas as MCP progress notifications, then return the complete result."""
+        progress = 0
+
+        async def report_event(event: ChatStreamEvent) -> None:
+            nonlocal progress
+            if event.type == "delta":
+                progress += 1
+                await ctx.report_progress(progress, message=event.text)
+            elif event.type == "status":
+                phase = event.metadata.get("phase", "waiting")
+                await ctx.report_progress(progress, message=f"[{phase}]")
+
+        return await adapter.chat_stream(
+            prompt,
+            model=model,
+            conversation_id=conversation_id,
+            parent_message_id=parent_message_id,
+            web_search=web_search,
+            confirm=confirm,
+            progress_callback=report_event,
         )
 
     @server.tool()
