@@ -1,7 +1,9 @@
 """Stable, transport-neutral service API for bot, HTTP, and agent adapters."""
 
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Protocol
+import inspect
+
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Protocol, Union
 
 from .api import ChatStreamEvent
 from .config import IOFile, MsgData
@@ -51,13 +53,16 @@ class ChatResult:
 class ChatBackend(Protocol):
     async def continue_chat(self, msg_data: MsgData) -> MsgData: ...
 
-    async def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]: ...
+    def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]: ...
 
     async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, str]]: ...
 
     async def token_status(self) -> Dict[str, Any]: ...
 
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, Any]: ...
+
+
+StreamCallback = Callable[[ChatStreamEvent], Union[None, Awaitable[None]]]
 
 
 class ChatService:
@@ -95,6 +100,49 @@ class ChatService:
         """Yield upstream stream events without exposing Playwright objects."""
         async for event in self._backend.continue_chat_stream(request.to_msg_data()):
             yield event
+
+    async def stream_to_callback(self, request: ChatRequest, callback: StreamCallback) -> ChatResult:
+        """Deliver stream events in order and return the final normalized result.
+
+        The callback may be synchronous or asynchronous. Callback failures are
+        intentionally propagated so callers can decide how to recover.
+        """
+        chunks: List[str] = []
+        image_urls: List[str] = []
+        final_event: ChatStreamEvent | None = None
+        errors: List[Dict[str, Any]] = []
+        last_event: ChatStreamEvent | None = None
+
+        async for event in self.stream(request):
+            last_event = event
+            if event.type == "delta":
+                chunks.append(event.text)
+            elif event.type == "image":
+                image_urls = event.image_urls.copy()
+            elif event.type == "final":
+                final_event = event
+                if event.image_urls:
+                    image_urls = event.image_urls.copy()
+            elif event.type == "error":
+                errors.append({"kind": "stream_error", "message": event.text, "retryable": False})
+
+            callback_result = callback(event)
+            if inspect.isawaitable(callback_result):
+                await callback_result
+
+        terminal = final_event or last_event
+        return ChatResult(
+            ok=bool(final_event and not errors),
+            text=final_event.text if final_event and final_event.text else "".join(chunks),
+            conversation_id=terminal.conversation_id if terminal else request.conversation_id,
+            message_id=terminal.message_id if terminal else "",
+            requested_model=request.model,
+            used_model=terminal.model if terminal else "",
+            image_urls=image_urls,
+            usage=dict(terminal.usage) if terminal else {},
+            metadata=dict(terminal.metadata) if terminal else {},
+            errors=errors,
+        )
 
     async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:
         """Return the repository-backed history for a known conversation."""

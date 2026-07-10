@@ -38,6 +38,7 @@ Reasons:
 - Runtime probe has verified `/backend-api/pageConfigs/billing` returns billing/usage-limit eligibility configuration with authorization, but not necessarily live remaining quota.
 - `get_model_catalog()` exposes authenticated remote model catalog, cached browser model categories, and static local aliases in one API for bot/API/agent callers.
 - `ChatService` now provides a transport-neutral facade: `send()`, `stream()`, `get_history()`, `get_account_status()`, `get_model_catalog()`, and an explicitly unknown-safe `get_usage_status()`. It converts between caller-owned `ChatRequest`/`ChatResult` objects and legacy `MsgData` internally.
+- `ChatService.stream_to_callback()` adapts ordered stream events to synchronous or asynchronous bot callbacks and returns the final `ChatResult` after the stream closes.
 
 ## Known Traps
 
@@ -213,7 +214,7 @@ Expected streaming shape:
 - Add authenticated runtime probes for account usage/quota. Start by discovering endpoints from browser resources instead of guessing private paths.
 - Capture sanitized real SSE samples after future frontend changes and add them as regression fixtures. Current tests intentionally use synthetic, secret-free protocol fixtures.
 - Add fixture coverage for unsupported rich UI payloads and tool-result blocks.
-- Add an optional `stream_callback` or adapter helper for callers that cannot consume async generators directly.
+- Add platform-specific NoneBot message-edit/send adapters on top of `stream_to_callback()`.
 - Add an HTTP adapter over `ChatService` only after its request/response behavior has fixture coverage; do not let HTTP handlers call browser internals directly.
 - Add structured account/runtime diagnostics to `token_status()`, including last runtime closure reason.
 - Add MCP prototype only after service-layer request/response objects are stable.

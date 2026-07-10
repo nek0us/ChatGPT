@@ -243,6 +243,19 @@ async for event in service.stream(ChatRequest(prompt="stream a short reply")):
         print(event.text)
 ```
 
+For frameworks that consume callbacks instead of async generators:
+
+```python
+async def on_event(event):
+    if event.type == "delta":
+        await update_existing_bot_message(event.text)
+
+result = await service.stream_to_callback(
+    ChatRequest(prompt="stream a short reply"),
+    on_event,
+)
+```
+
 `ChatService` is the recommended integration point for new bot, HTTP, and agent adapters. Existing `MsgData` callers remain supported.
 
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData

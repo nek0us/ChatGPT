@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamParser
+from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData
 from ChatGPTWeb.service import ChatRequest, ChatService
 
@@ -110,7 +110,12 @@ class _FakeBackend:
         return msg_data
 
     async def continue_chat_stream(self, msg_data):
-        yield ChatStreamParser().final_event({"request": msg_data.msg_send})
+        yield ChatStreamEvent(type="delta", text="stream response", raw={"request": msg_data.msg_send})
+        parser = ChatStreamParser()
+        parser.feed({"conversation_id": "conversation-stream", "message_id": "message-stream"})
+        parser.text = "stream response"
+        parser.model = "gpt-5-5-mini"
+        yield parser.final_event({"request": msg_data.msg_send})
 
     async def show_chat_history(self, msg_data):
         return [{"index": "1", "Q": "question", "A": msg_data.conversation_id, "next_msg_id": "m"}]
@@ -150,9 +155,23 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
 
         events = [event async for event in service.stream(ChatRequest(prompt="stream me"))]
 
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].type, "final")
-        self.assertEqual(events[0].raw["request"], "stream me")
+        self.assertEqual([event.type for event in events], ["delta", "final"])
+        self.assertEqual(events[-1].raw["request"], "stream me")
+
+    async def test_stream_to_callback_preserves_event_order_and_returns_result(self):
+        service = ChatService(_FakeBackend())
+        event_types = []
+
+        async def callback(event):
+            event_types.append(event.type)
+
+        result = await service.stream_to_callback(ChatRequest(prompt="callback me"), callback)
+
+        self.assertEqual(event_types, ["delta", "final"])
+        self.assertTrue(result.ok)
+        self.assertEqual(result.text, "stream response")
+        self.assertEqual(result.conversation_id, "conversation-stream")
+        self.assertEqual(result.used_model, "gpt-5-5-mini")
 
 
 if __name__ == "__main__":
