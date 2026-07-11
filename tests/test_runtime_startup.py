@@ -114,6 +114,41 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.is_login_disabled())
 
+    async def test_bridge_initialization_recreates_one_context_before_marking_failure(self):
+        runtime = self._runtime()
+        session = Session(email="bridge@example.com")
+        original_page = _Page()
+        recovered_page = _Page()
+
+        async def recover(_session):
+            session.page = recovered_page
+            return True
+
+        runtime._recover_session_context_for_bridge = AsyncMock(side_effect=recover)
+        runtime._initialize_page_bridge = AsyncMock(side_effect=[False, True])
+
+        ready = await runtime._initialize_page_bridge_with_recovery(session, original_page)
+
+        self.assertTrue(ready)
+        runtime._recover_session_context_for_bridge.assert_awaited_once_with(session)
+        recovered_page.goto.assert_awaited_once_with("https://chatgpt.com/", timeout=20000, wait_until="load")
+        self.assertEqual(session.status, "")
+
+    async def test_context_recovery_suppresses_intentional_close_diagnostics(self):
+        runtime = self._runtime()
+        runtime._closing = False
+        context = type("Context", (), {"close": AsyncMock()})()
+        session = Session(email="recover@example.com", browser_contexts=context, page=object())
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+
+        recovered = await runtime._recover_session_context_for_bridge(session)
+
+        self.assertTrue(recovered)
+        context.close.assert_awaited_once()
+        self.assertIsNone(session.browser_contexts)
+        self.assertIsNone(session.page)
+        self.assertEqual(session.status, "")
+
     def test_runtime_close_records_diagnostics(self):
         runtime = self._runtime()
         runtime._closing = False

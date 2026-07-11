@@ -150,6 +150,7 @@ class chatgpt:
         self._alive_task: Optional[asyncio.Future] = None
         self._watched_contexts = set()
         self._watched_pages = set()
+        self._intentional_context_closures = set()
         self._conversation_locks: Dict[str, asyncio.Lock] = {}
         self._conversation_locks_guard = asyncio.Lock()
         self._conversation_map_lock = asyncio.Lock()
@@ -375,6 +376,8 @@ class chatgpt:
     def _mark_session_runtime_closed(self, session: Session, source: str):
         if self._closing:
             return
+        if session.email in getattr(self, "_intentional_context_closures", set()):
+            return
         if session.status == Status.Stop.value:
             return
         session.login_state = False
@@ -390,6 +393,31 @@ class chatgpt:
             session.page = None
         self._record_activity(session.email, "runtime_closed", f"{source} closed unexpectedly")
         self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Update")
+
+    async def _recover_session_context_for_bridge(self, session: Session) -> bool:
+        """Replace one stuck startup context without treating it as a login failure."""
+        context = session.browser_contexts
+        if context:
+            suppressed = getattr(self, "_intentional_context_closures", None)
+            if suppressed is None:
+                suppressed = self._intentional_context_closures = set()
+            suppressed.add(session.email)
+            try:
+                await context.close()
+            except Exception as error:
+                self.logger.warning(f"{session.email} bridge recovery could not close context: {error}")
+            finally:
+                suppressed.discard(session.email)
+        session.browser_contexts = None
+        session.page = None
+        try:
+            recovered = await self._ensure_session_runtime(session)
+        except Exception as error:
+            self.logger.warning(f"{session.email} bridge context recovery failed: {error}")
+            return False
+        if recovered:
+            self._record_activity(session.email, "bridge_context_recovery", "recreated context after bridge timeout")
+        return recovered
 
     def _watch_page_events(self, session: Session, page: Page, label: str = "page"):
         page_id = id(page)
@@ -839,7 +867,11 @@ class chatgpt:
                 )
                 return
 
-            if not await self._initialize_page_bridge(session, page):
+            if not await self._initialize_page_bridge_with_recovery(session, page):
+                return
+
+            page = session.page
+            if not page:
                 return
 
             await self._refresh_account_plan(session)
@@ -864,7 +896,23 @@ class chatgpt:
                 
             return
 
-    async def _initialize_page_bridge(self, session: Session, page: Page) -> bool:
+    def _mark_bridge_initialization_failure(self, session: Session, error: Exception | None) -> None:
+        session.mark_login_failure(
+            kind="transient",
+            details=f"browser bridge initialization failed: {error}",
+            cooldown_seconds=60,
+        )
+        self.logger.warning(
+            f"context {session.email} bridge initialization failed twice; status:{session.status}"
+        )
+
+    async def _initialize_page_bridge(
+        self,
+        session: Session,
+        page: Page,
+        *,
+        mark_failure: bool = True,
+    ) -> bool:
         """Load browser bridge code with a bounded retry during runtime startup."""
         last_error: Optional[Exception] = None
         for attempt in range(1, 3):
@@ -885,15 +933,29 @@ class chatgpt:
                     except Exception:
                         pass
 
-        session.mark_login_failure(
-            kind="transient",
-            details=f"browser bridge initialization failed: {last_error}",
-            cooldown_seconds=60,
-        )
-        self.logger.warning(
-            f"context {session.email} bridge initialization failed twice; status:{session.status}"
-        )
+        if mark_failure:
+            self._mark_bridge_initialization_failure(session, last_error)
         return False
+
+    async def _initialize_page_bridge_with_recovery(self, session: Session, page: Page) -> bool:
+        """Give a blank startup context one isolated recreation attempt."""
+        if await self._initialize_page_bridge(session, page, mark_failure=False):
+            return True
+
+        self.logger.warning(f"context {session.email} recreating context after bridge initialization failure")
+        if not await self._recover_session_context_for_bridge(session):
+            self._mark_bridge_initialization_failure(session, RuntimeError("context recovery failed"))
+            return False
+
+        recovered_page = session.page
+        if not recovered_page:
+            self._mark_bridge_initialization_failure(session, RuntimeError("recovered context has no page"))
+            return False
+        try:
+            await recovered_page.goto("https://chatgpt.com/", timeout=20000, wait_until="load")
+        except Exception as error:
+            self.logger.warning(f"context {session.email} recovery navigation failed: {error}")
+        return await self._initialize_page_bridge(session, recovered_page, mark_failure=True)
         
     def tmp(self, loop):
         # task = asyncio.create_task(self.__alive__())
