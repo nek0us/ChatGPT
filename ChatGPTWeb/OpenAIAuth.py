@@ -118,6 +118,8 @@ class AsyncAuth0:
         await self.find_cf(self.login_page)
         self.logger.debug(f"{self.email_address} will point {self.mode} button")
         try:
+            if self.mode == "google" and await self._click_google_one_tap():
+                return
             text = f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft'}"
             button = self.login_page.get_by_text(text)
             await asyncio.sleep(1)
@@ -139,6 +141,19 @@ class AsyncAuth0:
             self.logger.warning(f"{self.email_address} point button {self.mode} exception:{e} ,will skip")
             await self.save_screen(path=f"{self.email_address}_ point_login_button_{self.mode}_exception",page=self.login_page)
             # raise e
+
+    async def _click_google_one_tap(self) -> bool:
+        """Use Google's own One Tap continuation button when it overlays the provider list."""
+        iframe_selector = "iframe[src*='accounts.google.com/gsi/iframe']"
+        iframe = self.login_page.locator(iframe_selector)
+        if await iframe.count() == 0:
+            return False
+        button = self.login_page.frame_locator(iframe_selector).locator("button").last
+        if await button.count() == 0:
+            return False
+        self.logger.debug(f"{self.email_address} Google One Tap is visible, continuing in its iframe")
+        await button.click(timeout=10000)
+        return True
         
     async def mc_help_email_verify(self):
         await self.login_page.wait_for_load_state('load')
@@ -654,6 +669,12 @@ class AsyncAuth0:
         safe_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         return f"url={safe_url}\n{text[:3000]}"
 
+    def append_login_error_details(self, page_details: str):
+        if self.last_error_details:
+            self.last_error_details = f"{self.last_error_details}\n{page_details}"
+        else:
+            self.last_error_details = page_details
+
     async def get_session_token(self,logger):
         self.logger.debug(f"{self.email_address} will create self.login_page")
         self.login_page: Page = await self.browser_contexts.new_page()
@@ -679,7 +700,8 @@ class AsyncAuth0:
             cookies = await self.browser_contexts.cookies()
             if not access_token:
                 try:
-                    self.last_error_details = await self.get_login_error_details()
+                    page_details = await self.get_login_error_details()
+                    self.append_login_error_details(page_details)
                 except Exception as e:
                     self.last_error_details = self.last_error_details or str(e)
             await self.login_page.close()

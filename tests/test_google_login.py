@@ -19,7 +19,7 @@ class _Locator:
     async def fill(self, value):
         self.value = value
 
-    async def click(self):
+    async def click(self, **_kwargs):
         self.clicked = True
 
 
@@ -51,6 +51,32 @@ class _LoginDetailsPage:
 
     async def evaluate(self, _script):
         return "Email or phone"
+
+
+class _OneTapButton(_Locator):
+    @property
+    def last(self):
+        return self
+
+
+class _OneTapFrame:
+    def __init__(self, button):
+        self.button = button
+
+    def locator(self, _selector):
+        return self.button
+
+
+class _OneTapPage:
+    def __init__(self, iframe_count=1, button_count=1):
+        self.iframe = _Locator(iframe_count)
+        self.button = _OneTapButton(button_count)
+
+    def locator(self, _selector):
+        return self.iframe
+
+    def frame_locator(self, _selector):
+        return _OneTapFrame(self.button)
 
 
 class _Logger:
@@ -91,3 +117,33 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("url=https://accounts.google.com/v3/signin/identifier", details)
         self.assertNotIn("client_id", details)
         self.assertIn("Email or phone", details)
+
+    async def test_google_one_tap_uses_the_iframe_button(self):
+        page = _OneTapPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="google")
+        auth.login_page = page
+
+        clicked = await auth._click_google_one_tap()
+
+        self.assertTrue(clicked)
+        self.assertTrue(page.button.clicked)
+
+    async def test_google_one_tap_falls_back_when_no_iframe_is_present(self):
+        page = _OneTapPage(iframe_count=0)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="google")
+        auth.login_page = page
+
+        self.assertFalse(await auth._click_google_one_tap())
+
+    async def test_login_error_details_keep_exception_and_sanitized_page_context(self):
+        page = _LoginDetailsPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="google")
+        auth.login_page = page
+        auth.last_error_details = "Timeout 30000ms exceeded"
+
+        page_details = await auth.get_login_error_details()
+        auth.append_login_error_details(page_details)
+
+        self.assertIn("Timeout 30000ms exceeded", auth.last_error_details)
+        self.assertIn("Email or phone", auth.last_error_details)
+        self.assertNotIn("client_id", auth.last_error_details)
