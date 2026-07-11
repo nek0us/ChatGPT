@@ -11,6 +11,7 @@ from ChatGPTWeb.config import MsgData
 SESSIONS_FILE = Path(os.getenv("CHATGPTWEB_SESSIONS_FILE", "example/local_sessions.json"))
 SESSION_MODE = os.getenv("CHATGPTWEB_SESSION_MODE", "").strip().lower()
 SESSION_EMAIL = os.getenv("CHATGPTWEB_SESSION_EMAIL", "").strip().lower()
+SESSION_INDEX = os.getenv("CHATGPTWEB_SESSION_INDEX", "").strip()
 PROMPT = os.getenv("CHATGPTWEB_SMOKE_PROMPT", "Say hello in one short sentence.")
 PROMPTS = json.loads(os.getenv("CHATGPTWEB_SMOKE_PROMPTS", "null") or "null")
 HEADLESS = os.getenv("CHATGPTWEB_HEADLESS", "false").lower() in ("1", "true", "yes")
@@ -35,6 +36,14 @@ def load_sessions() -> list[dict]:
         sessions = [session for session in sessions if str(session.get("mode", "openai")).lower() == SESSION_MODE]
     if SESSION_EMAIL:
         sessions = [session for session in sessions if str(session.get("email", "")).lower() == SESSION_EMAIL]
+    if SESSION_INDEX:
+        try:
+            session_index = int(SESSION_INDEX)
+        except ValueError as error:
+            raise ValueError("CHATGPTWEB_SESSION_INDEX must be a non-negative integer") from error
+        if session_index < 0 or session_index >= len(sessions):
+            raise ValueError("CHATGPTWEB_SESSION_INDEX does not match a filtered session")
+        sessions = [sessions[session_index]]
     if not sessions:
         raise ValueError(f"{SESSIONS_FILE} does not contain a session matching the requested filter")
     return sessions
@@ -176,6 +185,7 @@ async def main():
                 "stream_idle_timeout_seconds": STREAM_IDLE_TIMEOUT,
                 "session_mode_filter": SESSION_MODE,
                 "session_email_filter": bool(SESSION_EMAIL),
+                "session_index_filter": SESSION_INDEX,
                 "save_screen": SAVE_SCREEN,
                 "model_catalog": model_catalog,
                 "probe": probe,

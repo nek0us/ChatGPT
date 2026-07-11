@@ -91,6 +91,14 @@ uv run python example\local_smoke.py
 
 This isolates one login mode without printing session credentials. Screenshots are local diagnostics only and are ignored by Git.
 
+To diagnose one account without putting its email in the shell history, select its zero-based index after any mode filter:
+
+```powershell
+$env:CHATGPTWEB_SESSION_MODE='openai'
+$env:CHATGPTWEB_SESSION_INDEX='0'
+uv run python example\local_smoke.py
+```
+
 Two-turn buffered send:
 
 ```powershell
