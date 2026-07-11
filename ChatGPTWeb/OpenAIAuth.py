@@ -340,9 +340,7 @@ class AsyncAuth0:
                 self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
     
     async def openai_code_password_login(self):
-        
         await asyncio.sleep(1)
-        # await self.login_page.wait_for_load_state('networkidle')
         self.logger.debug(f"{self.email_address} openai login,will find email input")
         openai_email_input = self.login_page.locator("input[id='email']")
         try:
@@ -357,51 +355,46 @@ class AsyncAuth0:
             await openai_email_input2.type(self.email_address,delay=200)
         self.logger.debug(f"{self.email_address} openai login,will point email continue")
         await self.login_page.keyboard.press(self.EnterKey)
-        await self.login_page.wait_for_load_state('networkidle')
-        num = 3
-        while True:
-
-            # may vrify code
-            
-            await asyncio.sleep(1)
-            try:
-                await self.login_page.wait_for_selector("text=Check your inbox", timeout=15000)
-                need_verify = True
-                self.logger.debug(f"{self.email_address} openai login,find verify code input")
-            except Exception:
-                need_verify = False
-                self.logger.debug(f"{self.email_address} openai login,not find verify code input,may not need verify code")
-            if need_verify:
-                self.logger.debug(f"{self.email_address} openai login,need verify code,will point continue with password")
-                if await self.login_page.is_visible("text=Continue with password"):
-                    await self.login_page.click("text=Continue with password")
-                    await self.login_page.wait_for_load_state('load')
-                    await asyncio.sleep(1)
-                else:
-                    await self._submit_openai_verification_code()
-                    return
-
-            verification_input = self.login_page.locator("input[autocomplete='one-time-code']")
-            if await verification_input.count() > 0:
+        state = await self._wait_for_openai_login_state()
+        if state == "password_choice":
+            self.logger.debug(f"{self.email_address} openai login,will continue with password")
+            await self.login_page.get_by_text("Continue with password", exact=True).click()
+            state = await self._wait_for_openai_login_state()
+        if state == "otp":
+            await self._submit_openai_verification_code()
+            return
+        if state == "password":
+            password_input = self.login_page.locator("input[type='password']")
+            self.logger.debug(f"{self.email_address} openai login,will set password")
+            await password_input.fill(self.password)
+            await self.login_page.keyboard.press(self.EnterKey)
+            state = await self._wait_for_openai_login_state()
+            if state == "otp":
                 await self._submit_openai_verification_code()
                 return
-            
-            await asyncio.sleep(1)
-            openai_password_input = self.login_page.locator("input[type='password']")
-            if await openai_password_input.count() > 0:
-                self.logger.debug(f"{self.email_address} openai login,find password input")
-                self.logger.debug(f"{self.email_address} openai login,will set password")
-                await openai_password_input.wait_for(state="visible")
-                await openai_password_input.type(self.password,delay=200)
-                self.logger.debug(f"{self.email_address} openai login,will point enter")
-                await asyncio.sleep(1)
-                await self.login_page.keyboard.press(self.EnterKey)
-            else:
-                self.logger.warning(f"{self.email_address} openai login,not find password input,will skip")
-            await asyncio.sleep(1)
-            num -= 1
-            if num <= 0:
+            if state == "authenticated":
                 return
+        if state == "authenticated":
+            return
+        await self.save_screen(path=f"{self.email_address}_openai_login_unknown", page=self.login_page)
+        details = await self.get_login_error_details()
+        raise Error("OpenAI login error", 1, f"OpenAI login state was not recognized\n{details}")
+
+    async def _wait_for_openai_login_state(self, timeout: int = 30000) -> str:
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            if self.is_chat_app_url(self.login_page.url):
+                return "authenticated"
+            otp = self.login_page.locator("input[autocomplete='one-time-code']")
+            if await otp.count() > 0:
+                return "otp"
+            password = self.login_page.locator("input[type='password']")
+            if await password.count() > 0:
+                return "password"
+            if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
+                return "password_choice"
+            await asyncio.sleep(0.25)
+        return "unknown"
 
     async def _submit_openai_verification_code(self) -> None:
         """Wait for an operator-supplied OTP without writing it to disk."""
