@@ -38,7 +38,7 @@ from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
 from .verification import VerificationBroker
-from .capabilities import discover_account_plan
+from .capabilities import discover_account_plan, infer_plan_from_model_categories
 from .api import (
     async_send_msg,
     recive_handle,
@@ -1020,19 +1020,39 @@ class chatgpt:
                         method: "GET", credentials: "include", headers,
                     });
                     const contentType = response.headers.get("content-type") || "";
-                    if (!response.ok || !contentType.includes("json")) {
-                        return { status: response.status, payload: null };
+                    const modelSubscriptionLevels = [];
+                    for (const key of Object.keys(localStorage)) {
+                        if (!key.endsWith("/models") && !key.includes("/models")) continue;
+                        try {
+                            const cached = JSON.parse(localStorage.getItem(key));
+                            const value = cached && cached.value && typeof cached.value === "object" ? cached.value : cached;
+                            for (const category of Array.isArray(value && value.categories) ? value.categories : []) {
+                                if (category && category.subscriptionLevel) modelSubscriptionLevels.push(category.subscriptionLevel);
+                            }
+                        } catch (_) {}
                     }
-                    return { status: response.status, payload: await response.json() };
+                    if (!response.ok || !contentType.includes("json")) {
+                        return { status: response.status, payload: null, modelSubscriptionLevels };
+                    }
+                    return { status: response.status, payload: await response.json(), modelSubscriptionLevels };
                 }
                 """,
                     {"accessToken": session.access_token, "deviceId": session.device_id},
                 ),
                 timeout=15,
             )
-            if not isinstance(result, dict) or not isinstance(result.get("payload"), (dict, list)):
+            if not isinstance(result, dict):
                 return
-            plan = discover_account_plan(result["payload"], "fetch:/backend-api/pageConfigs/billing")
+            payload = result.get("payload")
+            plan = (
+                discover_account_plan(payload, "fetch:/backend-api/pageConfigs/billing")
+                if isinstance(payload, (dict, list)) else discover_account_plan(None, "unavailable")
+            )
+            if plan.value == "unknown":
+                plan = infer_plan_from_model_categories(
+                    result.get("modelSubscriptionLevels"),
+                    "inferred:localStorage:model-categories",
+                )
             session.account_plan = plan.value
             session.account_plan_source = plan.source
             session.account_plan_observed_at = datetime.now()

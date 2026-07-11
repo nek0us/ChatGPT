@@ -77,3 +77,18 @@ def discover_account_plan(payload: Any, source: str) -> AccountPlan:
         source=source,
         evidence=tuple(path for _, path in found),
     )
+
+
+def infer_plan_from_model_categories(levels: Any, source: str) -> AccountPlan:
+    """Infer a plan only when every observed model category agrees on one tier."""
+    if not isinstance(levels, list):
+        return AccountPlan()
+    plans = {_normalized_plan(level) for level in levels}
+    plans.discard(None)
+    if len(plans) != 1:
+        return AccountPlan(source=source if plans else "unavailable")
+    return AccountPlan(
+        value=plans.pop(),
+        source=source,
+        evidence=tuple(str(level) for level in levels if _normalized_plan(level)),
+    )

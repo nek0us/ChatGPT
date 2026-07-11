@@ -1,6 +1,6 @@
 import unittest
 
-from ChatGPTWeb.capabilities import discover_account_plan
+from ChatGPTWeb.capabilities import discover_account_plan, infer_plan_from_model_categories
 
 
 class AccountPlanDiscoveryTests(unittest.TestCase):
@@ -29,6 +29,13 @@ class AccountPlanDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(plan.value, "unknown")
         self.assertEqual(plan.source, "unavailable")
+
+    def test_model_category_inference_requires_one_unambiguous_tier(self):
+        free = infer_plan_from_model_categories(["free", "free"], "models")
+        mixed = infer_plan_from_model_categories(["free", "plus"], "models")
+
+        self.assertEqual(free.value, "free")
+        self.assertEqual(mixed.value, "unknown")
 
 
 if __name__ == "__main__":
