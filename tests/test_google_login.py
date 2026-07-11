@@ -100,6 +100,13 @@ class _OneTapPage:
         return _OneTapFrame(self.button)
 
 
+class _OneTapHomepage:
+    url = "https://chatgpt.com/"
+
+    def locator(self, selector):
+        return _Locator(1 if selector == "#google-one-tap-anchor" else 0)
+
+
 class _PopupInfo:
     def __init__(self, popup):
         self.value = self._resolve(popup)
@@ -143,6 +150,13 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_google_one_tap_homepage_is_not_an_auth_surface(self):
+        page = _OneTapHomepage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertFalse(await auth.wait_for_login_surface(timeout=1))
+
     async def test_chatgpt_homepage_login_entry_prefers_semantic_button(self):
         page = _ChatLoginPage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
