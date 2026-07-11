@@ -101,7 +101,7 @@ class AsyncAuth0:
 
     async def wait_for_login_surface(self, timeout: int = 10000) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
-        selectors = ("input[type='email']", "button[data-testid='login-button']")
+        selectors = ("input[type='email']",)
         while asyncio.get_running_loop().time() < deadline:
             if self.is_login_surface_url(self.login_page.url):
                 return True
