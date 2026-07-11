@@ -178,6 +178,24 @@ class AsyncAuth0:
             await self.save_screen(path=f"{self.email_address}_ point_login_button_{self.mode}_exception",page=self.login_page)
             # raise e
 
+    async def _click_chatgpt_login_entry(self) -> bool:
+        """Enter the auth flow from the current signed-out ChatGPT homepage."""
+        candidates = (
+            self.login_page.locator("button[data-testid='login-button']"),
+            self.login_page.get_by_role("button", name="Log in"),
+            self.login_page.get_by_text("Log in", exact=True),
+        )
+        for button in candidates:
+            if await button.count() == 0:
+                continue
+            try:
+                await button.first.click(timeout=10000)
+                self.logger.debug(f"{self.email_address} entered auth flow from ChatGPT homepage")
+                return True
+            except Exception as error:
+                self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {error}")
+        return False
+
     async def _click_google_one_tap(self) -> bool:
         """Use Google's own One Tap continuation button when it overlays the provider list."""
         iframe_selector = "iframe[src*='accounts.google.com/gsi/iframe']"
@@ -467,7 +485,10 @@ class AsyncAuth0:
             if await check_new_img.count() > 0:
                 await check_new_img.click()
                 await asyncio.sleep(1)
-            if not await self.wait_for_login_surface():
+            login_surface_detected = await self.wait_for_login_surface()
+            if not login_surface_detected and await self._click_chatgpt_login_entry():
+                login_surface_detected = await self.wait_for_login_surface(timeout=30000)
+            if not login_surface_detected:
                 self.logger.debug(f"{self.email_address} login surface was not detected, trying legacy entry controls")
                 await self.login_page.keyboard.press(self.EnterKey)
                 check_home_login_box = self.login_page.locator('input[id="email"]')

@@ -51,6 +51,22 @@ class _Page:
         return self.history
 
 
+class _ChatLoginPage:
+    def __init__(self):
+        self.test_id = _Locator(0)
+        self.role = _Locator(1)
+        self.text = _Locator(1)
+
+    def locator(self, _selector):
+        return self.test_id
+
+    def get_by_role(self, _role, **_kwargs):
+        return self.role
+
+    def get_by_text(self, _text, **_kwargs):
+        return self.text
+
+
 class _LoginDetailsPage:
     url = "https://accounts.google.com/v3/signin/identifier?client_id=private-value&scope=openid"
 
@@ -127,6 +143,15 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chatgpt_homepage_login_entry_prefers_semantic_button(self):
+        page = _ChatLoginPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertTrue(await auth._click_chatgpt_login_entry())
+        self.assertTrue(page.role.clicked)
+        self.assertFalse(page.text.clicked)
+
     async def test_login_route_detection_accepts_current_and_legacy_hosts(self):
         self.assertTrue(AsyncAuth0.is_login_surface_url("https://chatgpt.com/auth/login"))
         self.assertTrue(AsyncAuth0.is_login_surface_url("https://auth.openai.com/u/login"))

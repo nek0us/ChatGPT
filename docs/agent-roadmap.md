@@ -167,6 +167,7 @@ Expected streaming shape:
 - A live July 2026 popup test reached Google's current `v3/signin/identifier` page, whose identifier field is not reliably `type=email`. The OAuth flow now locates it by Google semantic identifiers (`#identifierId`, `name=identifier`, or username autocomplete) before retaining the legacy email selector as a fallback.
 - A subsequent live test submitted the identifier successfully but Google returned its explicit “This browser or app may not be secure” refusal before the password step. This is a provider-side risk block for the current automated Firefox environment, not an OpenAI route or password-locator defect.
 - UI authentication routing now accepts both `chatgpt.com/auth/**` and legacy `auth.openai.com`/`chat.openai.com` surfaces, then verifies the final result through the authenticated session endpoint rather than an exact homepage URL.
+- A live July 2026 native OpenAI login diagnosis found the signed-out ChatGPT homepage rendering a semantic `Log in` button while the legacy flow only tried brittle XPath and Enter-key fallbacks. Authentication now prefers the homepage's test-id/role/text login entry and waits for an auth surface before using the legacy controls.
 
 ## Phase 2: Error And Retry Model
 
