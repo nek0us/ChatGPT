@@ -4,8 +4,11 @@ from pathlib import Path
 import json
 import tempfile
 
+from aiohttp import ClientSession
+
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.config import Session, Status
+from ChatGPTWeb.verification import VerificationBroker
 
 
 class _Logger:
@@ -16,6 +19,9 @@ class _Logger:
         self.warnings.append(message)
 
     def debug(self, _message):
+        pass
+
+    def info(self, _message):
         pass
 
 
@@ -31,7 +37,34 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime.js = ("first", "second")
         runtime.js_used = 0
         runtime.startup_timeout = 1
+        runtime.control_host = "127.0.0.1"
+        runtime.control_port = None
+        runtime.control_api_key = None
+        runtime._control_runner = None
+        runtime._control_site = None
+        runtime.control_url = ""
+        runtime.verification_broker = VerificationBroker()
+        runtime.manage = {"control_url": ""}
         return runtime
+
+    async def test_control_server_uses_runtime_lifecycle(self):
+        runtime = self._runtime()
+        runtime.control_port = 0
+        runtime.control_api_key = "control-test-key"
+
+        await runtime._start_control_server()
+        self.assertTrue(runtime.control_url.startswith("http://127.0.0.1:"))
+        self.assertIsNotNone(runtime._control_runner)
+        async with ClientSession() as client:
+            response = await client.get(runtime.control_url)
+            body = await response.text()
+        self.assertEqual(response.status, 200)
+        self.assertIn("ChatGPTWeb Control", body)
+
+        await runtime._close_control_server()
+        self.assertIsNone(runtime._control_runner)
+        self.assertEqual(runtime.control_url, "")
+        self.assertEqual(runtime.manage["control_url"], "")
 
     async def test_bridge_initialization_retries_once_before_succeeding(self):
         runtime = self._runtime()

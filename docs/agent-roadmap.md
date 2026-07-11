@@ -173,6 +173,7 @@ Expected streaming shape:
 - Native OpenAI OTP login is now wired to `VerificationBroker`: the existing Playwright page remains open while it waits for an operator-submitted in-memory code, then fills the live OTP field and continues. Expiry or cancellation returns a classified verification failure; `token_status()` exposes only challenge metadata, never submitted codes.
 - The optional aiohttp control surface now exposes authenticated `GET /v1/verification`, `POST /v1/verification/{challenge_id}` with a `code`, and `DELETE /v1/verification/{challenge_id}` routes when a runtime `VerificationBroker` is supplied to `create_http_app()`. These routes are the narrow control API the upcoming local dashboard will use.
 - A small loopback-only operations console is now available through `example/local_console.py`. It displays account runtime state and pending verification challenges, with submit/cancel controls backed by the authenticated control API. The API key is generated for the process unless `CHATGPTWEB_CONSOLE_KEY` is supplied; it is not embedded in the HTML or persisted by the server.
+- The control dashboard is now owned by the `chatgpt` runtime rather than an example process: pass `control_port` (and optionally `control_host`/`control_api_key`) when constructing it. The default is disabled; when enabled it starts after browser launch but before account authentication so a pending OTP can be submitted during startup, and it shuts down with `chat.close()`.
 
 ## Phase 2: Error And Retry Model
 

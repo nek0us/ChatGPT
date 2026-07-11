@@ -226,6 +226,22 @@ save_screen: bool = False
 ```bash
 chat = chatgpt(sessions=sessions)
 ```
+
+### Local Control Dashboard
+
+Enable the optional loopback dashboard in the same runtime process. It starts before account authentication, so it can accept an email verification code while a browser login is pending. The generated control API key is logged at startup unless you provide one explicitly.
+
+```python
+chat = chatgpt(
+    sessions=sessions,
+    control_host="127.0.0.1",
+    control_port=8765,
+    control_api_key="local-only-secret",
+)
+```
+
+The dashboard is disabled by default and closes with `await chat.close()`.
+
 ### ChatService (bot / HTTP / agent facade)
 ```python
 from ChatGPTWeb import ChatRequest, ChatService, chatgpt

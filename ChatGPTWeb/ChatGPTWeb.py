@@ -8,10 +8,11 @@ import hashlib
 import random
 import asyncio
 import threading
+import secrets
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
 from typing import AsyncIterator, Dict, Optional,Literal,List
@@ -34,6 +35,8 @@ from .config import (
     model_list,
 )
 from .load import load_js
+from .http_api import create_control_app
+from .service import ChatService
 from .verification import VerificationBroker
 from .api import (
     async_send_msg,
@@ -72,7 +75,10 @@ class chatgpt:
                  local_js: bool = False,
                  save_screen: bool = False,
                  ready_timeout: int = 180,
-                 startup_timeout: int = 60
+                 startup_timeout: int = 60,
+                 control_host: str = "127.0.0.1",
+                 control_port: int | None = None,
+                 control_api_key: str | None = None,
                
                  ) -> None:
         """
@@ -121,6 +127,17 @@ class chatgpt:
         self.save_screen = save_screen
         self.ready_timeout = ready_timeout
         self.startup_timeout = startup_timeout
+        if control_port is not None and not 0 <= control_port <= 65535:
+            raise ValueError("control_port must be between 0 and 65535")
+        self.control_host = control_host
+        self.control_port = control_port
+        self.control_api_key = (
+            control_api_key or secrets.token_urlsafe(24)
+            if control_port is not None else None
+        )
+        self._control_runner: Optional[web.AppRunner] = None
+        self._control_site: Optional[web.BaseSite] = None
+        self.control_url = ""
         self._closing = False
         self._start_task: Optional[asyncio.Future] = None
         self._alive_task: Optional[asyncio.Future] = None
@@ -563,6 +580,7 @@ class chatgpt:
             self.logger.debug("Firefox browser is already installed.")
         self.js = await load_js(self.httpx_proxy,self.local_js)    
         await self._launch_browser_with_retry(retries=1)
+        await self._start_control_server()
         
         # arkose context
         auth_tasks = []
@@ -607,6 +625,39 @@ class chatgpt:
         self.logger.debug("start!")
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
         self.thread.start()
+
+    async def _start_control_server(self) -> None:
+        if self.control_port is None or self._control_runner:
+            return
+        runner = web.AppRunner(create_control_app(
+            ChatService(self),
+            self.verification_broker,
+            api_key=self.control_api_key,
+        ))
+        try:
+            await runner.setup()
+            site = web.TCPSite(runner, self.control_host, self.control_port)
+            await site.start()
+            self._control_runner = runner
+            self._control_site = site
+            sockets = getattr(getattr(site, "_server", None), "sockets", [])
+            port = sockets[0].getsockname()[1] if sockets else self.control_port
+            self.control_url = f"http://{self.control_host}:{port}"
+            self.manage["control_url"] = self.control_url
+            self.logger.info(f"ChatGPTWeb control dashboard: {self.control_url}")
+            self.logger.info(f"ChatGPTWeb control API key: {self.control_api_key}")
+        except Exception as error:
+            await runner.cleanup()
+            self.logger.warning(f"control dashboard did not start: {error}")
+
+    async def _close_control_server(self) -> None:
+        runner = self._control_runner
+        self._control_runner = None
+        self._control_site = None
+        self.control_url = ""
+        self.manage["control_url"] = ""
+        if runner:
+            await runner.cleanup()
 
     async def load_page(self, session: Session):
         '''start page | 载入初始页面'''
@@ -716,6 +767,7 @@ class chatgpt:
     async def close(self):
         """Close background tasks and browser resources."""
         self._closing = True
+        await self._close_control_server()
 
         for task in (self._alive_task,):
             if task and not task.done():
