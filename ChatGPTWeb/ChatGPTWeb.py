@@ -596,7 +596,8 @@ class chatgpt:
         # auth login
         try:
             self.logger.debug(f"{session.email} will auth_task")
-            await asyncio.wait_for(asyncio.gather(*auth_tasks, return_exceptions=True),timeout=300)
+            auth_timeout = max(300, self.verification_broker.default_timeout_seconds + 60)
+            await asyncio.wait_for(asyncio.gather(*auth_tasks, return_exceptions=True), timeout=auth_timeout)
             # load page
             load_tasks = [
                 self.load_page(session)

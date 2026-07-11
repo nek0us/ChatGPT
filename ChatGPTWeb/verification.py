@@ -53,7 +53,7 @@ class VerificationBroker:
     all use the same ``submit`` and ``cancel`` operations.
     """
 
-    def __init__(self, default_timeout_seconds: int = 240):
+    def __init__(self, default_timeout_seconds: int = 600):
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
         self.default_timeout_seconds = default_timeout_seconds

@@ -30,6 +30,9 @@ CONTROL_HOST = os.getenv("CHATGPTWEB_CONTROL_HOST", "127.0.0.1")
 CONTROL_PORT_TEXT = os.getenv("CHATGPTWEB_CONTROL_PORT", "").strip()
 CONTROL_PORT = int(CONTROL_PORT_TEXT) if CONTROL_PORT_TEXT else None
 CONTROL_API_KEY = os.getenv("CHATGPTWEB_CONTROL_API_KEY") or None
+if CONTROL_PORT is not None:
+    # Give a human-operated OTP challenge enough time to be submitted.
+    TIMEOUT = max(TIMEOUT, 720)
 
 
 def load_sessions() -> list[dict]:
