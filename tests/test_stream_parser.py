@@ -139,8 +139,8 @@ class _FakeBackend:
     async def control_account(self, account, action):
         if account != "account@example.com":
             raise KeyError("account was not found")
-        if action not in {"disable", "enable"}:
-            raise ValueError("action must be 'disable' or 'enable'")
+        if action not in {"disable", "enable", "retry_login"}:
+            raise ValueError("action must be 'disable', 'enable', or 'retry_login'")
         return {"email": account, "manual_disabled": action == "disable"}
 
 

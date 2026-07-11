@@ -240,7 +240,7 @@ chat = chatgpt(
 )
 ```
 
-The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification and manually disable or re-enable an account. Re-enabling only removes the local operator hold; it does not force a fresh provider login.
+The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, and explicitly retry a failed credential login. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge.
 
 ### ChatService (bot / HTTP / agent facade)
 ```python

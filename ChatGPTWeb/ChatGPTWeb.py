@@ -147,6 +147,7 @@ class chatgpt:
         self._conversation_locks: Dict[str, asyncio.Lock] = {}
         self._conversation_locks_guard = asyncio.Lock()
         self._conversation_map_lock = asyncio.Lock()
+        self._control_login_tasks: Dict[str, asyncio.Task] = {}
         self.verification_broker = VerificationBroker()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
@@ -675,10 +676,23 @@ class chatgpt:
         if runner:
             await runner.cleanup()
 
+    async def _run_controlled_login(self, session: Session) -> None:
+        try:
+            await self.load_page(session, immediate=True)
+        except asyncio.CancelledError:
+            self.logger.info(f"account {session.email} controlled login cancelled")
+            raise
+        except Exception as error:
+            self.logger.warning(f"account {session.email} controlled login failed: {error}")
+        finally:
+            tasks = getattr(self, "_control_login_tasks", {})
+            if tasks.get(session.email) is asyncio.current_task():
+                tasks.pop(session.email, None)
+
     async def control_account(self, account: str, action: str) -> Dict[str, object]:
-        """Apply a non-destructive local account enable/disable action."""
-        if action not in {"disable", "enable"}:
-            raise ValueError("action must be 'disable' or 'enable'")
+        """Apply an explicit local operator action to one account."""
+        if action not in {"disable", "enable", "retry_login"}:
+            raise ValueError("action must be 'disable', 'enable', or 'retry_login'")
         session = next(
             (item for item in self.Sessions if item.type != "script" and item.email == account),
             None,
@@ -686,18 +700,41 @@ class chatgpt:
         if not session:
             raise KeyError("account was not found")
 
-        session.manual_disabled = action == "disable"
-        if session.manual_disabled:
+        tasks = getattr(self, "_control_login_tasks", None)
+        if tasks is None:
+            tasks = self._control_login_tasks = {}
+
+        if action == "disable":
+            session.manual_disabled = True
+            task = tasks.pop(session.email, None)
+            if task and not task.done():
+                task.cancel()
             await self.verification_broker.cancel_account(session.email)
+        elif action == "enable":
+            session.manual_disabled = False
+        else:
+            if not session.email or not session.password:
+                raise ValueError("account has no configured login credentials")
+            if session.email in tasks and not tasks[session.email].done():
+                raise ValueError("account login is already in progress")
+            session.manual_disabled = False
+            session.login_state = False
+            session.login_state_first = False
+            session.status = Status.Update.value
+            session.login_fail_count = 0
+            session.login_failure_kind = ""
+            session.last_login_error = "manual login retry requested"
+            session.disabled_until = None
+            tasks[session.email] = asyncio.create_task(self._run_controlled_login(session))
         update_session_token(session, self.chat_file, self.logger)
-        self.logger.info(f"account {session.email} manually {action}d")
+        self.logger.info(f"account {session.email} control action: {action}")
 
         status = await self.token_status()
         return next(item for item in status["accounts"] if item["email"] == account)
 
-    async def load_page(self, session: Session):
+    async def load_page(self, session: Session, immediate: bool = False):
         '''start page | 载入初始页面'''
-        if self.begin_sleep_time and session.type != "script":
+        if self.begin_sleep_time and not immediate and session.type != "script":
             await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
         page = session.page
         if page:
@@ -804,6 +841,14 @@ class chatgpt:
         """Close background tasks and browser resources."""
         self._closing = True
         await self._close_control_server()
+
+        control_login_tasks = list(getattr(self, "_control_login_tasks", {}).values())
+        for task in control_login_tasks:
+            if not task.done():
+                task.cancel()
+        if control_login_tasks:
+            await asyncio.gather(*control_login_tasks, return_exceptions=True)
+        getattr(self, "_control_login_tasks", {}).clear()
 
         for task in (self._alive_task,):
             if task and not task.done():
@@ -2693,6 +2738,7 @@ class chatgpt:
             page = session.page
             page_ready = bool(page and not page.is_closed())
             disabled = session.is_login_disabled()
+            retry_task = getattr(self, "_control_login_tasks", {}).get(session.email)
             accounts.append({
                 "email": session.email,
                 "status": session.status,
@@ -2700,6 +2746,8 @@ class chatgpt:
                 "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),
                 "disabled": disabled,
                 "manual_disabled": session.manual_disabled,
+                "login_retry_pending": bool(retry_task and not retry_task.done()),
+                "can_retry_login": bool(session.email and session.password),
                 "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
                 "gptplus": session.gptplus,
                 "conversation_count": len(cid_all.get(session.email, [])),

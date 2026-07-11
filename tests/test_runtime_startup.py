@@ -159,6 +159,39 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(enabled["manual_disabled"])
             self.assertFalse(runtime.Sessions[0].is_login_disabled())
 
+    async def test_control_account_schedules_an_explicit_login_retry(self):
+        runtime = self._runtime()
+        runtime.begin_sleep_time = True
+        runtime.Sessions = [Session(
+            email="retry@example.com",
+            password="configured-password",
+            status=Status.Stop.value,
+            login_failure_kind="need_verification",
+        )]
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def controlled_load_page(*_args, **_kwargs):
+            started.set()
+            await release.wait()
+
+        runtime.load_page = AsyncMock(side_effect=controlled_load_page)
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.chat_file = Path(directory)
+            (runtime.chat_file / "sessions").mkdir()
+            runtime.cc_map = runtime.chat_file / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+
+            account = await runtime.control_account("retry@example.com", "retry_login")
+            await started.wait()
+
+        self.assertEqual(runtime.Sessions[0].status, Status.Update.value)
+        self.assertEqual(runtime.Sessions[0].last_login_error, "manual login retry requested")
+        self.assertTrue(account["login_retry_pending"])
+        runtime.load_page.assert_awaited_once_with(runtime.Sessions[0], immediate=True)
+        release.set()
+        await asyncio.sleep(0)
+
     async def test_auth_state_uses_a_hashed_per_account_path_and_restores_it(self):
         runtime = self._runtime()
         with tempfile.TemporaryDirectory() as directory:
