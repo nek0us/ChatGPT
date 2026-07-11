@@ -8,7 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
-from ChatGPTWeb.http_api import chat_request_from_payload, create_http_app
+from ChatGPTWeb.http_api import chat_request_from_payload, create_control_app, create_http_app
 from ChatGPTWeb.service import ChatRequest, ChatService
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
@@ -348,6 +348,25 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(health.status, 200)
+
+    async def test_control_console_page_loads_without_exposing_protected_status(self):
+        console = TestClient(TestServer(create_control_app(
+            ChatService(self.backend),
+            self.verification_broker,
+            api_key="test-key",
+        )))
+        await console.start_server()
+        try:
+            page = await console.get("/")
+            protected = await console.get("/v1/account/status")
+            body = await page.text()
+        finally:
+            await console.close()
+
+        self.assertEqual(page.status, 200)
+        self.assertIn("ChatGPTWeb Control", body)
+        self.assertNotIn("test-key", body)
+        self.assertEqual(protected.status, 401)
 
     async def test_verification_routes_submit_and_cancel_pending_challenges(self):
         task = asyncio.create_task(
