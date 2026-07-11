@@ -143,6 +143,9 @@ class _FakeBackend:
             raise ValueError("action must be 'disable', 'enable', or 'retry_login'")
         return {"email": account, "manual_disabled": action == "disable"}
 
+    async def get_activity(self, limit=50):
+        return {"events": [{"at": "2026-01-01T00:00:00", "account": "account@example.com", "event": "test", "message": "safe"}][:limit]}
+
 
 class _Logger:
     def debug(self, _message):
@@ -355,6 +358,15 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(health.status, 200)
+
+    async def test_activity_route_is_authenticated_and_bounded(self):
+        headers = {"Authorization": "Bearer test-key"}
+        unauthorized = await self.client.get("/v1/activity")
+        response = await self.client.get("/v1/activity?limit=1", headers=headers)
+
+        self.assertEqual(unauthorized.status, 401)
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["events"][0]["event"], "test")
 
     async def test_account_control_requires_auth_and_valid_action(self):
         headers = {"Authorization": "Bearer test-key"}

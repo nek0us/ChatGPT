@@ -149,6 +149,7 @@ class chatgpt:
         self._conversation_map_lock = asyncio.Lock()
         self._control_login_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._activity: List[Dict[str, str]] = []
         self.verification_broker = VerificationBroker()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
@@ -381,6 +382,7 @@ class chatgpt:
             session.page = None
         elif "page" in source:
             session.page = None
+        self._record_activity(session.email, "runtime_closed", f"{source} closed unexpectedly")
         self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Update")
 
     def _watch_page_events(self, session: Session, page: Page, label: str = "page"):
@@ -681,10 +683,14 @@ class chatgpt:
         try:
             await self.load_page(session, immediate=True)
         except asyncio.CancelledError:
+            self._record_activity(session.email, "login_retry_cancelled", "controlled login was cancelled")
             self.logger.info(f"account {session.email} controlled login cancelled")
             raise
         except Exception as error:
+            self._record_activity(session.email, "login_retry_failed", "controlled login failed; see account diagnostics")
             self.logger.warning(f"account {session.email} controlled login failed: {error}")
+        else:
+            self._record_activity(session.email, "login_retry_finished", f"status: {session.status}")
         finally:
             tasks = getattr(self, "_control_login_tasks", {})
             if tasks.get(session.email) is asyncio.current_task():
@@ -704,6 +710,27 @@ class chatgpt:
         for key, value in msg_data.usage.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 usage[key] = usage.get(key, 0) + value
+        self._record_activity(session.email, "chat_completed", f"model: {model}")
+
+    def _record_activity(self, account: str, event: str, message: str) -> None:
+        """Record bounded, credential-free diagnostics for the local console."""
+        activity = getattr(self, "_activity", None)
+        if activity is None:
+            activity = self._activity = []
+        activity.append({
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "account": account,
+            "event": event,
+            "message": message[:240],
+        })
+        if len(activity) > 200:
+            del activity[:-200]
+
+    async def get_activity(self, limit: int = 50) -> Dict[str, object]:
+        """Return recent local control/runtime activity without secrets or prompts."""
+        limit = max(1, min(limit, 200))
+        activity = getattr(self, "_activity", [])
+        return {"events": list(reversed(activity[-limit:]))}
 
     def _usage_snapshot(self, account: str) -> Dict[str, object]:
         models = getattr(self, "_usage_by_account", {}).get(account, {})
@@ -752,6 +779,7 @@ class chatgpt:
             session.disabled_until = None
             tasks[session.email] = asyncio.create_task(self._run_controlled_login(session))
         update_session_token(session, self.chat_file, self.logger)
+        self._record_activity(session.email, "account_control", f"action: {action}")
         self.logger.info(f"account {session.email} control action: {action}")
 
         status = await self.token_status()

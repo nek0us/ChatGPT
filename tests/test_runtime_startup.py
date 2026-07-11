@@ -157,6 +157,16 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage["models"]["gpt-5-mini"]["output_tokens"], 4)
         self.assertIsNone(usage["quota"])
 
+    async def test_activity_is_bounded_and_excludes_message_payloads(self):
+        runtime = self._runtime()
+        for index in range(205):
+            runtime._record_activity("activity@example.com", "control", f"event {index}")
+
+        activity = await runtime.get_activity(limit=300)
+
+        self.assertEqual(len(activity["events"]), 200)
+        self.assertEqual(activity["events"][0]["message"], "event 204")
+
     async def test_control_account_persists_manual_disable_and_cancels_verification(self):
         runtime = self._runtime()
         runtime.Sessions = [Session(email="control@example.com", status=Status.Ready.value, login_state=True)]
