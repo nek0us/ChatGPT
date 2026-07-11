@@ -835,9 +835,12 @@ def classify_login_failure(details: str, mode: str) -> str:
         return LoginFailureKind.BadCredentials.value
     if any(x in text for x in (
         "verify your email",
+        "verify it's you",
+        "verify it is you",
         "security code",
         "help us protect your account",
         "approve sign in request",
+        "check your phone",
         "need microsoft login help email",
         "change your password",
         "two-step verification",
@@ -851,12 +854,16 @@ def classify_login_failure(details: str, mode: str) -> str:
         "rate limit",
     )):
         return LoginFailureKind.RateLimited.value
-    if mode == "google" or any(x in text for x in (
+    if any(x in text for x in (
         "couldn't sign you in",
+        "could not sign you in",
         "this browser or app may not be secure",
+        "browser may not be secure",
         "suspicious",
+        "unusual activity",
         "risk",
         "captcha",
+        "recaptcha",
         "cloudflare",
         "turnstile",
     )):

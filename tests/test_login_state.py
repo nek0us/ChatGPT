@@ -33,7 +33,10 @@ class LoginFailureClassificationTests(unittest.TestCase):
             ("Too many attempts, try again later.", "microsoft", LoginFailureKind.RateLimited.value),
             ("net::ERR_CONNECTION_RESET", "microsoft", LoginFailureKind.Transient.value),
             ("Couldn't sign you in", "google", LoginFailureKind.RiskBlocked.value),
-            ("unrecognized provider page", "google", LoginFailureKind.RiskBlocked.value),
+            ("This browser or app may not be secure", "google", LoginFailureKind.RiskBlocked.value),
+            ("Verify it's you", "google", LoginFailureKind.NeedVerification.value),
+            ("Locator.wait_for: Timeout 30000ms exceeded", "google", LoginFailureKind.Transient.value),
+            ("url=https://accounts.google.com/v3/signin/identifier\nEmail or phone", "google", LoginFailureKind.Unknown.value),
         ]
         for details, mode, expected in cases:
             with self.subTest(details=details, mode=mode):
@@ -168,6 +171,18 @@ class AuthStateIntegrationTests(unittest.IsolatedAsyncioTestCase):
         auth.get_session_token.assert_not_awaited()
         self.assertEqual(session.status, Status.Update.value)
         self.assertTrue(session.is_login_disabled())
+
+    async def test_google_timeout_uses_transient_cooldown_not_risk_cooldown(self):
+        session = Session(email="google@example.com", password="not-a-real-password", mode="google")
+        logger = _Logger()
+        auth = AsyncMock()
+        auth.get_session_token.return_value = (None, None, "Locator.wait_for: Timeout 30000ms exceeded")
+
+        with patch("ChatGPTWeb.api.AsyncAuth0", return_value=auth):
+            await Auth(session, logger)
+
+        self.assertEqual(session.login_failure_kind, LoginFailureKind.Transient.value)
+        self.assertEqual((session.disabled_until - datetime.datetime.now()).total_seconds() // 60, 4)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,13 @@ class _Page:
         return self.history
 
 
+class _LoginDetailsPage:
+    url = "https://accounts.google.com/v3/signin/identifier?client_id=private-value&scope=openid"
+
+    async def evaluate(self, _script):
+        return "Email or phone"
+
+
 class _Logger:
     def debug(self, _message):
         pass
@@ -73,3 +80,14 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(Error):
             await auth.google_login()
+
+    async def test_login_error_details_strip_oauth_query_parameters(self):
+        page = _LoginDetailsPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="google")
+        auth.login_page = page
+
+        details = await auth.get_login_error_details()
+
+        self.assertIn("url=https://accounts.google.com/v3/signin/identifier", details)
+        self.assertNotIn("client_id", details)
+        self.assertIn("Email or phone", details)

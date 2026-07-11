@@ -650,7 +650,9 @@ class AsyncAuth0:
             )
         except Exception as e:
             text = f"failed to read login page text: {e}"
-        return f"url={self.login_page.url}\n{text[:3000]}"
+        parsed = urllib.parse.urlsplit(self.login_page.url)
+        safe_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        return f"url={safe_url}\n{text[:3000]}"
 
     async def get_session_token(self,logger):
         self.logger.debug(f"{self.email_address} will create self.login_page")
