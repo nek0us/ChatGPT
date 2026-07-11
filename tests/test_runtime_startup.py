@@ -175,7 +175,11 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime = self._runtime()
         page = type("Page", (), {
             "is_closed": lambda self: False,
-            "evaluate": AsyncMock(return_value={"status": 200, "payload": {"subscription": {"plan": "go"}}}),
+            "evaluate": AsyncMock(return_value={
+                "status": 200,
+                "payload": {"subscription": {"plan": "go"}},
+                "modelSlugs": ["gpt-5-5", "auto"],
+            }),
         })()
         session = Session(email="plan@example.com", access_token="token", device_id="device", page=page)
 
@@ -184,6 +188,8 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.account_plan, "go")
         self.assertEqual(session.account_plan_source, "fetch:/backend-api/pageConfigs/billing")
         self.assertIsNotNone(session.account_plan_observed_at)
+        self.assertEqual(session.observed_models, ["auto", "gpt-5-5"])
+        self.assertEqual(session.observed_models_source, "localStorage:models")
 
     async def test_control_account_can_refresh_capabilities_without_relogin(self):
         runtime = self._runtime()
@@ -218,6 +224,22 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             selected = await runtime._prepare_chat_session(MsgData(msg_send="hello", gpt_model="gpt-4"))
 
         self.assertIs(selected, observed_pro)
+
+    async def test_go_account_requires_an_observed_model_match(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        go = Session(
+            email="go@example.com", gptplus=False, account_plan="go",
+            observed_models=["gpt-4"], status=Status.Ready.value, login_state=True,
+        )
+        runtime.Sessions = [go]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            selected = await runtime._prepare_chat_session(MsgData(msg_send="hello", gpt_model="gpt-4"))
+
+        self.assertIs(selected, go)
 
     async def test_manual_disable_excludes_a_ready_session_from_new_requests(self):
         runtime = self._runtime()

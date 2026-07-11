@@ -102,3 +102,13 @@ def supports_paid_models(plan: Any, legacy_gptplus: bool) -> bool:
     if normalized in {"plus", "pro"}:
         return True
     return legacy_gptplus
+
+
+def supports_observed_model(models: Any, requested_model: str) -> bool | None:
+    """Return None when no model observation exists, otherwise exact membership."""
+    if not isinstance(models, list):
+        return None
+    observed = {str(model) for model in models if isinstance(model, str) and model}
+    if not observed:
+        return None
+    return requested_model in observed

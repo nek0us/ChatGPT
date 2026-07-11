@@ -38,7 +38,12 @@ from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
 from .verification import VerificationBroker
-from .capabilities import discover_account_plan, infer_plan_from_model_categories, supports_paid_models
+from .capabilities import (
+    discover_account_plan,
+    infer_plan_from_model_categories,
+    supports_observed_model,
+    supports_paid_models,
+)
 from .api import (
     async_send_msg,
     recive_handle,
@@ -1021,6 +1026,7 @@ class chatgpt:
                     });
                     const contentType = response.headers.get("content-type") || "";
                     const modelSubscriptionLevels = [];
+                    const modelSlugs = [];
                     for (const key of Object.keys(localStorage)) {
                         if (!key.endsWith("/models") && !key.includes("/models")) continue;
                         try {
@@ -1028,13 +1034,17 @@ class chatgpt:
                             const value = cached && cached.value && typeof cached.value === "object" ? cached.value : cached;
                             for (const category of Array.isArray(value && value.categories) ? value.categories : []) {
                                 if (category && category.subscriptionLevel) modelSubscriptionLevels.push(category.subscriptionLevel);
+                                if (category && category.defaultModel) modelSlugs.push(category.defaultModel);
+                            }
+                            for (const model of Array.isArray(value && value.models) ? value.models : []) {
+                                if (model && model.slug) modelSlugs.push(model.slug);
                             }
                         } catch (_) {}
                     }
                     if (!response.ok || !contentType.includes("json")) {
-                        return { status: response.status, payload: null, modelSubscriptionLevels };
+                        return { status: response.status, payload: null, modelSubscriptionLevels, modelSlugs };
                     }
-                    return { status: response.status, payload: await response.json(), modelSubscriptionLevels };
+                    return { status: response.status, payload: await response.json(), modelSubscriptionLevels, modelSlugs };
                 }
                 """,
                     {"accessToken": session.access_token, "deviceId": session.device_id},
@@ -1056,8 +1066,25 @@ class chatgpt:
             session.account_plan = plan.value
             session.account_plan_source = plan.source
             session.account_plan_observed_at = datetime.now()
+            observed_models = result.get("modelSlugs")
+            if isinstance(observed_models, list):
+                session.observed_models = sorted({
+                    model for model in observed_models
+                    if isinstance(model, str) and model
+                })
+                session.observed_models_source = "localStorage:models"
+                session.observed_models_observed_at = datetime.now()
         except Exception as error:
             self.logger.debug(f"{session.email} account plan refresh skipped: {error}")
+
+    @staticmethod
+    def _session_supports_model(session: Session, model: str, requires_paid: bool) -> bool:
+        observed = supports_observed_model(getattr(session, "observed_models", []), model)
+        if observed is not None:
+            return observed
+        if not requires_paid:
+            return True
+        return supports_paid_models(getattr(session, "account_plan", "unknown"), session.gptplus)
 
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, typing.Any]:
         """Return model catalogs discovered from authenticated browser sessions."""
@@ -1084,6 +1111,8 @@ class chatgpt:
                 "gptplus": session.gptplus,
                 "account_plan": getattr(session, "account_plan", "unknown"),
                 "account_plan_source": getattr(session, "account_plan_source", "unavailable"),
+                "observed_models": list(getattr(session, "observed_models", [])),
+                "observed_models_source": getattr(session, "observed_models_source", "unavailable"),
                 "remote": None,
                 "cached": [],
                 "errors": [],
@@ -2397,16 +2426,16 @@ class chatgpt:
 
         session: Session = Session(status=Status.Working.value)
         if not msg_data.conversation_id:
-            gpt4_list = [
+            session_list = [
                 s for s in self.Sessions
-                if s.type != "script" and supports_paid_models(
-                    getattr(s, "account_plan", "unknown"), s.gptplus,
+                if s.type != "script" and self._session_supports_model(
+                    s, msg_data.gpt_model, msg_data.gpt_plus,
                 )
             ]
-            if gpt4_list == [] and msg_data.gpt_plus:
+            if session_list == [] and msg_data.gpt_plus:
                 msg_data.add_error(
                     kind="no_plus_account",
-                    message="you use gptplus model,but gptplus account not found",
+                    message="no account is known to support the requested paid model",
                 )
                 self.logger.error(msg_data.error_info)
                 return None
@@ -2417,7 +2446,6 @@ class chatgpt:
             else:
                 self.logger.warning(f"unknown model: {msg_data.gpt_model} ,try to use it")
 
-            session_list = gpt4_list if msg_data.gpt_plus else self.Sessions
             wait_ready_seconds = 0
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
@@ -2884,6 +2912,12 @@ class chatgpt:
                 "account_plan_observed_at": (
                     getattr(session, "account_plan_observed_at", None).isoformat()
                     if getattr(session, "account_plan_observed_at", None) else ""
+                ),
+                "observed_model_count": len(getattr(session, "observed_models", [])),
+                "observed_models_source": getattr(session, "observed_models_source", "unavailable"),
+                "observed_models_observed_at": (
+                    getattr(session, "observed_models_observed_at", None).isoformat()
+                    if getattr(session, "observed_models_observed_at", None) else ""
                 ),
                 "persist_auth_state": session.persist_auth_state,
                 "auth_state_loaded": session.auth_state_loaded,

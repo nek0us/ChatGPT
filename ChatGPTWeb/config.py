@@ -14,7 +14,7 @@ import urllib.parse
 from enum import Enum
 from PIL import Image
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from aiohttp import ClientSession,ClientWebSocketResponse
 from typing import TypedDict, Optional, Literal, List, Dict, Any, Tuple
 from playwright_firefox._impl._api_structures import Cookie
@@ -125,6 +125,9 @@ class Session:
     account_plan: str = "unknown"
     account_plan_source: str = "unavailable"
     account_plan_observed_at: Optional[datetime.datetime] = None
+    observed_models: List[str] = field(default_factory=list)
+    observed_models_source: str = "unavailable"
+    observed_models_observed_at: Optional[datetime.datetime] = None
     session_token: Cookie|None = None
     status: str = ""
     login_state: bool = False

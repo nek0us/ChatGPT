@@ -1,6 +1,11 @@
 import unittest
 
-from ChatGPTWeb.capabilities import discover_account_plan, infer_plan_from_model_categories, supports_paid_models
+from ChatGPTWeb.capabilities import (
+    discover_account_plan,
+    infer_plan_from_model_categories,
+    supports_observed_model,
+    supports_paid_models,
+)
 
 
 class AccountPlanDiscoveryTests(unittest.TestCase):
@@ -42,6 +47,11 @@ class AccountPlanDiscoveryTests(unittest.TestCase):
         self.assertTrue(supports_paid_models("pro", False))
         self.assertFalse(supports_paid_models("go", False))
         self.assertTrue(supports_paid_models("unknown", True))
+
+    def test_observed_models_use_exact_membership_and_allow_fallback_when_empty(self):
+        self.assertTrue(supports_observed_model(["gpt-5-5", "auto"], "gpt-5-5"))
+        self.assertFalse(supports_observed_model(["gpt-5-5"], "gpt-4"))
+        self.assertIsNone(supports_observed_model([], "gpt-4"))
 
 
 if __name__ == "__main__":
