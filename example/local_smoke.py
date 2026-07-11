@@ -26,6 +26,10 @@ WEB_SEARCH = os.getenv("CHATGPTWEB_SMOKE_WEB_SEARCH", "false").lower() in ("1", 
 STREAM_IDLE_TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_IDLE_TIMEOUT", "0"))
 STREAM_STATUS_INTERVAL = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_STATUS_INTERVAL", "15"))
 SAVE_SCREEN = os.getenv("CHATGPTWEB_SMOKE_SAVE_SCREEN", "false").lower() in ("1", "true", "yes")
+CONTROL_HOST = os.getenv("CHATGPTWEB_CONTROL_HOST", "127.0.0.1")
+CONTROL_PORT_TEXT = os.getenv("CHATGPTWEB_CONTROL_PORT", "").strip()
+CONTROL_PORT = int(CONTROL_PORT_TEXT) if CONTROL_PORT_TEXT else None
+CONTROL_API_KEY = os.getenv("CHATGPTWEB_CONTROL_API_KEY") or None
 
 
 def load_sessions() -> list[dict]:
@@ -72,6 +76,9 @@ async def main():
         save_screen=SAVE_SCREEN,
         local_js=True,
         ready_timeout=TIMEOUT,
+        control_host=CONTROL_HOST,
+        control_port=CONTROL_PORT,
+        control_api_key=CONTROL_API_KEY,
     )
     data = MsgData(
         msg_send=get_prompts()[0],
@@ -187,6 +194,8 @@ async def main():
                 "session_email_filter": bool(SESSION_EMAIL),
                 "session_index_filter": SESSION_INDEX,
                 "save_screen": SAVE_SCREEN,
+                "control_host": CONTROL_HOST if CONTROL_PORT is not None else "",
+                "control_port": CONTROL_PORT,
                 "model_catalog": model_catalog,
                 "probe": probe,
                 "post_probe": post_probe,
