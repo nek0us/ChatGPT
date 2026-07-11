@@ -196,13 +196,20 @@ class ChatService:
     async def get_usage_status(self) -> Dict[str, Any]:
         """Expose the current honest state: quota is unknown until upstream reports it."""
         status = await self.get_account_status()
+        account_statuses = status.get("accounts")
+        if not isinstance(account_statuses, list):
+            account_statuses = [
+                {"email": email, "usage": None}
+                for email in status.get("account", [])
+            ]
         accounts = [
             {
-                "email": email,
-                "usage": None,
-                "state": "unknown",
-                "reason": "ChatGPT has not reported a live usage value for this account.",
+                "email": account.get("email", ""),
+                "usage": account.get("usage"),
+                "state": (account.get("usage") or {}).get("source", "unavailable"),
+                "quota": None,
+                "reason": "Observed token fields are process-local; ChatGPT has not reported live remaining quota.",
             }
-            for email in status.get("account", [])
+            for account in account_statuses
         ]
-        return {"source": "unavailable", "accounts": accounts}
+        return {"source": "observed_upstream", "accounts": accounts}

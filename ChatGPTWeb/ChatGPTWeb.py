@@ -148,6 +148,7 @@ class chatgpt:
         self._conversation_locks_guard = asyncio.Lock()
         self._conversation_map_lock = asyncio.Lock()
         self._control_login_tasks: Dict[str, asyncio.Task] = {}
+        self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self.verification_broker = VerificationBroker()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
@@ -689,6 +690,30 @@ class chatgpt:
             if tasks.get(session.email) is asyncio.current_task():
                 tasks.pop(session.email, None)
 
+    def _record_usage(self, session: Session, msg_data: MsgData) -> None:
+        """Keep in-process, upstream-reported usage separate from quota state."""
+        if not msg_data.status or not session.email:
+            return
+        model = msg_data.model_used or msg_data.model_requested or msg_data.gpt_model or "unknown"
+        by_account = getattr(self, "_usage_by_account", None)
+        if by_account is None:
+            by_account = self._usage_by_account = {}
+        by_model = by_account.setdefault(session.email, {})
+        usage = by_model.setdefault(model, {"requests": 0})
+        usage["requests"] += 1
+        for key, value in msg_data.usage.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = usage.get(key, 0) + value
+
+    def _usage_snapshot(self, account: str) -> Dict[str, object]:
+        models = getattr(self, "_usage_by_account", {}).get(account, {})
+        return {
+            "source": "observed_upstream" if models else "unavailable",
+            "requests": sum(int(item.get("requests", 0)) for item in models.values()),
+            "models": {model: values.copy() for model, values in models.items()},
+            "quota": None,
+        }
+
     async def control_account(self, account: str, action: str) -> Dict[str, object]:
         """Apply an explicit local operator action to one account."""
         if action not in {"disable", "enable", "retry_login"}:
@@ -964,6 +989,7 @@ class chatgpt:
                 continue
             info: Dict[str, typing.Any] = {
                 "email": session.email,
+                "mode": session.mode,
                 "status": session.status,
                 "login_state": session.login_state,
                 "gptplus": session.gptplus,
@@ -2416,6 +2442,7 @@ class chatgpt:
         try:
             msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
             session.status = Status.Ready.value
+            self._record_usage(session, msg_data)
         except TimeoutError:
             msg_data.add_error(
                 kind="continue_chat_timeout",
@@ -2462,6 +2489,7 @@ class chatgpt:
                 if session.login_state is False:
                     session.login_state = True
                 await self.save_chat(msg_data, context_num)
+                self._record_usage(session, msg_data)
                 self.logger.info(f"receive stream message: {msg_data.msg_recv}")
         except Exception as e:
             if not msg_data.error_info:
@@ -2750,7 +2778,12 @@ class chatgpt:
                 "can_retry_login": bool(session.email and session.password),
                 "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
                 "gptplus": session.gptplus,
+                "persist_auth_state": session.persist_auth_state,
+                "auth_state_loaded": session.auth_state_loaded,
                 "conversation_count": len(cid_all.get(session.email, [])),
+                "usage": self._usage_snapshot(session.email),
+                "login_fail_count": session.login_fail_count,
+                "max_login_failures": session.max_login_failures,
                 "login_failure_kind": session.login_failure_kind,
                 "last_login_error": session.last_login_error,
                 "verification": verification_by_account.get(session.email),

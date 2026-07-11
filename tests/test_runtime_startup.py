@@ -138,6 +138,25 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)
 
+    async def test_token_status_exposes_process_local_usage_by_model(self):
+        runtime = self._runtime()
+        runtime.Sessions = [Session(email="usage@example.com")]
+        runtime._usage_by_account = {
+            "usage@example.com": {
+                "gpt-5-mini": {"requests": 2, "input_tokens": 10, "output_tokens": 4},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            status = await runtime.token_status()
+
+        usage = status["accounts"][0]["usage"]
+        self.assertEqual(usage["source"], "observed_upstream")
+        self.assertEqual(usage["requests"], 2)
+        self.assertEqual(usage["models"]["gpt-5-mini"]["output_tokens"], 4)
+        self.assertIsNone(usage["quota"])
+
     async def test_control_account_persists_manual_disable_and_cancels_verification(self):
         runtime = self._runtime()
         runtime.Sessions = [Session(email="control@example.com", status=Status.Ready.value, login_state=True)]
