@@ -156,6 +156,7 @@ Expected streaming shape:
 - Login failures retain both the triggering exception and a sanitized page summary, so a navigation timeout is not accidentally reclassified as unknown after diagnostics are collected.
 - A live July 2026 Google diagnosis found the normal ChatGPT provider button covered by Google's official One Tap iframe. Login now prefers the iframe's own continuation button before falling back to the provider list; this is a UI compatibility fix, not an attempt to bypass Google account protection.
 - Google One Tap can use a popup OAuth mode. The login flow now adopts a context-created popup as the active login page when present, while retaining same-page fallback for other One Tap variants.
+- A live July 2026 popup test reached Google's current `v3/signin/identifier` page, whose identifier field is not reliably `type=email`. The OAuth flow now locates it by Google semantic identifiers (`#identifierId`, `name=identifier`, or username autocomplete) before retaining the legacy email selector as a fallback.
 - UI authentication routing now accepts both `chatgpt.com/auth/**` and legacy `auth.openai.com`/`chat.openai.com` surfaces, then verifies the final result through the authenticated session endpoint rather than an exact homepage URL.
 
 ## Phase 2: Error And Retry Model

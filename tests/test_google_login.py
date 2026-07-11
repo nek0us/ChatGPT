@@ -23,6 +23,10 @@ class _Locator:
     async def click(self, **_kwargs):
         self.clicked = True
 
+    @property
+    def first(self):
+        return self
+
 
 class _Keyboard:
     def __init__(self):
@@ -40,7 +44,7 @@ class _Page:
         self.keyboard = _Keyboard()
 
     def locator(self, selector):
-        if selector == "input[type='email']":
+        if "identifierId" in selector or selector == "input[type='email']":
             return self.email
         if selector == "input[type='password']":
             return self.password

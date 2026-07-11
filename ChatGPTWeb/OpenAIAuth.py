@@ -409,7 +409,13 @@ class AsyncAuth0:
         """Complete the current OpenAI OAuth redirect without opening a second Google page."""
         page = page or getattr(self, "login_page", self.page)
         google_login_history = page.locator('//html/body/div[1]/div[1]/div[2]/div/div/div[2]/div/div/div[1]/form/span/section/div/div/div/div/ul/li[1]/div')
-        google_email_input = page.locator("input[type='email']")
+        # Google's current identifier page uses #identifierId with type="text".
+        # Keep the older type=email selector for the provider variants still seen in
+        # existing browser profiles.
+        google_email_input = page.locator(
+            "input#identifierId, input[name='identifier'], "
+            "input[autocomplete='username'], input[type='email']"
+        ).first
         if await google_email_input.count() > 0:
             self.logger.debug(f"{self.email_address} google login,will set email")
             await google_email_input.wait_for(state="visible", timeout=30000)
