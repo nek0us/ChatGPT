@@ -171,6 +171,7 @@ Expected streaming shape:
 - Native OpenAI login can require a one-time email code even after password entry. The legacy implementation created an account-named local code file and polled it indefinitely, allowing a browser context to be killed by the outer timeout. This has been removed: the OTP screen now fails fast as structured `need_verification`, stops automatic login attempts, and leaves interactive completion or a future explicit verification callback as the supported path.
 - The control-plane foundation now includes an in-memory `VerificationBroker`: one expiring challenge per account, no OTP persistence or status-field leakage, explicit submit/cancel operations, and safe snapshots for a future local dashboard, API, CLI, MCP tool, or mailbox provider. Browser/auth integration and the dashboard are separate follow-up steps.
 - Native OpenAI OTP login is now wired to `VerificationBroker`: the existing Playwright page remains open while it waits for an operator-submitted in-memory code, then fills the live OTP field and continues. Expiry or cancellation returns a classified verification failure; `token_status()` exposes only challenge metadata, never submitted codes.
+- The optional aiohttp control surface now exposes authenticated `GET /v1/verification`, `POST /v1/verification/{challenge_id}` with a `code`, and `DELETE /v1/verification/{challenge_id}` routes when a runtime `VerificationBroker` is supplied to `create_http_app()`. These routes are the narrow control API the upcoming local dashboard will use.
 
 ## Phase 2: Error And Retry Model
 

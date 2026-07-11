@@ -10,6 +10,7 @@ from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
 from ChatGPTWeb.http_api import chat_request_from_payload, create_http_app
 from ChatGPTWeb.service import ChatRequest, ChatService
+from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
 class ChatStreamParserTests(unittest.TestCase):
@@ -296,7 +297,12 @@ class HttpApiRequestTests(unittest.TestCase):
 class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend = _FakeBackend()
-        self.client = TestClient(TestServer(create_http_app(ChatService(self.backend), api_key="test-key")))
+        self.verification_broker = VerificationBroker()
+        self.client = TestClient(TestServer(create_http_app(
+            ChatService(self.backend),
+            api_key="test-key",
+            verification_broker=self.verification_broker,
+        )))
         await self.client.start_server()
 
     async def asyncTearDown(self):
@@ -342,6 +348,46 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(health.status, 200)
+
+    async def test_verification_routes_submit_and_cancel_pending_challenges(self):
+        task = asyncio.create_task(
+            self.verification_broker.request_code("account@example.com", "openai", timeout_seconds=1)
+        )
+        for _ in range(10):
+            challenges = await self.verification_broker.snapshot()
+            if challenges:
+                break
+            await asyncio.sleep(0)
+        else:
+            self.fail("verification challenge was not registered")
+        challenge_id = challenges[0]["id"]
+        headers = {"Authorization": "Bearer test-key"}
+
+        unauthorized = await self.client.get("/v1/verification")
+        listed = await self.client.get("/v1/verification", headers=headers)
+        invalid = await self.client.post(f"/v1/verification/{challenge_id}", json={"code": "bad"}, headers=headers)
+        submitted = await self.client.post(f"/v1/verification/{challenge_id}", json={"code": "123456"}, headers=headers)
+
+        self.assertEqual(unauthorized.status, 401)
+        self.assertEqual(listed.status, 200)
+        self.assertEqual((await listed.json())["challenges"][0]["id"], challenge_id)
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(submitted.status, 200)
+        self.assertEqual(await task, "123456")
+
+        cancel_task = asyncio.create_task(
+            self.verification_broker.request_code("cancel@example.com", "openai", timeout_seconds=1)
+        )
+        for _ in range(10):
+            challenges = await self.verification_broker.snapshot()
+            if challenges:
+                break
+            await asyncio.sleep(0)
+        cancelled = await self.client.delete(f"/v1/verification/{challenges[0]['id']}", headers=headers)
+
+        self.assertEqual(cancelled.status, 200)
+        with self.assertRaises(VerificationCancelledError):
+            await cancel_task
 
 
 if __name__ == "__main__":

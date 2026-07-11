@@ -14,6 +14,7 @@ from aiohttp import web
 from .api import ChatStreamEvent
 from .config import IOFile
 from .service import ChatRequest, ChatResult, ChatService
+from .verification import VerificationBroker
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
 
@@ -168,6 +169,7 @@ def create_http_app(
     service: ChatService,
     api_key: str | None = None,
     max_attachment_bytes: int = 20 * 1024 * 1024,
+    verification_broker: VerificationBroker | None = None,
 ) -> web.Application:
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
@@ -194,6 +196,36 @@ def create_http_app(
 
     async def usage_status(_: web.Request) -> web.Response:
         return web.json_response(await service.get_usage_status())
+
+    def require_verification_broker() -> VerificationBroker:
+        if not verification_broker:
+            raise web.HTTPNotImplemented(text="verification control is not enabled")
+        return verification_broker
+
+    async def verification_status(_: web.Request) -> web.Response:
+        return web.json_response({"challenges": await require_verification_broker().snapshot()})
+
+    async def submit_verification(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        code = payload.get("code") if isinstance(payload, dict) else None
+        if not isinstance(code, str):
+            raise web.HTTPBadRequest(text="request requires a verification code")
+        try:
+            accepted = await require_verification_broker().submit(request.match_info["challenge_id"], code)
+        except ValueError as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        if not accepted:
+            raise web.HTTPNotFound(text="verification challenge is no longer pending")
+        return web.json_response({"accepted": True})
+
+    async def cancel_verification(request: web.Request) -> web.Response:
+        cancelled = await require_verification_broker().cancel(request.match_info["challenge_id"])
+        if not cancelled:
+            raise web.HTTPNotFound(text="verification challenge is no longer pending")
+        return web.json_response({"cancelled": True})
 
     async def chat_completions(request: web.Request) -> web.StreamResponse:
         try:
@@ -262,5 +294,8 @@ def create_http_app(
     app.router.add_get("/v1/models", models)
     app.router.add_get("/v1/account/status", account_status)
     app.router.add_get("/v1/usage", usage_status)
+    app.router.add_get("/v1/verification", verification_status)
+    app.router.add_post("/v1/verification/{challenge_id}", submit_verification)
+    app.router.add_delete("/v1/verification/{challenge_id}", cancel_verification)
     app.router.add_post("/v1/chat/completions", chat_completions)
     return app
