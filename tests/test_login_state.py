@@ -35,6 +35,8 @@ class LoginFailureClassificationTests(unittest.TestCase):
             ("Couldn't sign you in", "google", LoginFailureKind.RiskBlocked.value),
             ("This browser or app may not be secure", "google", LoginFailureKind.RiskBlocked.value),
             ("Verify it's you", "google", LoginFailureKind.NeedVerification.value),
+            ("OpenAI login requires an email verification code", "openai", LoginFailureKind.NeedVerification.value),
+            ("Check your inbox to continue", "openai", LoginFailureKind.NeedVerification.value),
             ("Locator.wait_for: Timeout 30000ms exceeded", "google", LoginFailureKind.Transient.value),
             ("url=https://accounts.google.com/v3/signin/identifier\nEmail or phone", "google", LoginFailureKind.Unknown.value),
         ]

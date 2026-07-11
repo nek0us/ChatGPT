@@ -369,8 +369,19 @@ class AsyncAuth0:
                     await self.login_page.wait_for_load_state('load')
                     await asyncio.sleep(1)
                 else:
-                    self.logger.warning(f"{self.email_address} openai login,need verify code, but not find continue with password button,will skip")
-                    break
+                    raise Error(
+                        "OpenAI login error",
+                        1,
+                        "OpenAI login requires an email verification code",
+                    )
+
+            verification_input = self.login_page.locator("input[autocomplete='one-time-code']")
+            if await verification_input.count() > 0:
+                raise Error(
+                    "OpenAI login error",
+                    1,
+                    "OpenAI login requires an email verification code",
+                )
             
             await asyncio.sleep(1)
             openai_password_input = self.login_page.locator("input[type='password']")
@@ -387,41 +398,7 @@ class AsyncAuth0:
             await asyncio.sleep(1)
             num -= 1
             if num <= 0:
-                self.logger.error(f"{self.email_address} openai login failed after 3 attempts,must input mail code")
-                await self.mail_code_verify(mark='button[data-dd-action-name="Continue"]',input='input[autocomplete="one-time-code"]',text="openai_login")
-                break
-
-    async def mail_code_verify(self, mark: str, input: str, text: str):
-        try:
-            verification_code_locator = self.login_page.locator(mark)
-            # await self.login_page.wait_for_load_state('networkidle')
-            if await verification_code_locator.count() > 0:
-                self.logger.debug(f"{self.email_address} Check your inbox, text: {text},please input your code to {self.email_address}_{text}_code.txt by your email")
-                with open(f"{self.email_address}_{text}_code.txt","w") as code_file:
-                    code_file.write("")
-                with open(f"{self.email_address}_{text}_code.txt","r") as code_file:
-                    while 1:
-                        await asyncio.sleep(1)
-                        code = code_file.read()
-                        if code != "":
-                            self.logger.info(f"get {self.email_address} verify code {text} {code}")
-                            openai_verify_code = self.login_page.locator(input)
-                            if await openai_verify_code.count() > 0:
-                                pass
-                            await openai_verify_code.fill(code)
-                            # await self.login_page.fill('//html/body/div/form/input', code)
-                            # await self.login_page.click('//html/body/div/form/button')
-                            # await verification_code_locator.click()
-                            await asyncio.sleep(1)
-                            await self.login_page.keyboard.press(self.EnterKey)
-                            await asyncio.sleep(1)
-                            await self.login_page.wait_for_load_state('load')
-                            # await self.login_page.wait_for_timeout(1000)
-                            break
-                os.unlink(f"{self.email_address}_{text}_code.txt")
-        except Exception as e:
-            self.logger.info(f"{self.email_address} verify code {text} exception: {e}")
-            raise e
+                return
     
     async def google_login(self, page: Page | None = None):
         """Complete the current OpenAI OAuth redirect without opening a second Google page."""
@@ -660,8 +637,6 @@ class AsyncAuth0:
                     await self.openai_code_password_login()
                     await self.login_page.wait_for_load_state('networkidle')
                     await asyncio.sleep(5)
-
-                    await self.mail_code_verify(mark='button[data-dd-action-name="Continue"]',input='input[autocomplete="one-time-code"]',text="openai_login")
 
                 # Return to either supported ChatGPT application host before checking session state.
                 try:

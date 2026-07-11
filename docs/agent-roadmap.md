@@ -168,6 +168,7 @@ Expected streaming shape:
 - A subsequent live test submitted the identifier successfully but Google returned its explicit “This browser or app may not be secure” refusal before the password step. This is a provider-side risk block for the current automated Firefox environment, not an OpenAI route or password-locator defect.
 - UI authentication routing now accepts both `chatgpt.com/auth/**` and legacy `auth.openai.com`/`chat.openai.com` surfaces, then verifies the final result through the authenticated session endpoint rather than an exact homepage URL.
 - A live July 2026 native OpenAI login diagnosis found the signed-out ChatGPT homepage rendering a semantic `Log in` button while the legacy flow only tried brittle XPath and Enter-key fallbacks. Authentication now prefers the homepage's test-id/role/text login entry and waits for an auth surface before using the legacy controls.
+- Native OpenAI login can require a one-time email code even after password entry. The legacy implementation created an account-named local code file and polled it indefinitely, allowing a browser context to be killed by the outer timeout. This has been removed: the OTP screen now fails fast as structured `need_verification`, stops automatic login attempts, and leaves interactive completion or a future explicit verification callback as the supported path.
 
 ## Phase 2: Error And Retry Model
 

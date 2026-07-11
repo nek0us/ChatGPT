@@ -837,6 +837,8 @@ def classify_login_failure(details: str, mode: str) -> str:
         "verify your email",
         "verify it's you",
         "verify it is you",
+        "email verification code",
+        "check your inbox",
         "security code",
         "help us protect your account",
         "approve sign in request",
