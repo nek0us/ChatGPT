@@ -188,7 +188,20 @@ class AsyncAuth0:
         if await button.count() == 0:
             return False
         self.logger.debug(f"{self.email_address} Google One Tap is visible, continuing in its iframe")
-        await button.click(timeout=10000)
+        context = self.browser_contexts
+        if not context or not hasattr(context, "expect_page"):
+            await button.click(timeout=10000)
+            return True
+        try:
+            async with context.expect_page(timeout=10000) as popup_info:
+                await button.click(timeout=10000)
+            popup = await popup_info.value
+            await popup.wait_for_load_state("domcontentloaded")
+            self.login_page = popup
+            self.logger.debug(f"{self.email_address} Google One Tap opened an OAuth popup")
+        except Exception as error:
+            # Some One Tap versions complete in the current page instead of opening a popup.
+            self.logger.debug(f"{self.email_address} Google One Tap did not open a popup: {error}")
         return True
         
     async def mc_help_email_verify(self):

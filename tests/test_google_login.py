@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from ChatGPTWeb.OpenAIAuth import AsyncAuth0, Error
 
@@ -79,6 +80,40 @@ class _OneTapPage:
         return _OneTapFrame(self.button)
 
 
+class _PopupInfo:
+    def __init__(self, popup):
+        self.value = self._resolve(popup)
+
+    async def _resolve(self, popup):
+        return popup
+
+
+class _PopupWaiter:
+    def __init__(self, popup):
+        self.popup = popup
+
+    async def __aenter__(self):
+        return _PopupInfo(self.popup)
+
+    async def __aexit__(self, _type, _value, _traceback):
+        return False
+
+
+class _PopupContext:
+    def __init__(self, popup):
+        self.popup = popup
+        self.timeouts = []
+
+    def expect_page(self, timeout):
+        self.timeouts.append(timeout)
+        return _PopupWaiter(self.popup)
+
+
+class _PopupPage:
+    def __init__(self):
+        self.wait_for_load_state = AsyncMock()
+
+
 class _Logger:
     def debug(self, _message):
         pass
@@ -146,6 +181,19 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         auth.login_page = page
 
         self.assertFalse(await auth._click_google_one_tap())
+
+    async def test_google_one_tap_switches_to_oauth_popup(self):
+        page = _OneTapPage()
+        popup = _PopupPage()
+        context = _PopupContext(popup)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=context, mode="google")
+        auth.login_page = page
+
+        self.assertTrue(await auth._click_google_one_tap())
+
+        self.assertIs(auth.login_page, popup)
+        popup.wait_for_load_state.assert_awaited_once_with("domcontentloaded")
+        self.assertEqual(context.timeouts, [10000])
 
     async def test_login_error_details_keep_exception_and_sanitized_page_context(self):
         page = _LoginDetailsPage()
