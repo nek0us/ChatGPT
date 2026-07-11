@@ -410,6 +410,8 @@ Same microsoft.A file will be generated in the startup directory. Please put the
 ### 谷歌登录 | google login 
 Google may block browser automation during sign-in. Do not export or paste Google cookies into this project. If direct Google OAuth cannot complete, log in to ChatGPT manually in a trusted browser and configure the resulting ChatGPT session token for reuse.
 
+For a Google account that needs to survive ChatGPT session-token refreshes, set `"persist_auth_state": true` in its local session configuration. ChatGPTWeb then saves and restores the browser's authenticated storage state under the ignored local data directory. Treat that directory as account-sensitive; it is not for commits or sharing.
+
 Google 可能拦截浏览器自动化登录。请不要把 Google Cookie 导出或粘贴到本项目中。若直接 Google OAuth 无法完成，请在可信浏览器中手动登录 ChatGPT，再配置生成的 ChatGPT session token 复用。
 
 ### cloudflare checkbox 验证挑战

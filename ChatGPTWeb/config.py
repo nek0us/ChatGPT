@@ -148,6 +148,8 @@ class Session:
     runtime_last_closed_at: Optional[datetime.datetime] = None
     runtime_last_recovered_at: Optional[datetime.datetime] = None
     runtime_recovery_count: int = 0
+    persist_auth_state: bool = False
+    auth_state_loaded: bool = False
     input_session_token = session_token
     
     def __post_init__(self):

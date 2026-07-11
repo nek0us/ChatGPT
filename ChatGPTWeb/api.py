@@ -945,6 +945,7 @@ def update_session_token(session: Session,chat_file: Path,logger):
         tmp.runtime_last_closed_at = session.runtime_last_closed_at
         tmp.runtime_last_recovered_at = session.runtime_last_recovered_at
         tmp.runtime_recovery_count = session.runtime_recovery_count
+        tmp.persist_auth_state = session.persist_auth_state
         tmp.session_token = session.session_token
         tmp.browser_contexts = None
         tmp.page = None

@@ -4,6 +4,7 @@ import sys
 import json
 import typing
 import base64
+import hashlib
 import random
 import asyncio
 import threading
@@ -286,11 +287,41 @@ class chatgpt:
                     await asyncio.sleep(2)
         raise last_error if last_error else RuntimeError("startup browser launch failed")
 
-    async def _new_context_with_timeout(self, label: str):
+    async def _new_context_with_timeout(self, label: str, storage_state: str | None = None):
         return await self._startup_wait_for(
             f"{label}_context_create",
-            self.browser.new_context(),
+            self.browser.new_context(storage_state=storage_state),
         )
+
+    def _auth_state_path(self, session: Session) -> Path | None:
+        if not session.persist_auth_state or not session.email:
+            return None
+        digest = hashlib.sha256(session.email.lower().encode("utf8")).hexdigest()
+        return self.chat_file / "auth_states" / f"{digest}.json"
+
+    async def _new_session_context(self, session: Session, label: str):
+        state_path = self._auth_state_path(session)
+        session.auth_state_loaded = False
+        if state_path and state_path.is_file():
+            try:
+                context = await self._new_context_with_timeout(label, storage_state=str(state_path))
+                session.auth_state_loaded = True
+                self.logger.debug(f"{session.email} restored local auth state")
+                return context
+            except Exception as error:
+                self.logger.warning(f"{session.email} could not restore local auth state: {error}")
+        return await self._new_context_with_timeout(label)
+
+    async def _save_auth_state(self, session: Session):
+        state_path = self._auth_state_path(session)
+        context = session.browser_contexts
+        if not state_path or not context:
+            return
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            await context.storage_state(path=str(state_path))
+        except Exception as error:
+            self.logger.warning(f"{session.email} could not save local auth state: {error}")
 
     async def _new_page_with_timeout(self, context, label: str):
         return await self._startup_wait_for(
@@ -350,13 +381,13 @@ class chatgpt:
         context = session.browser_contexts
         if not context:
             self.logger.warning(f"{session.email} runtime context missing, recreate it")
-            session.browser_contexts = await self._new_context_with_timeout(f"runtime_{session.email}")
+            session.browser_contexts = await self._new_session_context(session, f"runtime_{session.email}")
             recovered = True
             await Stealth().apply_stealth_async(session.browser_contexts)
             self._watch_context_events(session)
-            if session.login_cookies:
+            if session.login_cookies and not session.auth_state_loaded:
                 await session.browser_contexts.add_cookies(session.login_cookies)
-            elif session.session_token:
+            elif session.session_token and not session.auth_state_loaded:
                 await session.browser_contexts.add_cookies([session.session_token]) # type: ignore
         else:
             self._watch_context_events(session)
@@ -478,11 +509,15 @@ class chatgpt:
             if self.begin_sleep_time:
                 await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
             if not session.browser_contexts:
-                session.browser_contexts = await self._new_context_with_timeout(f"startup_{session.email}")
+                session.browser_contexts = await self._new_session_context(session, f"startup_{session.email}")
                 await Stealth().apply_stealth_async(session.browser_contexts)
                 self._watch_context_events(session)
             self.logger.debug(f"{session.email} begin login when it start")
-            if session.session_token and session.browser_contexts:
+            if session.auth_state_loaded and session.browser_contexts:
+                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
+                self._watch_page_events(session, session.page)
+                session.status = Status.Login.value
+            elif session.session_token and session.browser_contexts:
                 token = session.session_token
                 await session.browser_contexts.add_cookies([token]) # type: ignore
                 session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
@@ -498,7 +533,7 @@ class chatgpt:
                     details="No session_token or email/password was provided",
                     stop=True,
                 )
-            if session.login_cookies and session.browser_contexts:
+            if session.login_cookies and session.browser_contexts and not session.auth_state_loaded:
                 await session.browser_contexts.add_cookies(session.login_cookies)
         except asyncio.CancelledError:
             session.mark_login_failure(
@@ -625,6 +660,7 @@ class chatgpt:
                     session.login_state = True
                     session.status = Status.Ready.value
                     self.logger.debug(f"context {session.email} start!")
+                    await self._save_auth_state(session)
                 else:
                     self.logger.debug(f"context {session.email} need relogin!")
             else:

@@ -15,6 +15,9 @@ class _Logger:
     def warning(self, message):
         self.warnings.append(message)
 
+    def debug(self, _message):
+        pass
+
 
 class _Page:
     def __init__(self):
@@ -89,3 +92,33 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["conversation_count"], 1)
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)
+
+    async def test_auth_state_uses_a_hashed_per_account_path_and_restores_it(self):
+        runtime = self._runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.chat_file = Path(directory)
+            session = Session(email="state@example.com", persist_auth_state=True)
+            state_path = runtime._auth_state_path(session)
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("{}", "utf8")
+            context = object()
+            runtime._new_context_with_timeout = AsyncMock(return_value=context)
+
+            restored = await runtime._new_session_context(session, "startup_state")
+
+        self.assertIs(restored, context)
+        self.assertTrue(session.auth_state_loaded)
+        self.assertNotIn("state@example.com", state_path.name)
+        runtime._new_context_with_timeout.assert_awaited_once_with("startup_state", storage_state=str(state_path))
+
+    async def test_auth_state_is_written_only_when_enabled(self):
+        runtime = self._runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.chat_file = Path(directory)
+            context = type("Context", (), {"storage_state": AsyncMock()})()
+            session = Session(email="state@example.com", persist_auth_state=True, browser_contexts=context)
+
+            await runtime._save_auth_state(session)
+
+            state_path = runtime._auth_state_path(session)
+        context.storage_state.assert_awaited_once_with(path=str(state_path))
