@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 from ChatGPTWeb.OpenAIAuth import AsyncAuth0, Error
 
@@ -169,6 +169,20 @@ class _PopupPage:
         self.wait_for_load_state = AsyncMock()
 
 
+class _SessionTokenPage:
+    url = "https://chatgpt.com/auth/login"
+
+    def __init__(self):
+        self.close = AsyncMock()
+        self.evaluate = AsyncMock(return_value="")
+
+
+class _SessionTokenContext:
+    def __init__(self, page):
+        self.new_page = AsyncMock(return_value=page)
+        self.cookies = AsyncMock(return_value=[])
+
+
 class _Logger:
     def debug(self, _message):
         pass
@@ -208,6 +222,19 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await auth._click_chatgpt_login_entry())
         self.assertTrue(page.test_id.force_attempted)
+
+    async def test_session_token_attempts_browser_login_once_without_token(self):
+        page = _SessionTokenPage()
+        context = _SessionTokenContext(page)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=context)
+        auth.normal_begin = AsyncMock(return_value=None)
+
+        cookie, token, _details = await auth.get_session_token(_Logger())
+
+        self.assertIsNone(cookie)
+        self.assertIsNone(token)
+        auth.normal_begin.assert_awaited_once_with(ANY, retry=0)
+        page.close.assert_awaited_once()
 
     async def test_login_route_detection_accepts_current_and_legacy_hosts(self):
         self.assertTrue(AsyncAuth0.is_login_surface_url("https://chatgpt.com/auth/login"))

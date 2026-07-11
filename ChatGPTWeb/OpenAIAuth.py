@@ -751,14 +751,13 @@ class AsyncAuth0:
             await Stealth().apply_stealth_async(self.login_page)
         access_token = None
         try:
-            try_num = 3
-            while try_num > 0:
-                self.logger.debug(f"{self.email_address} will run normal_begin,try_num: {try_num}")
-                access_token = await asyncio.wait_for(self.normal_begin(logger),timeout=180)
-                if access_token:
-                    self.logger.debug(f"{self.email_address} get access_token by normal_begin,try_num: {try_num}")
-                    break
-                try_num -= 1
+            # A credential flow may be waiting for a human verification code.
+            # Do not restart it behind the operator's back when no session is
+            # available yet; callers can explicitly request another login.
+            self.logger.debug(f"{self.email_address} will run one normal_begin attempt")
+            access_token = await asyncio.wait_for(self.normal_begin(logger, retry=0), timeout=180)
+            if access_token:
+                self.logger.debug(f"{self.email_address} get access_token by normal_begin")
         except Exception as e:
             self.last_error_details = str(e)
             self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
