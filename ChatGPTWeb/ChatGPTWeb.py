@@ -307,10 +307,24 @@ class chatgpt:
         raise last_error if last_error else RuntimeError("startup browser launch failed")
 
     async def _new_context_with_timeout(self, label: str, storage_state: str | None = None):
-        return await self._startup_wait_for(
-            f"{label}_context_create",
-            self.browser.new_context(storage_state=storage_state),
-        )
+        """Create a context with a longer recovery window for headful Firefox."""
+        timeout = self.startup_timeout
+        if not getattr(self, "headless", True):
+            timeout = max(timeout, 120)
+        context_task = asyncio.create_task(self.browser.new_context(storage_state=storage_state))
+        try:
+            return await asyncio.wait_for(asyncio.shield(context_task), timeout=min(15, timeout))
+        except TimeoutError:
+            if not context_task.done():
+                self.logger.warning(
+                    f"{label}_context_create is still pending; "
+                    "if Firefox is blank, bring its window to the foreground"
+                )
+            try:
+                return await asyncio.wait_for(context_task, timeout=timeout - min(15, timeout))
+            except TimeoutError as error:
+                self.logger.warning(f"{label}_context_create timeout after {timeout}s")
+                raise TimeoutError(f"{label}_context_create timeout after {timeout}s") from error
 
     def _auth_state_path(self, session: Session) -> Path | None:
         if not session.persist_auth_state or not session.email:

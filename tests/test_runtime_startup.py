@@ -66,6 +66,17 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.control_url, "")
         self.assertEqual(runtime.manage["control_url"], "")
 
+    async def test_context_creation_passes_storage_state_to_browser(self):
+        runtime = self._runtime()
+        runtime.headless = True
+        context = object()
+        runtime.browser = type("Browser", (), {"new_context": AsyncMock(return_value=context)})()
+
+        created = await runtime._new_context_with_timeout("startup_state", storage_state="state.json")
+
+        self.assertIs(created, context)
+        runtime.browser.new_context.assert_awaited_once_with(storage_state="state.json")
+
     async def test_bridge_initialization_retries_once_before_succeeding(self):
         runtime = self._runtime()
         session = Session(email="bridge@example.com")
