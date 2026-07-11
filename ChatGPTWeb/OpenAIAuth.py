@@ -383,8 +383,6 @@ class AsyncAuth0:
     async def _wait_for_openai_login_state(self, timeout: int = 30000) -> str:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         while asyncio.get_running_loop().time() < deadline:
-            if self.is_chat_app_url(self.login_page.url):
-                return "authenticated"
             otp = self.login_page.locator("input[autocomplete='one-time-code']")
             if await otp.count() > 0:
                 return "otp"
@@ -393,6 +391,8 @@ class AsyncAuth0:
                 return "password"
             if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
                 return "password_choice"
+            if await self.login_page.locator("button[data-testid='login-button']").count() > 0:
+                return "guest"
             await asyncio.sleep(0.25)
         return "unknown"
 
