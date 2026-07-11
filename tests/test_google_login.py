@@ -67,6 +67,27 @@ class _ChatLoginPage:
         return self.text
 
 
+class _ForceClickLocator(_Locator):
+    def __init__(self):
+        super().__init__(1)
+        self.force_attempted = False
+
+    async def click(self, **kwargs):
+        if kwargs.get("force"):
+            self.force_attempted = True
+            self.clicked = True
+            return
+        raise RuntimeError("element never became stable")
+
+
+class _ForceClickLoginPage(_ChatLoginPage):
+    def __init__(self):
+        super().__init__()
+        self.test_id = _ForceClickLocator()
+        self.role = _Locator(0)
+        self.text = _Locator(0)
+
+
 class _LoginDetailsPage:
     url = "https://accounts.google.com/v3/signin/identifier?client_id=private-value&scope=openid"
 
@@ -179,6 +200,14 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await auth._click_chatgpt_login_entry())
         self.assertTrue(page.role.clicked)
         self.assertFalse(page.text.clicked)
+
+    async def test_chatgpt_homepage_login_entry_force_clicks_after_stability_timeout(self):
+        page = _ForceClickLoginPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertTrue(await auth._click_chatgpt_login_entry())
+        self.assertTrue(page.test_id.force_attempted)
 
     async def test_login_route_detection_accepts_current_and_legacy_hosts(self):
         self.assertTrue(AsyncAuth0.is_login_surface_url("https://chatgpt.com/auth/login"))

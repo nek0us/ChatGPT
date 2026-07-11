@@ -192,11 +192,17 @@ class AsyncAuth0:
             if await button.count() == 0:
                 continue
             try:
-                await button.first.click(timeout=10000)
+                await button.first.click(timeout=3000)
                 self.logger.debug(f"{self.email_address} entered auth flow from ChatGPT homepage")
                 return True
             except Exception as error:
-                self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {error}")
+                self.logger.debug(f"{self.email_address} ChatGPT login entry was not normally clickable: {error}")
+                try:
+                    await button.first.click(timeout=5000, force=True)
+                    self.logger.debug(f"{self.email_address} forced ChatGPT homepage login entry click")
+                    return True
+                except Exception as force_error:
+                    self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {force_error}")
         return False
 
     async def _click_google_one_tap(self) -> bool:
