@@ -20,6 +20,7 @@ from playwright_firefox.async_api import Response,Route, Request
 
 from .OpenAIAuth import AsyncAuth0
 from .config import MsgData,Session,SetCookieParam,Status,LoginFailureKind,url_requirements,Payload
+from .verification import VerificationBroker
 
 class MockResponse:
     def __init__(self, data, status=200):
@@ -839,6 +840,7 @@ def classify_login_failure(details: str, mode: str) -> str:
         "verify it is you",
         "email verification code",
         "check your inbox",
+        "verification challenge",
         "security code",
         "help us protect your account",
         "approve sign in request",
@@ -885,7 +887,7 @@ def login_failure_cooldown(kind: str) -> int:
     return 600
 
 
-async def Auth(session: Session,logger):
+async def Auth(session: Session, logger, verification_broker: VerificationBroker | None = None):
     '''Auth account login func'''
     if session.is_login_disabled():
         logger.warning(
@@ -898,7 +900,8 @@ async def Auth(session: Session,logger):
                             mode=session.mode,
                             browser_contexts=session.browser_contexts,
                             logger=logger,
-                            help_email=session.help_email
+                            help_email=session.help_email,
+                            verification_broker=verification_broker,
                             # loop=self.browser_event_loop
                             )
         if session.status != Status.Update.value:

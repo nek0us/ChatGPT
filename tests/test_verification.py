@@ -6,6 +6,39 @@ from ChatGPTWeb.verification import (
     VerificationCancelledError,
     VerificationExpiredError,
 )
+from ChatGPTWeb.OpenAIAuth import AsyncAuth0
+
+
+class _Logger:
+    def info(self, _message):
+        pass
+
+
+class _OtpInput:
+    async def count(self):
+        return 1
+
+    async def fill(self, value):
+        self.value = value
+
+
+class _Keyboard:
+    def __init__(self):
+        self.presses = []
+
+    async def press(self, value):
+        self.presses.append(value)
+
+
+class _OtpPage:
+    def __init__(self):
+        self.otp = _OtpInput()
+        self.keyboard = _Keyboard()
+
+    def locator(self, selector):
+        if selector == "input[autocomplete='one-time-code']":
+            return self.otp
+        raise AssertionError(f"unexpected selector: {selector}")
 
 
 class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
@@ -53,3 +86,29 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
         await broker.cancel(challenge["id"])
         with self.assertRaises(VerificationCancelledError):
             await task
+
+    async def test_openai_auth_fills_code_submitted_through_broker(self):
+        broker = VerificationBroker()
+        page = _OtpPage()
+        auth = AsyncAuth0(
+            "account@example.com",
+            "password",
+            page,
+            _Logger(),
+            browser_contexts=None,
+            verification_broker=broker,
+        )
+        auth.login_page = page
+        task = asyncio.create_task(auth._submit_openai_verification_code())
+        for _ in range(10):
+            snapshot = await broker.snapshot()
+            if snapshot:
+                break
+            await asyncio.sleep(0)
+        else:
+            self.fail("OpenAI auth did not request verification")
+
+        self.assertTrue(await broker.submit(snapshot[0]["id"], "123456"))
+        await task
+        self.assertEqual(page.otp.value, "123456")
+        self.assertEqual(page.keyboard.presses, ["Enter"])

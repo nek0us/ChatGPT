@@ -34,6 +34,7 @@ from .config import (
     model_list,
 )
 from .load import load_js
+from .verification import VerificationBroker
 from .api import (
     async_send_msg,
     recive_handle,
@@ -128,6 +129,7 @@ class chatgpt:
         self._conversation_locks: Dict[str, asyncio.Lock] = {}
         self._conversation_locks_guard = asyncio.Lock()
         self._conversation_map_lock = asyncio.Lock()
+        self.verification_broker = VerificationBroker()
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
@@ -464,7 +466,7 @@ class chatgpt:
         if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
             self.logger.debug(f"{session.email} begin relogin")
-            await Auth(session,self.logger)
+            await Auth(session, self.logger, self.verification_broker)
             self.logger.debug(f"{session.email} relogin over")
         elif session.status == Status.Login.value:
             self.logger.debug(f"{session.email} loging in")
@@ -527,7 +529,7 @@ class chatgpt:
             elif session.email and session.password and session.browser_contexts:
                 session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
                 self._watch_page_events(session, session.page)
-                await Auth(session,self.logger)
+                await Auth(session, self.logger, self.verification_broker)
             else:
                 session.mark_login_failure(
                     details="No session_token or email/password was provided",
@@ -641,7 +643,7 @@ class chatgpt:
                     break
                 relogin_try += 1
                 self.logger.debug(f"context {session.email} begin relogin")
-                await Auth(session,self.logger)
+                await Auth(session, self.logger, self.verification_broker)
                 self.logger.debug(f"context {session.email} relogin over")
             
             if session.status in (Status.Stop.value, Status.Update.value):
@@ -2588,6 +2590,12 @@ class chatgpt:
     async def token_status(self):
         """get work status|查看session token状态和工作状态"""
         cid_all = json.loads(self.cc_map.read_text("utf8"))
+        verification_broker = getattr(self, "verification_broker", None)
+        pending_verifications = await verification_broker.snapshot() if verification_broker else []
+        verification_by_account = {
+            challenge["account"]: challenge
+            for challenge in pending_verifications
+        }
         # cid_num may not match the number of sessions, because it only records sessions with successful sessions, which will be automatically resolved after a period of time.
         # cid_num 可能和session数量对不上，因为它只记录会话成功的session，这在允许一段时间后会自动解决
         accounts = []
@@ -2608,6 +2616,7 @@ class chatgpt:
                 "conversation_count": len(cid_all.get(session.email, [])),
                 "login_failure_kind": session.login_failure_kind,
                 "last_login_error": session.last_login_error,
+                "verification": verification_by_account.get(session.email),
                 "runtime": {
                     "context_ready": bool(session.browser_contexts),
                     "page_ready": page_ready,
@@ -2629,6 +2638,7 @@ class chatgpt:
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
             "model_catalog": self._local_model_catalog(),
             "accounts": accounts,
+            "verification": pending_verifications,
         }
 
 

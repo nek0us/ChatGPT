@@ -5,6 +5,7 @@ from playwright_firefox.async_api import Page
 from playwright_firefox.async_api import Response,BrowserContext
 from datetime import datetime
 from .config import url_check
+from .verification import VerificationBroker, VerificationError
 from pathlib import Path
 
 import asyncio
@@ -40,6 +41,7 @@ class AsyncAuth0:
             browser_contexts,
             mode: Literal["openai", "google", "microsoft"] = "openai",
             help_email: str = "",
+            verification_broker: VerificationBroker | None = None,
             loop=None
     ):
         self.email_address = email
@@ -49,6 +51,7 @@ class AsyncAuth0:
         self.browser_contexts: BrowserContext = browser_contexts
         self.mode = mode
         self.help_email = help_email
+        self.verification_broker = verification_broker
 
         self.access_token = None
         self.last_error_details = ""
@@ -369,19 +372,13 @@ class AsyncAuth0:
                     await self.login_page.wait_for_load_state('load')
                     await asyncio.sleep(1)
                 else:
-                    raise Error(
-                        "OpenAI login error",
-                        1,
-                        "OpenAI login requires an email verification code",
-                    )
+                    await self._submit_openai_verification_code()
+                    return
 
             verification_input = self.login_page.locator("input[autocomplete='one-time-code']")
             if await verification_input.count() > 0:
-                raise Error(
-                    "OpenAI login error",
-                    1,
-                    "OpenAI login requires an email verification code",
-                )
+                await self._submit_openai_verification_code()
+                return
             
             await asyncio.sleep(1)
             openai_password_input = self.login_page.locator("input[type='password']")
@@ -399,6 +396,30 @@ class AsyncAuth0:
             num -= 1
             if num <= 0:
                 return
+
+    async def _submit_openai_verification_code(self) -> None:
+        """Wait for an operator-supplied OTP without writing it to disk."""
+        if not self.verification_broker:
+            raise Error(
+                "OpenAI login error",
+                1,
+                "OpenAI login requires an email verification code",
+            )
+        self.logger.info(f"{self.email_address} waiting for an OpenAI email verification code")
+        try:
+            code = await self.verification_broker.request_code(
+                self.email_address,
+                "openai",
+                message="Enter the one-time code sent by OpenAI to continue this login.",
+            )
+        except VerificationError as error:
+            raise Error("OpenAI login error", 1, f"OpenAI login verification: {error}") from error
+        verification_input = self.login_page.locator("input[autocomplete='one-time-code']")
+        if await verification_input.count() == 0:
+            raise Error("OpenAI login error", 1, "OpenAI verification input is no longer available")
+        await verification_input.fill(code)
+        await self.login_page.keyboard.press(self.EnterKey)
+        await asyncio.sleep(1)
     
     async def google_login(self, page: Page | None = None):
         """Complete the current OpenAI OAuth redirect without opening a second Google page."""
