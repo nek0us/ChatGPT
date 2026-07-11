@@ -383,22 +383,26 @@ class AsyncAuth0:
     async def _wait_for_openai_login_state(self, timeout: int = 30000) -> str:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         while asyncio.get_running_loop().time() < deadline:
-            otp = self.login_page.locator("input[autocomplete='one-time-code']")
-            if await otp.count() > 0:
-                return "otp"
-            password = self.login_page.locator("input[type='password']")
-            if await password.count() > 0:
-                return "password"
-            if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
-                return "password_choice"
-            # The current login drawer keeps the email input visible while its
-            # continue action is loading. Do not mistake its background page
-            # login button for a guest-state result during that transition.
-            if await self.login_page.locator("input[id='email']").count() > 0:
-                await asyncio.sleep(0.25)
-                continue
-            if await self.login_page.locator("button[data-testid='login-button']").count() > 0:
-                return "guest"
+            try:
+                otp = self.login_page.locator("input[autocomplete='one-time-code']")
+                if await otp.count() > 0:
+                    return "otp"
+                password = self.login_page.locator("input[type='password']")
+                if await password.count() > 0:
+                    return "password"
+                if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
+                    return "password_choice"
+                # The current login drawer keeps the email input visible while its
+                # continue action is loading. Do not mistake its background page
+                # login button for a guest-state result during that transition.
+                if await self.login_page.locator("input[id='email']").count() > 0:
+                    await asyncio.sleep(0.25)
+                    continue
+                if await self.login_page.locator("button[data-testid='login-button']").count() > 0:
+                    return "guest"
+            except Exception as error:
+                if "Execution context was destroyed" not in str(error):
+                    raise
             await asyncio.sleep(0.25)
         return "unknown"
 
