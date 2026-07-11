@@ -167,6 +167,34 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(activity["events"]), 200)
         self.assertEqual(activity["events"][0]["message"], "event 204")
 
+    async def test_billing_plan_refresh_updates_only_explicit_plan_evidence(self):
+        runtime = self._runtime()
+        page = type("Page", (), {
+            "is_closed": lambda self: False,
+            "evaluate": AsyncMock(return_value={"status": 200, "payload": {"subscription": {"plan": "go"}}}),
+        })()
+        session = Session(email="plan@example.com", access_token="token", device_id="device", page=page)
+
+        await runtime._refresh_account_plan(session)
+
+        self.assertEqual(session.account_plan, "go")
+        self.assertEqual(session.account_plan_source, "fetch:/backend-api/pageConfigs/billing")
+        self.assertIsNotNone(session.account_plan_observed_at)
+
+    async def test_control_account_can_refresh_capabilities_without_relogin(self):
+        runtime = self._runtime()
+        runtime.Sessions = [Session(email="refresh@example.com")]
+        runtime._refresh_account_plan = AsyncMock()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.chat_file = Path(directory)
+            (runtime.chat_file / "sessions").mkdir()
+            runtime.cc_map = runtime.chat_file / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+
+            await runtime.control_account("refresh@example.com", "refresh_capabilities")
+
+        runtime._refresh_account_plan.assert_awaited_once_with(runtime.Sessions[0])
+
     async def test_control_account_persists_manual_disable_and_cancels_verification(self):
         runtime = self._runtime()
         runtime.Sessions = [Session(email="control@example.com", status=Status.Ready.value, login_state=True)]

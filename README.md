@@ -240,7 +240,7 @@ chat = chatgpt(
 )
 ```
 
-The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, and explicitly retry a failed credential login. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, and model usage observed during the current process. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
+The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, and model usage observed during the current process. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
 ### ChatService (bot / HTTP / agent facade)
 ```python

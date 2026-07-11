@@ -38,6 +38,7 @@ from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
 from .verification import VerificationBroker
+from .capabilities import discover_account_plan
 from .api import (
     async_send_msg,
     recive_handle,
@@ -743,8 +744,8 @@ class chatgpt:
 
     async def control_account(self, account: str, action: str) -> Dict[str, object]:
         """Apply an explicit local operator action to one account."""
-        if action not in {"disable", "enable", "retry_login"}:
-            raise ValueError("action must be 'disable', 'enable', or 'retry_login'")
+        if action not in {"disable", "enable", "retry_login", "refresh_capabilities"}:
+            raise ValueError("action must be 'disable', 'enable', 'retry_login', or 'refresh_capabilities'")
         session = next(
             (item for item in self.Sessions if item.type != "script" and item.email == account),
             None,
@@ -764,7 +765,7 @@ class chatgpt:
             await self.verification_broker.cancel_account(session.email)
         elif action == "enable":
             session.manual_disabled = False
-        else:
+        elif action == "retry_login":
             if not session.email or not session.password:
                 raise ValueError("account has no configured login credentials")
             if session.email in tasks and not tasks[session.email].done():
@@ -778,6 +779,8 @@ class chatgpt:
             session.last_login_error = "manual login retry requested"
             session.disabled_until = None
             tasks[session.email] = asyncio.create_task(self._run_controlled_login(session))
+        else:
+            await self._refresh_account_plan(session)
         update_session_token(session, self.chat_file, self.logger)
         self._record_activity(session.email, "account_control", f"action: {action}")
         self.logger.info(f"account {session.email} control action: {action}")
@@ -833,6 +836,8 @@ class chatgpt:
 
             if not await self._initialize_page_bridge(session, page):
                 return
+
+            await self._refresh_account_plan(session)
             
             if session.access_token:
                 if session.status != Status.Update.value:
@@ -998,6 +1003,42 @@ class chatgpt:
             "source": "local_static",
         }
 
+    async def _refresh_account_plan(self, session: Session) -> None:
+        """Read the previously verified billing capability endpoint in-page."""
+        page = session.page
+        if not page or page.is_closed() or not session.access_token:
+            return
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(
+                """
+                async (options) => {
+                    const headers = { "accept": "application/json, text/plain, */*" };
+                    if (options.accessToken) headers.authorization = `Bearer ${options.accessToken}`;
+                    if (options.deviceId) headers["oai-device-id"] = options.deviceId;
+                    const response = await fetch("/backend-api/pageConfigs/billing", {
+                        method: "GET", credentials: "include", headers,
+                    });
+                    const contentType = response.headers.get("content-type") || "";
+                    if (!response.ok || !contentType.includes("json")) {
+                        return { status: response.status, payload: null };
+                    }
+                    return { status: response.status, payload: await response.json() };
+                }
+                """,
+                    {"accessToken": session.access_token, "deviceId": session.device_id},
+                ),
+                timeout=15,
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("payload"), (dict, list)):
+                return
+            plan = discover_account_plan(result["payload"], "fetch:/backend-api/pageConfigs/billing")
+            session.account_plan = plan.value
+            session.account_plan_source = plan.source
+            session.account_plan_observed_at = datetime.now()
+        except Exception as error:
+            self.logger.debug(f"{session.email} account plan refresh skipped: {error}")
+
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, typing.Any]:
         """Return model catalogs discovered from authenticated browser sessions."""
         startup_wait_seconds = 0
@@ -1021,6 +1062,8 @@ class chatgpt:
                 "status": session.status,
                 "login_state": session.login_state,
                 "gptplus": session.gptplus,
+                "account_plan": getattr(session, "account_plan", "unknown"),
+                "account_plan_source": getattr(session, "account_plan_source", "unavailable"),
                 "remote": None,
                 "cached": [],
                 "errors": [],
@@ -2806,6 +2849,12 @@ class chatgpt:
                 "can_retry_login": bool(session.email and session.password),
                 "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
                 "gptplus": session.gptplus,
+                "account_plan": getattr(session, "account_plan", "unknown"),
+                "account_plan_source": getattr(session, "account_plan_source", "unavailable"),
+                "account_plan_observed_at": (
+                    getattr(session, "account_plan_observed_at", None).isoformat()
+                    if getattr(session, "account_plan_observed_at", None) else ""
+                ),
                 "persist_auth_state": session.persist_auth_state,
                 "auth_state_loaded": session.auth_state_loaded,
                 "conversation_count": len(cid_all.get(session.email, [])),

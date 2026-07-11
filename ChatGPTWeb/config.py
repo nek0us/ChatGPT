@@ -122,6 +122,9 @@ class Session:
     password: str = ""
     access_token: str = ""
     gptplus: bool = False
+    account_plan: str = "unknown"
+    account_plan_source: str = "unavailable"
+    account_plan_observed_at: Optional[datetime.datetime] = None
     session_token: Cookie|None = None
     status: str = ""
     login_state: bool = False
