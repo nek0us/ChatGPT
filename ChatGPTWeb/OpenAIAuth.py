@@ -79,6 +79,42 @@ class AsyncAuth0:
                 f"{key}={value}"
             )
         return f"{sp}".join(li)
+
+    @staticmethod
+    def is_login_surface_url(url: str) -> bool:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.rstrip("/") or "/"
+        if host == "auth.openai.com":
+            return True
+        return host in {"chatgpt.com", "chat.openai.com"} and path.startswith("/auth")
+
+    @staticmethod
+    def is_chat_app_url(url: str) -> bool:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.rstrip("/") or "/"
+        return host in {"chatgpt.com", "chat.openai.com"} and not path.startswith("/auth")
+
+    async def wait_for_login_surface(self, timeout: int = 10000) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        selectors = ("input[type='email']", "button[data-testid='login-button']", "#google-one-tap-anchor")
+        while asyncio.get_running_loop().time() < deadline:
+            if self.is_login_surface_url(self.login_page.url):
+                return True
+            for selector in selectors:
+                if await self.login_page.locator(selector).count() > 0:
+                    return True
+            await asyncio.sleep(0.25)
+        return False
+
+    async def wait_for_chat_app(self, timeout: int = 30000) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            if self.is_chat_app_url(self.login_page.url):
+                return True
+            await asyncio.sleep(0.25)
+        return False
     
     async def find_cf(self,page: Page):
         # cf_check_box1 = page.locator("//html/body/div/div[2]/form/div/div/div")
@@ -412,10 +448,8 @@ class AsyncAuth0:
             if await check_new_img.count() > 0:
                 await check_new_img.click()
                 await asyncio.sleep(1)
-            try:
-                await self.login_page.wait_for_url("https://auth.openai.com/**",timeout=10000)
-            except Exception as e:
-                self.logger.debug(f"{self.email_address} wait for url auth exception: {e}")
+            if not await self.wait_for_login_surface():
+                self.logger.debug(f"{self.email_address} login surface was not detected, trying legacy entry controls")
                 await self.login_page.keyboard.press(self.EnterKey)
                 check_home_login_box = self.login_page.locator('input[id="email"]')
                 if "chatgpt.com" in self.login_page.url and await check_home_login_box.count() > 0:
@@ -589,20 +623,13 @@ class AsyncAuth0:
 
                     await self.mail_code_verify(mark='button[data-dd-action-name="Continue"]',input='input[autocomplete="one-time-code"]',text="openai_login")
 
-                # go chatgpt
+                # Return to either supported ChatGPT application host before checking session state.
                 try:
                     self.logger.debug(f"{self.email_address} wait goto chatgpt homepage ")
                     await asyncio.sleep(2)
-                    await self.login_page.wait_for_load_state('networkidle')
-                    try:
-                        self.logger.debug(f"{self.email_address} will waitfor chatgpt homepage ")
-                        await self.login_page.wait_for_url("https://chatgpt.com/",timeout=30000)
-                    except Exception:
+                    if not await self.wait_for_chat_app():
                         self.logger.debug(f"{self.email_address} will re waitfor chatgpt homepage ")
-                        # await asyncio.sleep(2)
-                        await self.login_page.wait_for_load_state('load')
                         await self.login_page.goto("https://chatgpt.com/")
-                    await self.login_page.wait_for_load_state('networkidle')
                     self.logger.debug(f"{self.email_address} will check login status")
                     nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
                     auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
@@ -620,9 +647,7 @@ class AsyncAuth0:
                     self.logger.debug(f"{self.email_address} login not get access_token,will check again ")
                 except Exception as e:
                     self.logger.warning(e)
-                    # Try Again
-                    await self.login_page.keyboard.press(self.EnterKey)
-                    await self.login_page.wait_for_url("https://chatgpt.com/")
+                    await self.login_page.goto("https://chatgpt.com/")
                 
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)

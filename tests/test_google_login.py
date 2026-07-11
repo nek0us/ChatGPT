@@ -88,6 +88,18 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_login_route_detection_accepts_current_and_legacy_hosts(self):
+        self.assertTrue(AsyncAuth0.is_login_surface_url("https://chatgpt.com/auth/login"))
+        self.assertTrue(AsyncAuth0.is_login_surface_url("https://auth.openai.com/u/login"))
+        self.assertTrue(AsyncAuth0.is_login_surface_url("https://chat.openai.com/auth/login"))
+        self.assertFalse(AsyncAuth0.is_login_surface_url("https://chatgpt.com/"))
+
+    async def test_chat_app_route_detection_accepts_current_and_legacy_hosts(self):
+        self.assertTrue(AsyncAuth0.is_chat_app_url("https://chatgpt.com/"))
+        self.assertTrue(AsyncAuth0.is_chat_app_url("https://chat.openai.com/c/example"))
+        self.assertFalse(AsyncAuth0.is_chat_app_url("https://chatgpt.com/auth/login"))
+        self.assertFalse(AsyncAuth0.is_chat_app_url("https://auth.openai.com/u/login"))
+
     async def test_current_oauth_page_is_used_for_google_credentials(self):
         page = _Page()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="google")
