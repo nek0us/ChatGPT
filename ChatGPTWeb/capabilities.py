@@ -92,3 +92,13 @@ def infer_plan_from_model_categories(levels: Any, source: str) -> AccountPlan:
         source=source,
         evidence=tuple(str(level) for level in levels if _normalized_plan(level)),
     )
+
+
+def supports_paid_models(plan: Any, legacy_gptplus: bool) -> bool:
+    """Use observed plan evidence without treating Go as the old Plus superset."""
+    normalized = _normalized_plan(plan)
+    if normalized == "free":
+        return False
+    if normalized in {"plus", "pro"}:
+        return True
+    return legacy_gptplus

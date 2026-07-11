@@ -38,7 +38,7 @@ from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
 from .verification import VerificationBroker
-from .capabilities import discover_account_plan, infer_plan_from_model_categories
+from .capabilities import discover_account_plan, infer_plan_from_model_categories, supports_paid_models
 from .api import (
     async_send_msg,
     recive_handle,
@@ -2370,7 +2370,7 @@ class chatgpt:
         while not self.manage["start"]:
             self.sleep(0.5)
         sessions = filter(
-            lambda s: s.type != "script" and s.login_state is True,
+            lambda s: s.type != "script" and s.login_state is True and not s.is_login_disabled(),
             sorted(self.Sessions, key=lambda s: s.last_active)
         )
         session: Session = next(sessions, None) # type: ignore
@@ -2397,7 +2397,12 @@ class chatgpt:
 
         session: Session = Session(status=Status.Working.value)
         if not msg_data.conversation_id:
-            gpt4_list = [s for s in self.Sessions if s.gptplus is True]
+            gpt4_list = [
+                s for s in self.Sessions
+                if s.type != "script" and supports_paid_models(
+                    getattr(s, "account_plan", "unknown"), s.gptplus,
+                )
+            ]
             if gpt4_list == [] and msg_data.gpt_plus:
                 msg_data.add_error(
                     kind="no_plus_account",
@@ -2417,7 +2422,12 @@ class chatgpt:
             while not session or session.status == Status.Working.value:
                 filtered_sessions = [
                     s for s in session_list
-                    if s.type != "script" and s.login_state is True and s.status == Status.Ready.value
+                    if (
+                        s.type != "script"
+                        and s.login_state is True
+                        and s.status == Status.Ready.value
+                        and not s.is_login_disabled()
+                    )
                 ]
                 if filtered_sessions:
                     session = random.choice(filtered_sessions)
@@ -2461,7 +2471,7 @@ class chatgpt:
                         )
                         self.logger.error(msg_data.error_info)
                         return None
-                    if session.status == Status.Stop.value:
+                    if session.is_login_disabled():
                         self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
                         msg_data.add_error(
                             kind="conversation_session_stopped",

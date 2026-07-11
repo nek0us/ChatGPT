@@ -8,7 +8,7 @@ import tempfile
 from aiohttp import ClientSession
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import Session, Status
+from ChatGPTWeb.config import MsgData, Session, Status
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
@@ -25,6 +25,9 @@ class _Logger:
     def info(self, _message):
         pass
 
+    def error(self, _message):
+        pass
+
 
 class _Page:
     def __init__(self):
@@ -38,6 +41,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime.js = ("first", "second")
         runtime.js_used = 0
         runtime.startup_timeout = 1
+        runtime.ready_timeout = 1
         runtime.control_host = "127.0.0.1"
         runtime.control_port = None
         runtime.control_api_key = None
@@ -194,6 +198,43 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             await runtime.control_account("refresh@example.com", "refresh_capabilities")
 
         runtime._refresh_account_plan.assert_awaited_once_with(runtime.Sessions[0])
+
+    async def test_paid_model_selection_prefers_observed_plan_over_legacy_flag(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        legacy_plus_but_free = Session(
+            email="free@example.com", gptplus=True, account_plan="free",
+            status=Status.Ready.value, login_state=True,
+        )
+        observed_pro = Session(
+            email="pro@example.com", gptplus=False, account_plan="pro",
+            status=Status.Ready.value, login_state=True,
+        )
+        runtime.Sessions = [legacy_plus_but_free, observed_pro]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            selected = await runtime._prepare_chat_session(MsgData(msg_send="hello", gpt_model="gpt-4"))
+
+        self.assertIs(selected, observed_pro)
+
+    async def test_manual_disable_excludes_a_ready_session_from_new_requests(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        disabled = Session(
+            email="disabled@example.com", status=Status.Ready.value,
+            login_state=True, manual_disabled=True,
+        )
+        runtime.Sessions = [disabled]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            data = MsgData(msg_send="hello")
+            selected = await runtime._prepare_chat_session(data)
+
+        self.assertIsNone(selected)
+        self.assertEqual(data.error_list[0]["kind"], "no_available_session")
 
     async def test_control_account_persists_manual_disable_and_cancels_verification(self):
         runtime = self._runtime()

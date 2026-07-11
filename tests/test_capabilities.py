@@ -1,6 +1,6 @@
 import unittest
 
-from ChatGPTWeb.capabilities import discover_account_plan, infer_plan_from_model_categories
+from ChatGPTWeb.capabilities import discover_account_plan, infer_plan_from_model_categories, supports_paid_models
 
 
 class AccountPlanDiscoveryTests(unittest.TestCase):
@@ -36,6 +36,12 @@ class AccountPlanDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(free.value, "free")
         self.assertEqual(mixed.value, "unknown")
+
+    def test_observed_plan_overrides_legacy_paid_flag(self):
+        self.assertFalse(supports_paid_models("free", True))
+        self.assertTrue(supports_paid_models("pro", False))
+        self.assertFalse(supports_paid_models("go", False))
+        self.assertTrue(supports_paid_models("unknown", True))
 
 
 if __name__ == "__main__":
