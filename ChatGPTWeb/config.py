@@ -144,6 +144,7 @@ class Session:
     login_failure_kind: str = ""
     last_login_error: str = ""
     disabled_until: Optional[datetime.datetime] = None
+    manual_disabled: bool = False
     runtime_last_closed_source: str = ""
     runtime_last_closed_at: Optional[datetime.datetime] = None
     runtime_last_recovered_at: Optional[datetime.datetime] = None
@@ -162,6 +163,8 @@ class Session:
         return True
 
     def is_login_disabled(self) -> bool:
+        if self.manual_disabled:
+            return True
         if self.status == Status.Stop.value:
             return True
         if not self.disabled_until:

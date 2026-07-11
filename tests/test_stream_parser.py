@@ -136,6 +136,13 @@ class _FakeBackend:
     async def get_model_catalog(self, fetch_remote=True):
         return {"fetch_remote": fetch_remote}
 
+    async def control_account(self, account, action):
+        if account != "account@example.com":
+            raise KeyError("account was not found")
+        if action not in {"disable", "enable"}:
+            raise ValueError("action must be 'disable' or 'enable'")
+        return {"email": account, "manual_disabled": action == "disable"}
+
 
 class _Logger:
     def debug(self, _message):
@@ -348,6 +355,22 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(health.status, 200)
+
+    async def test_account_control_requires_auth_and_valid_action(self):
+        headers = {"Authorization": "Bearer test-key"}
+        unauthorized = await self.client.post(
+            "/v1/accounts/account@example.com/control", json={"action": "disable"}
+        )
+        invalid = await self.client.post(
+            "/v1/accounts/account@example.com/control", json={"action": "restart"}, headers=headers
+        )
+        disabled = await self.client.post(
+            "/v1/accounts/account@example.com/control", json={"action": "disable"}, headers=headers
+        )
+
+        self.assertEqual(unauthorized.status, 401)
+        self.assertEqual(invalid.status, 400)
+        self.assertTrue((await disabled.json())["account"]["manual_disabled"])
 
     async def test_control_console_page_loads_without_exposing_protected_status(self):
         console = TestClient(TestServer(create_control_app(

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
@@ -8,7 +9,7 @@ from aiohttp import ClientSession
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.config import Session, Status
-from ChatGPTWeb.verification import VerificationBroker
+from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
 class _Logger:
@@ -136,6 +137,27 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["conversation_count"], 1)
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)
+
+    async def test_control_account_persists_manual_disable_and_cancels_verification(self):
+        runtime = self._runtime()
+        runtime.Sessions = [Session(email="control@example.com", status=Status.Ready.value, login_state=True)]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.chat_file = Path(directory)
+            (runtime.chat_file / "sessions").mkdir()
+            runtime.cc_map = runtime.chat_file / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            task = asyncio.create_task(runtime.verification_broker.request_code("control@example.com", "openai"))
+            await asyncio.sleep(0)
+
+            disabled = await runtime.control_account("control@example.com", "disable")
+            self.assertTrue(disabled["manual_disabled"])
+            self.assertTrue(runtime.Sessions[0].is_login_disabled())
+            with self.assertRaises(VerificationCancelledError):
+                await task
+
+            enabled = await runtime.control_account("control@example.com", "enable")
+            self.assertFalse(enabled["manual_disabled"])
+            self.assertFalse(runtime.Sessions[0].is_login_disabled())
 
     async def test_auth_state_uses_a_hashed_per_account_path_and_restores_it(self):
         runtime = self._runtime()

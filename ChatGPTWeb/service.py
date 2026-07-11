@@ -67,6 +67,8 @@ class ChatBackend(Protocol):
 
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, Any]: ...
 
+    async def control_account(self, account: str, action: str) -> Dict[str, Any]: ...
+
 
 StreamCallback = Callable[[ChatStreamEvent], Union[None, Awaitable[None]]]
 
@@ -186,6 +188,10 @@ class ChatService:
 
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, Any]:
         return await self._backend.get_model_catalog(fetch_remote=fetch_remote)
+
+    async def control_account(self, account: str, action: str) -> Dict[str, Any]:
+        """Apply an explicit local operator action to one account."""
+        return await self._backend.control_account(account, action)
 
     async def get_usage_status(self) -> Dict[str, Any]:
         """Expose the current honest state: quota is unknown until upstream reports it."""

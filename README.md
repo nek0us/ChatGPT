@@ -240,7 +240,7 @@ chat = chatgpt(
 )
 ```
 
-The dashboard is disabled by default and closes with `await chat.close()`.
+The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification and manually disable or re-enable an account. Re-enabling only removes the local operator hold; it does not force a fresh provider login.
 
 ### ChatService (bot / HTTP / agent facade)
 ```python
@@ -308,7 +308,7 @@ app = create_http_app(
 web.run_app(app, host="127.0.0.1", port=8000)
 ```
 
-The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
+The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, `/v1/accounts/{account}/control`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
 
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData
 ```bash

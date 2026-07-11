@@ -46,6 +46,7 @@ from .api import (
     retry_keep_alive,
     Auth,
     get_session_token,
+    update_session_token,
     try_wss,
     flush_page,
     upload_file,
@@ -673,6 +674,26 @@ class chatgpt:
         self.manage["control_url"] = ""
         if runner:
             await runner.cleanup()
+
+    async def control_account(self, account: str, action: str) -> Dict[str, object]:
+        """Apply a non-destructive local account enable/disable action."""
+        if action not in {"disable", "enable"}:
+            raise ValueError("action must be 'disable' or 'enable'")
+        session = next(
+            (item for item in self.Sessions if item.type != "script" and item.email == account),
+            None,
+        )
+        if not session:
+            raise KeyError("account was not found")
+
+        session.manual_disabled = action == "disable"
+        if session.manual_disabled:
+            await self.verification_broker.cancel_account(session.email)
+        update_session_token(session, self.chat_file, self.logger)
+        self.logger.info(f"account {session.email} manually {action}d")
+
+        status = await self.token_status()
+        return next(item for item in status["accounts"] if item["email"] == account)
 
     async def load_page(self, session: Session):
         '''start page | 载入初始页面'''
@@ -2678,6 +2699,7 @@ class chatgpt:
                 "login_state": session.login_state,
                 "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),
                 "disabled": disabled,
+                "manual_disabled": session.manual_disabled,
                 "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
                 "gptplus": session.gptplus,
                 "conversation_count": len(cid_all.get(session.email, [])),

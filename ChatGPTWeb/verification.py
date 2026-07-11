@@ -123,6 +123,14 @@ class VerificationBroker:
         async with self._lock:
             return self._cancel_locked(challenge_id, "verification challenge cancelled")
 
+    async def cancel_account(self, account: str) -> bool:
+        """Cancel the pending challenge for one account, if any."""
+        async with self._lock:
+            challenge_id = self._account_ids.get(account)
+            if not challenge_id:
+                return False
+            return self._cancel_locked(challenge_id, "account was manually disabled")
+
     async def snapshot(self) -> list[dict[str, Any]]:
         """Return safe metadata for all pending challenges, newest first."""
         async with self._lock:

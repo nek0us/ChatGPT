@@ -197,6 +197,22 @@ def create_http_app(
     async def usage_status(_: web.Request) -> web.Response:
         return web.json_response(await service.get_usage_status())
 
+    async def control_account(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        action = payload.get("action") if isinstance(payload, dict) else None
+        if not isinstance(action, str):
+            raise web.HTTPBadRequest(text="request requires an account action")
+        try:
+            account = await service.control_account(request.match_info["account"], action)
+        except KeyError as error:
+            raise web.HTTPNotFound(text=str(error)) from error
+        except ValueError as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        return web.json_response({"account": account})
+
     def require_verification_broker() -> VerificationBroker:
         if not verification_broker:
             raise web.HTTPNotImplemented(text="verification control is not enabled")
@@ -293,6 +309,7 @@ def create_http_app(
     app.router.add_get("/health", health)
     app.router.add_get("/v1/models", models)
     app.router.add_get("/v1/account/status", account_status)
+    app.router.add_post("/v1/accounts/{account}/control", control_account)
     app.router.add_get("/v1/usage", usage_status)
     app.router.add_get("/v1/verification", verification_status)
     app.router.add_post("/v1/verification/{challenge_id}", submit_verification)
@@ -320,12 +337,13 @@ _CONTROL_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ChatGPTWeb Control</title><style>
 :root{color-scheme:light;font-family:Arial,sans-serif;color:#172033;background:#f4f6f8}.shell{max-width:1120px;margin:32px auto;padding:0 20px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #cbd2d9;padding-bottom:18px}.top h1{font-size:22px;margin:0}.key{display:flex;gap:8px}.key input{width:210px}.panel{margin-top:22px}.panel h2{font-size:15px;margin:0 0 10px}.table{width:100%;border-collapse:collapse;background:#fff}.table th,.table td{padding:11px 12px;border-bottom:1px solid #e2e6ea;text-align:left;font-size:13px}.table th{color:#53606e;font-weight:600}.challenge{display:grid;grid-template-columns:minmax(180px,1fr) 160px 112px 82px;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px;margin-bottom:8px}.muted{color:#66717d;font-size:13px}.error{color:#b42318;font-size:13px;min-height:18px}input{box-sizing:border-box;border:1px solid #aeb8c2;border-radius:4px;padding:8px 10px;font:inherit}button{border:1px solid #254d70;background:#fff;color:#173b58;border-radius:4px;padding:8px 11px;font:inherit;cursor:pointer}button.primary{background:#176b87;border-color:#176b87;color:#fff}button.danger{color:#9b1c1c;border-color:#d9aaaa}@media(max-width:700px){.top{align-items:flex-start;flex-direction:column}.challenge{grid-template-columns:1fr}.key input{width:min(260px,65vw)}}
-</style></head><body><main class="shell"><header class="top"><h1>ChatGPTWeb Control</h1><div class="key"><input id="key" type="password" autocomplete="off" placeholder="API key"><button id="refresh">Refresh</button></div></header><p id="error" class="error"></p><section class="panel"><h2>Accounts</h2><table class="table"><thead><tr><th>Account</th><th>State</th><th>Login</th><th>Failure</th><th>Context</th></tr></thead><tbody id="accounts"></tbody></table></section><section class="panel"><h2>Verification</h2><div id="challenges" class="muted">No pending verification.</div></section></main><script>
+</style></head><body><main class="shell"><header class="top"><h1>ChatGPTWeb Control</h1><div class="key"><input id="key" type="password" autocomplete="off" placeholder="API key"><button id="refresh">Refresh</button></div></header><p id="error" class="error"></p><section class="panel"><h2>Accounts</h2><table class="table"><thead><tr><th>Account</th><th>State</th><th>Login</th><th>Failure</th><th>Context</th><th>Control</th></tr></thead><tbody id="accounts"></tbody></table></section><section class="panel"><h2>Verification</h2><div id="challenges" class="muted">No pending verification.</div></section></main><script>
 const key=document.querySelector('#key'),error=document.querySelector('#error'),accounts=document.querySelector('#accounts'),challenges=document.querySelector('#challenges'),drafts=new Map(),submitting=new Set();key.value=sessionStorage.getItem('chatgptweb-control-key')||'';
 function headers(){const value=key.value.trim();return value?{Authorization:'Bearer '+value,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
 async function call(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(!response.ok)throw new Error(response.status===401?'Enter a valid API key':await response.text());return response.status===204?null:response.json()}
 function cell(row,value){const td=document.createElement('td');td.textContent=value||'--';row.append(td)}
-function renderAccounts(data){accounts.replaceChildren();for(const item of data.accounts||[]){const row=document.createElement('tr');cell(row,item.email);cell(row,item.status);cell(row,item.login_state?'ready':'not ready');cell(row,item.login_failure_kind);cell(row,item.runtime&&item.runtime.context_ready?'open':'closed');accounts.append(row)}}
+async function changeAccount(account,action,button){button.disabled=true;try{await call('/v1/accounts/'+encodeURIComponent(account)+'/control',{method:'POST',body:JSON.stringify({action})});await refresh(true)}catch(e){error.textContent=e.message;button.disabled=false}}
+function renderAccounts(data){accounts.replaceChildren();for(const item of data.accounts||[]){const row=document.createElement('tr');cell(row,item.email);cell(row,item.manual_disabled?'manually disabled':item.status);cell(row,item.login_state?'ready':'not ready');cell(row,item.login_failure_kind);cell(row,item.runtime&&item.runtime.context_ready?'open':'closed');const control=document.createElement('td');const button=document.createElement('button');const disable=!item.manual_disabled;button.textContent=disable?'Disable':'Enable';if(disable)button.className='danger';button.addEventListener('click',()=>changeAccount(item.email,disable?'disable':'enable',button));control.append(button);row.append(control);accounts.append(row)}}
 function renderChallenges(data){challenges.replaceChildren();const list=data.challenges||[];if(!list.length){challenges.textContent='No pending verification.';return}for(const item of list){const card=document.createElement('form');card.className='challenge';const label=document.createElement('div');label.textContent=item.account+' · '+item.provider;const input=document.createElement('input');input.inputMode='numeric';input.autocomplete='one-time-code';input.maxLength=12;input.placeholder='Verification code';input.value=drafts.get(item.id)||'';input.addEventListener('input',()=>drafts.set(item.id,input.value));const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit';const cancel=document.createElement('button');cancel.type='button';cancel.className='danger';cancel.textContent='Cancel';const busy=submitting.has(item.id);submit.disabled=busy;cancel.disabled=busy;card.append(label,input,submit,cancel);card.addEventListener('submit',async event=>{event.preventDefault();const code=input.value.trim();if(!code){error.textContent='Enter the verification code.';return}submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'POST',body:JSON.stringify({code})});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});cancel.addEventListener('click',async()=>{submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'DELETE'});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});challenges.append(card)}}
 async function refresh(force=false){if(!force&&(submitting.size||challenges.contains(document.activeElement)))return;error.textContent='';sessionStorage.setItem('chatgptweb-control-key',key.value.trim());try{const [status,verification]=await Promise.all([call('/v1/account/status'),call('/v1/verification')]);renderAccounts(status);renderChallenges(verification)}catch(e){error.textContent=e.message}}
 document.querySelector('#refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
