@@ -391,6 +391,12 @@ class AsyncAuth0:
                 return "password"
             if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
                 return "password_choice"
+            # The current login drawer keeps the email input visible while its
+            # continue action is loading. Do not mistake its background page
+            # login button for a guest-state result during that transition.
+            if await self.login_page.locator("input[id='email']").count() > 0:
+                await asyncio.sleep(0.25)
+                continue
             if await self.login_page.locator("button[data-testid='login-button']").count() > 0:
                 return "guest"
             await asyncio.sleep(0.25)
