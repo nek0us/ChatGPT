@@ -26,6 +26,7 @@ WEB_SEARCH = os.getenv("CHATGPTWEB_SMOKE_WEB_SEARCH", "false").lower() in ("1", 
 STREAM_IDLE_TIMEOUT = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_IDLE_TIMEOUT", "0"))
 STREAM_STATUS_INTERVAL = int(os.getenv("CHATGPTWEB_SMOKE_STREAM_STATUS_INTERVAL", "15"))
 SAVE_SCREEN = os.getenv("CHATGPTWEB_SMOKE_SAVE_SCREEN", "false").lower() in ("1", "true", "yes")
+HOLD_SECONDS = max(0, int(os.getenv("CHATGPTWEB_SMOKE_HOLD_SECONDS", "0") or 0))
 CONTROL_HOST = os.getenv("CHATGPTWEB_CONTROL_HOST", "127.0.0.1")
 CONTROL_PORT_TEXT = os.getenv("CHATGPTWEB_CONTROL_PORT", "").strip()
 CONTROL_PORT = int(CONTROL_PORT_TEXT) if CONTROL_PORT_TEXT else None
@@ -160,6 +161,8 @@ async def main():
                     break
                 if index < len(get_prompts()) - 1 and DELAY > 0:
                     await asyncio.sleep(DELAY)
+        if HOLD_SECONDS:
+            await asyncio.sleep(HOLD_SECONDS)
     except TimeoutError:
         data.add_error(
             kind="local_smoke_timeout",
@@ -197,6 +200,7 @@ async def main():
                 "session_email_filter": bool(SESSION_EMAIL),
                 "session_index_filter": SESSION_INDEX,
                 "save_screen": SAVE_SCREEN,
+                "hold_seconds": HOLD_SECONDS,
                 "control_host": CONTROL_HOST if CONTROL_PORT is not None else "",
                 "control_port": CONTROL_PORT,
                 "model_catalog": model_catalog,
