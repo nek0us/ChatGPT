@@ -530,6 +530,12 @@ class chatgpt:
             )
             return
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
+        if session.status == Status.Stop.value or session.is_login_disabled():
+            self.logger.debug(
+                f"{session.email} keep-alive skipped after delay, status:{session.status}, "
+                f"failure:{session.login_failure_kind}"
+            )
+            return
         if not await self._ensure_session_runtime(session):
             return
         session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)

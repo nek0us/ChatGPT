@@ -28,6 +28,8 @@ class LoginFailureClassificationTests(unittest.TestCase):
     def test_known_provider_failures_are_classified(self):
         cases = [
             ("Your account has been locked.", "microsoft", LoginFailureKind.AccountLocked.value),
+            ("OpenAI account blocked: Your account has been deactivated.", "microsoft", LoginFailureKind.AccountLocked.value),
+            ("Authentication Error: You do not have an account because it has been deleted or deactivated.", "microsoft", LoginFailureKind.AccountLocked.value),
             ("Incorrect password.", "microsoft", LoginFailureKind.BadCredentials.value),
             ("Help us protect your account with a security code.", "microsoft", LoginFailureKind.NeedVerification.value),
             ("Too many attempts, try again later.", "microsoft", LoginFailureKind.RateLimited.value),
@@ -98,7 +100,16 @@ class SessionLoginStateTests(unittest.TestCase):
 
         self.assertEqual(session.status, Status.Stop.value)
         self.assertTrue(session.is_login_disabled())
-        self.assertEqual(session.login_fail_count, 2)
+
+    def test_permanent_failure_is_not_overwritten_by_later_transient_error(self):
+        session = Session(email="locked@example.com")
+        session.mark_login_failure(kind=LoginFailureKind.AccountLocked.value, details="deactivated")
+
+        session.mark_login_failure(kind=LoginFailureKind.Transient.value, details="browser timeout")
+
+        self.assertEqual(session.status, Status.Stop.value)
+        self.assertEqual(session.login_failure_kind, LoginFailureKind.AccountLocked.value)
+        self.assertEqual(session.login_fail_count, 1)
 
     def test_stopped_account_remains_stopped_after_session_restore(self):
         session = Session(email="locked@example.com")

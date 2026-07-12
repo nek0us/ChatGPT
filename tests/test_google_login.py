@@ -192,6 +192,11 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_auth_error_keeps_its_details_in_exception_text(self):
+        error = Error("OpenAI login error", 1, "account has been deleted or deactivated")
+
+        self.assertEqual(str(error), "account has been deleted or deactivated")
+
     async def test_google_one_tap_homepage_is_not_an_auth_surface(self):
         page = _OneTapHomepage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)

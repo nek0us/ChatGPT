@@ -21,6 +21,7 @@ class Error(Exception):
     details: str
 
     def __init__(self, location: str, status_code: int, details: str):
+        super().__init__(details)
         self.location = location
         self.status_code = status_code
         self.details = details
@@ -234,6 +235,9 @@ class AsyncAuth0:
         await self.login_page.wait_for_load_state('load')
         await asyncio.sleep(1)
         await self.login_page.wait_for_load_state('load')
+        if await self._choose_microsoft_help_email_delivery():
+            await self._submit_microsoft_help_email_code()
+            return
         select_verify_locator = self.login_page.locator('div[data-testid="tile"]')
         if await select_verify_locator.count() > 0:
             if await select_verify_locator.count() > 1:
@@ -306,6 +310,62 @@ class AsyncAuth0:
                 self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
                 raise Error("Microsoft login error", 111, "Microsoft login requires a configured help email")
 
+    async def _choose_microsoft_help_email_delivery(self) -> bool:
+        """Advance Microsoft's newer security-method picker to its OTP screen.
+
+        The picker has changed markup several times: older pages expose ``iProof0``
+        while newer account.live.com pages expose ordinary radio inputs and a
+        primary action.  Selecting the first radio is intentional: Microsoft
+        orders the configured recovery method before the "I don't have these"
+        escape route.
+        """
+        if await self.login_page.get_by_text("Help us protect your account", exact=False).count() == 0:
+            return False
+
+        recovery_choice = self.login_page.locator('input[type="radio"]').first
+        if await recovery_choice.count() == 0:
+            return False
+        try:
+            await recovery_choice.check(force=True, timeout=3000)
+        except Exception:
+            await recovery_choice.click(force=True, timeout=3000)
+        self.logger.debug(f"{self.email_address} selected Microsoft help-email delivery")
+
+        actions = (
+            self.login_page.get_by_role("button", name="Send code", exact=False),
+            self.login_page.get_by_role("button", name="Next", exact=False),
+            self.login_page.get_by_role("button", name="Continue", exact=False),
+            self.login_page.locator('input[type="submit"]'),
+            self.login_page.locator('button[type="submit"]'),
+        )
+        action_clicked = False
+        for action in actions:
+            if await action.count() == 0:
+                continue
+            try:
+                await action.first.click(timeout=3000)
+                action_clicked = True
+                break
+            except Exception as error:
+                self.logger.debug(f"{self.email_address} Microsoft delivery action was not clickable: {error}")
+        if not action_clicked:
+            # Some Microsoft picker variants submit immediately after selecting
+            # the radio.  Give those pages the same chance to reveal their OTP.
+            self.logger.debug(f"{self.email_address} Microsoft delivery selection has no explicit send action")
+
+        for _ in range(40):
+            if await self._microsoft_code_input().count() > 0:
+                return True
+            await asyncio.sleep(0.25)
+        self.logger.warning(f"{self.email_address} Microsoft help-email delivery did not reach a code input")
+        return False
+
+    def _microsoft_code_input(self):
+        return self.login_page.locator(
+            "input[id^='codeEntry-'], input[aria-label*='security code' i], "
+            "input[autocomplete='one-time-code']"
+        ).first
+
     async def _submit_microsoft_help_email_code(self) -> None:
         """Submit a broker-provided Microsoft help-email code without disk polling."""
         if not self.verification_broker:
@@ -326,17 +386,19 @@ class AsyncAuth0:
             raise Error("Microsoft login error", 1, f"Microsoft verification: {error}") from error
 
         segmented_input = self.login_page.locator('input[id="codeEntry-0"]')
-        full_input = self.login_page.locator('input[aria-label="Enter your security code"]')
         if await segmented_input.count() > 0:
             for index, character in enumerate(code):
                 field = self.login_page.locator(f'input[id="codeEntry-{index}"]')
                 if await field.count() == 0:
                     break
                 await field.fill(character)
-        elif await full_input.count() > 0:
-            await full_input.fill(code)
         else:
-            raise Error("Microsoft login error", 1, "Microsoft verification input is no longer available")
+            full_input = self.login_page.locator('input[aria-label="Enter your security code"]')
+            if await full_input.count() == 0:
+                full_input = self._microsoft_code_input()
+            if await full_input.count() == 0:
+                raise Error("Microsoft login error", 1, "Microsoft verification input is no longer available")
+            await full_input.fill(code)
 
         await self.login_page.keyboard.press(self.EnterKey)
         await self.login_page.wait_for_load_state()
@@ -679,6 +741,12 @@ class AsyncAuth0:
                     await self.login_page.wait_for_load_state('networkidle')
                     await asyncio.sleep(5)
 
+                # Third-party OAuth can land on ChatGPT's terminal account page.
+                # Capture it before the legacy login checks recurse into /api/auth/session.
+                blocked_message = await self._openai_account_block_message()
+                if blocked_message:
+                    raise Error("OpenAI login error", 1, blocked_message)
+
                 # Return to either supported ChatGPT application host before checking session state.
                 try:
                     self.logger.debug(f"{self.email_address} wait goto chatgpt homepage ")
@@ -704,6 +772,10 @@ class AsyncAuth0:
                 except Exception as e:
                     self.logger.warning(e)
                     await self.login_page.goto("https://chatgpt.com/")
+
+        blocked_message = await self._openai_account_block_message()
+        if blocked_message:
+            raise Error("OpenAI login error", 1, blocked_message)
                 
         async with self.login_page.expect_response(url_check, timeout=20000) as a:
             res = await self.login_page.goto(url_check, timeout=20000)
@@ -720,6 +792,27 @@ class AsyncAuth0:
             return access_token
         self.logger.warning(f"{self.email_address} login failed, status code: {res.status}, url: {res.url}, response text: {await res.text()}")
         return None
+
+    async def _openai_account_block_message(self) -> str:
+        """Capture a terminal ChatGPT account page before the session API replaces it."""
+        try:
+            text = await self.login_page.evaluate("() => document.body ? document.body.innerText : ''")
+        except Exception:
+            return ""
+        normalized = " ".join(text.lower().split())
+        markers = (
+            "your account has been deactivated",
+            "your account was deactivated",
+            "your account has been suspended",
+            "your account was suspended",
+            "account has been disabled",
+            "account is disabled",
+            "violation of our terms",
+            "violated our terms",
+        )
+        if any(marker in normalized for marker in markers):
+            return f"OpenAI account blocked: {text[:1000]}"
+        return ""
     
 
     async def save_screen(self,path: str,page: Page):

@@ -192,17 +192,21 @@ class Session:
             cooldown_seconds: int = 300,
             stop: bool = False
     ):
-        self.login_fail_count += 1
-        self.login_failure_kind = kind
-        self.last_login_error = details[:1000] if details else kind
-        self.login_state = False
-        self.login_state_first = False
-
         permanent_kinds = {
             LoginFailureKind.BadCredentials.value,
             LoginFailureKind.AccountLocked.value,
             LoginFailureKind.NeedVerification.value,
         }
+        # A later browser/keep-alive failure must not resurrect an account that
+        # authentication has already determined is permanently unavailable.
+        if self.status == Status.Stop.value and self.login_failure_kind in permanent_kinds:
+            return
+
+        self.login_fail_count += 1
+        self.login_failure_kind = kind
+        self.last_login_error = details[:1000] if details else kind
+        self.login_state = False
+        self.login_state_first = False
         if stop or kind in permanent_kinds or self.login_fail_count >= self.max_login_failures:
             self.status = Status.Stop.value
             self.disabled_until = None

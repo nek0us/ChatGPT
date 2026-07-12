@@ -749,7 +749,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                                     token = await page.evaluate(
                                         '() => JSON.parse(document.querySelector("body").innerText)')
                                     logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
-                                    if "error" in token and session.status != Status.Login.value:
+                                    if "error" in token and session.status not in (Status.Login.value, Status.Stop.value):
                                         session.status = Status.Update.value
                                         logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
                                     else:
@@ -763,7 +763,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                                 token = await page.evaluate(
                                         '() => JSON.parse(document.querySelector("body").innerText)')
                                 logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
-                                if "error" in token and session.status != Status.Login.value:
+                                if "error" in token and session.status not in (Status.Login.value, Status.Stop.value):
                                     session.status = Status.Update.value
                                     logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
                                 else:
@@ -776,21 +776,25 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                         
                     else:
                         # no session-token,re login
-                        session.status = Status.Update.value
+                        if session.status != Status.Stop.value:
+                            session.status = Status.Update.value
                     token = await page.evaluate(
                         '() => JSON.parse(document.querySelector("body").innerText)')
-                    if "error" in token and session.status != Status.Login.value:
-                        session.status = Status.Update.value
+                    if "error" in token and session.status not in (Status.Login.value, Status.Stop.value):
+                        if session.status != Status.Stop.value:
+                            session.status = Status.Update.value
                         logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
                     if 'accessToken' not in token:
                         logger.debug(f"flush {session.email}'s cookie but no accessToken in response,it begin Status.Update,html text: \n{await res.body()}\n")
-                        session.status = Status.Update.value
+                        if session.status != Status.Stop.value:
+                            session.status = Status.Update.value
                     else:
                         session.access_token = token['accessToken']
                         logger.debug(f"flush {session.email} cf cookie OK!")
                 else:
                     logger.debug(f"flush {session.email}'s cookie get a {res.status} code,html text: \n{await res.body()}\n,it begin Status.Update")
-                    session.status = Status.Update.value
+                    if session.status != Status.Stop.value:
+                        session.status = Status.Update.value
 
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
@@ -820,6 +824,16 @@ def classify_login_failure(details: str, mode: str) -> str:
         "account locked",
         "account banned",
         "account disabled",
+        "account has been deactivated",
+        "account was deactivated",
+        "account has been suspended",
+        "account was suspended",
+        "account has been deleted or deactivated",
+        "account was deleted or deactivated",
+        "has been deleted or deactivated",
+        "account has been deleted",
+        "account was deleted",
+        "openai account blocked",
     )):
         return LoginFailureKind.AccountLocked.value
     if any(x in text for x in (
