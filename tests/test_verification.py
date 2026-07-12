@@ -64,6 +64,34 @@ class _OtpPage:
         raise AssertionError(f"unexpected selector: {selector}")
 
 
+class _MissingInput:
+    async def count(self):
+        return 0
+
+
+class _MicrosoftOtpPage:
+    def __init__(self):
+        self.inputs = [_OtpInput() for _ in range(6)]
+        self.keyboard = _Keyboard()
+
+    def locator(self, selector):
+        if selector.startswith('input[id="codeEntry-') and selector.endswith('"]'):
+            index = int(selector.removeprefix('input[id="codeEntry-').removesuffix('"]'))
+            return self.inputs[index] if index < len(self.inputs) else _MissingInput()
+        if selector in (
+            'input[aria-label="Enter your security code"]',
+            "input[aria-label='New password']",
+        ):
+            return _MissingInput()
+        raise AssertionError(f"unexpected selector: {selector}")
+
+    async def wait_for_load_state(self):
+        pass
+
+    async def wait_for_timeout(self, _milliseconds):
+        pass
+
+
 class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def _pending_challenge(self, broker: VerificationBroker, account: str = "account@example.com"):
         task = asyncio.create_task(broker.request_code(account, "openai", timeout_seconds=1))
@@ -160,4 +188,34 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await broker.submit(snapshot[0]["id"], "123456"))
         await task
         self.assertEqual(page.otp.value, "123456")
+        self.assertEqual(page.keyboard.presses, ["Enter"])
+
+    async def test_microsoft_auth_fills_broker_code_without_a_local_file(self):
+        broker = VerificationBroker()
+        page = _MicrosoftOtpPage()
+        auth = AsyncAuth0(
+            "account@example.com",
+            "password",
+            page,
+            _Logger(),
+            browser_contexts=None,
+            mode="microsoft",
+            verification_broker=broker,
+        )
+        auth.login_page = page
+        task = asyncio.create_task(auth._submit_microsoft_help_email_code())
+        for _ in range(10):
+            snapshot = await broker.snapshot()
+            if snapshot:
+                break
+            await asyncio.sleep(0)
+        else:
+            self.fail("Microsoft auth did not request verification")
+
+        self.assertEqual(snapshot[0]["provider"], "microsoft")
+        self.assertEqual(snapshot[0]["kind"], "help_email_otp")
+        self.assertTrue(await broker.submit(snapshot[0]["id"], "123456"))
+        await task
+
+        self.assertEqual([field.value for field in page.inputs], list("123456"))
         self.assertEqual(page.keyboard.presses, ["Enter"])

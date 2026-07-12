@@ -10,7 +10,6 @@ from pathlib import Path
 
 import asyncio
 import urllib.parse
-import os
 
 class Error(Exception):
     """
@@ -302,42 +301,54 @@ class AsyncAuth0:
                 await self.login_page.keyboard.press(self.EnterKey)
                 await self.login_page.wait_for_load_state()
                 # await self.login_page.wait_for_timeout(1000)
-                self.logger.info(f"please enter {self.email_address} -- help email {self.help_email}'s verify code to {self.email_address}_code.txt")
-                with open(f"{self.email_address}_code.txt","w") as code_file:
-                    code_file.write("")
-                with open(f"{self.email_address}_code.txt","r") as code_file:
-                    try:
-                        while 1:
-                            await asyncio.sleep(1)
-                            code = code_file.read()
-                            if code != "":
-                                self.logger.info(f"get {self.email_address} verify code {code}")
-                                verify_email_code_locator = self.login_page.locator('input[id="codeEntry-0"]') # ("input[aria-label='Enter your security code']")
-                                verify_email_code_far_locator = self.login_page.locator('input[aria-label="Enter your security code"]') # ("input[aria-label='Enter your security code']")
-                                if await verify_email_code_locator.count() > 0:
-                                    for i in range(6):
-                                        verify_email_code_locator_code = self.login_page.locator(f'input[id="codeEntry-{i}"]')
-                                        await verify_email_code_locator_code.fill(code[i])
-                                if await verify_email_code_far_locator.count() > 0:
-                                    await verify_email_code_far_locator.fill(code)
-                                        # Use your password
-                                # await self.login_page.fill('//*[@id="idTxtBx_OTC_Password"]', code)
-                                await self.login_page.keyboard.press(self.EnterKey)
-                                await self.login_page.wait_for_load_state()
-                                await self.login_page.wait_for_timeout(2000)
-                                verify_new_password_locator = self.login_page.locator("input[aria-label='New password']")
-                                if await verify_new_password_locator.count() > 0:
-                                    self.logger.error(f"{self.email_address} Microsoft login requires you to change your password. Please change it manually and try again.")
-                                    raise Error(
-                                        "Microsoft login error",
-                                        1,
-                                        f"{self.email_address} Microsoft login requires you to change your password. Please change it manually and try again.")
-                                
-                                break
-                    finally:
-                        os.unlink(f"{self.email_address}_code.txt")
+                await self._submit_microsoft_help_email_code()
             else:
                 self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
+                raise Error("Microsoft login error", 111, "Microsoft login requires a configured help email")
+
+    async def _submit_microsoft_help_email_code(self) -> None:
+        """Submit a broker-provided Microsoft help-email code without disk polling."""
+        if not self.verification_broker:
+            raise Error(
+                "Microsoft login error",
+                1,
+                "Microsoft login requires a help-email verification code",
+            )
+        self.logger.info(f"{self.email_address} waiting for a Microsoft help-email verification code")
+        try:
+            code = await self.verification_broker.request_code(
+                self.email_address,
+                "microsoft",
+                kind="help_email_otp",
+                message="Enter the security code sent to the configured Microsoft help email.",
+            )
+        except VerificationError as error:
+            raise Error("Microsoft login error", 1, f"Microsoft verification: {error}") from error
+
+        segmented_input = self.login_page.locator('input[id="codeEntry-0"]')
+        full_input = self.login_page.locator('input[aria-label="Enter your security code"]')
+        if await segmented_input.count() > 0:
+            for index, character in enumerate(code):
+                field = self.login_page.locator(f'input[id="codeEntry-{index}"]')
+                if await field.count() == 0:
+                    break
+                await field.fill(character)
+        elif await full_input.count() > 0:
+            await full_input.fill(code)
+        else:
+            raise Error("Microsoft login error", 1, "Microsoft verification input is no longer available")
+
+        await self.login_page.keyboard.press(self.EnterKey)
+        await self.login_page.wait_for_load_state()
+        await self.login_page.wait_for_timeout(2000)
+        verify_new_password_locator = self.login_page.locator("input[aria-label='New password']")
+        if await verify_new_password_locator.count() > 0:
+            self.logger.error(f"{self.email_address} Microsoft login requires a password change")
+            raise Error(
+                "Microsoft login error",
+                1,
+                "Microsoft login requires a password change. Change it manually and retry.",
+            )
     
     async def openai_code_password_login(self):
         await asyncio.sleep(1)
