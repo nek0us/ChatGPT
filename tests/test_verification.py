@@ -190,6 +190,18 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.otp.value, "123456")
         self.assertEqual(page.keyboard.presses, ["Enter"])
 
+    async def test_auth_timeout_allows_the_full_verification_window(self):
+        auth = AsyncAuth0(
+            "account@example.com",
+            "password",
+            _OtpPage(),
+            _Logger(),
+            browser_contexts=None,
+            verification_broker=VerificationBroker(default_timeout_seconds=600),
+        )
+
+        self.assertEqual(auth._login_timeout_seconds(), 660)
+
     async def test_microsoft_auth_fills_broker_code_without_a_local_file(self):
         broker = VerificationBroker()
         page = _MicrosoftOtpPage()

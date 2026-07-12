@@ -756,6 +756,12 @@ class AsyncAuth0:
         else:
             self.last_error_details = page_details
 
+    def _login_timeout_seconds(self) -> int:
+        """Keep the outer auth task alive longer than an interactive OTP challenge."""
+        if not self.verification_broker:
+            return 180
+        return max(180, self.verification_broker.default_timeout_seconds + 60)
+
     async def get_session_token(self,logger):
         self.logger.debug(f"{self.email_address} will create self.login_page")
         self.login_page: Page = await self.browser_contexts.new_page()
@@ -769,7 +775,10 @@ class AsyncAuth0:
             # Do not restart it behind the operator's back when no session is
             # available yet; callers can explicitly request another login.
             self.logger.debug(f"{self.email_address} will run one normal_begin attempt")
-            access_token = await asyncio.wait_for(self.normal_begin(logger, retry=0), timeout=180)
+            access_token = await asyncio.wait_for(
+                self.normal_begin(logger, retry=0),
+                timeout=self._login_timeout_seconds(),
+            )
             if access_token:
                 self.logger.debug(f"{self.email_address} get access_token by normal_begin")
         except Exception as e:
