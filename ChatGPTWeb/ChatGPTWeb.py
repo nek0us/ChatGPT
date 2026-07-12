@@ -31,6 +31,7 @@ from .config import (
     url_chatgpt,
     url_requirements,
     Status,
+    LoginFailureKind,
     all_models_values,
     model_list,
 )
@@ -2965,6 +2966,11 @@ class chatgpt:
             page_ready = bool(page and not page.is_closed())
             disabled = session.is_login_disabled()
             retry_task = getattr(self, "_control_login_tasks", {}).get(session.email)
+            retry_pending = bool(retry_task and not retry_task.done())
+            retry_after_seconds = 0
+            if session.disabled_until:
+                retry_after_seconds = max(0, int((session.disabled_until - datetime.now()).total_seconds()))
+            login_guidance, retry_mode = self._login_guidance(session, retry_pending, retry_after_seconds)
             accounts.append({
                 "email": session.email,
                 "status": session.status,
@@ -2972,9 +2978,12 @@ class chatgpt:
                 "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),
                 "disabled": disabled,
                 "manual_disabled": session.manual_disabled,
-                "login_retry_pending": bool(retry_task and not retry_task.done()),
+                "login_retry_pending": retry_pending,
                 "can_retry_login": bool(session.email and session.password),
                 "disabled_until": session.disabled_until.isoformat() if session.disabled_until else "",
+                "retry_after_seconds": retry_after_seconds,
+                "retry_mode": retry_mode,
+                "login_guidance": login_guidance,
                 "gptplus": session.gptplus,
                 "account_plan": getattr(session, "account_plan", "unknown"),
                 "account_plan_source": getattr(session, "account_plan_source", "unavailable"),
@@ -3020,6 +3029,36 @@ class chatgpt:
             "accounts": accounts,
             "verification": pending_verifications,
         }
+
+    @staticmethod
+    def _login_guidance(session: Session, retry_pending: bool, retry_after_seconds: int) -> tuple[str, str]:
+        """Return safe, operator-facing login state without exposing page/error text."""
+        if session.manual_disabled:
+            return "Disabled by operator.", "enable"
+        if retry_pending:
+            return "Manual login retry is running.", "wait"
+        if session.login_state and session.status == Status.Ready.value:
+            return "Ready.", "none"
+
+        guidance_by_kind = {
+            LoginFailureKind.AccountLocked.value: "Account is permanently unavailable. Retry only after it is restored upstream.",
+            LoginFailureKind.NeedVerification.value: "Verification is required. Submit the pending code below, then retry manually if needed.",
+            LoginFailureKind.RiskBlocked.value: "Provider risk checks blocked this login. Wait for cooldown before a manual retry.",
+            LoginFailureKind.RateLimited.value: "Provider rate limit reached. Wait for cooldown before a manual retry.",
+            LoginFailureKind.Transient.value: "Temporary browser or network failure. Retry after cooldown.",
+            LoginFailureKind.BadCredentials.value: "Credentials were rejected. Update them before a manual retry.",
+            LoginFailureKind.Unknown.value: "Login did not complete. Review the local screenshot or activity, then retry manually.",
+        }
+        guidance = guidance_by_kind.get(session.login_failure_kind, "Login has not completed yet.")
+        if retry_after_seconds:
+            return guidance, "cooldown"
+        if session.login_failure_kind in (
+            LoginFailureKind.AccountLocked.value,
+            LoginFailureKind.BadCredentials.value,
+            LoginFailureKind.NeedVerification.value,
+        ):
+            return guidance, "manual"
+        return guidance, "retry"
 
 
     async def md2img(self,md: str):

@@ -177,6 +177,21 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)
 
+    async def test_token_status_explains_manual_retry_for_a_permanent_login_failure(self):
+        runtime = self._runtime()
+        runtime.Sessions = [Session(
+            email="locked@example.com", status=Status.Stop.value,
+            login_failure_kind="account_locked",
+        )]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            account = (await runtime.token_status())["accounts"][0]
+
+        self.assertEqual(account["retry_mode"], "manual")
+        self.assertIn("permanently unavailable", account["login_guidance"])
+        self.assertEqual(account["retry_after_seconds"], 0)
+
     async def test_token_status_exposes_process_local_usage_by_model(self):
         runtime = self._runtime()
         runtime.Sessions = [Session(email="usage@example.com")]
