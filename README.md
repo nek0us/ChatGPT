@@ -242,6 +242,10 @@ chat = chatgpt(
 
 The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, and model usage observed during the current process. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
+### Verification Code Providers
+
+Manual dashboard submission remains the default. For a local mailbox/API integration, implement `VerificationCodeProvider.wait_for_code(challenge)` and pass provider instances through `verification_code_providers` when constructing `chatgpt`. A provider may poll until `challenge.expires_at`, return one code, or return `None` when it cannot handle the account. The broker races it safely with manual submission and never persists or exposes codes in status responses.
+
 ### ChatService (bot / HTTP / agent facade)
 ```python
 from ChatGPTWeb import ChatRequest, ChatService, chatgpt

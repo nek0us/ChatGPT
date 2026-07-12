@@ -6,6 +6,29 @@ from ChatGPTWeb.verification import (
     VerificationCancelledError,
     VerificationExpiredError,
 )
+
+
+class _ImmediateCodeProvider:
+    name = "immediate-test"
+
+    async def wait_for_code(self, _challenge):
+        return "654321"
+
+
+class _WaitingCodeProvider:
+    name = "waiting-test"
+
+    def __init__(self):
+        self.cancelled = False
+        self.release = asyncio.Event()
+
+    async def wait_for_code(self, _challenge):
+        try:
+            await self.release.wait()
+            return None
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 from ChatGPTWeb.OpenAIAuth import AsyncAuth0
 
 
@@ -59,6 +82,32 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await task, "123456")
         self.assertEqual(await broker.snapshot(), [])
         self.assertNotIn("123456", str(challenge))
+
+    async def test_provider_can_submit_a_code_without_persisting_it(self):
+        broker = VerificationBroker(code_providers=[_ImmediateCodeProvider()])
+
+        code = await broker.request_code("account@example.com", "openai")
+
+        self.assertEqual(code, "654321")
+        self.assertEqual(await broker.snapshot(), [])
+
+    async def test_manual_submission_cancels_a_waiting_provider(self):
+        provider = _WaitingCodeProvider()
+        broker = VerificationBroker(code_providers=[provider])
+        task, challenge = await self._pending_challenge(broker)
+        for _ in range(10):
+            snapshot = await broker.snapshot()
+            if snapshot[0]["automation"]:
+                break
+            await asyncio.sleep(0)
+        else:
+            self.fail("provider did not start for the verification challenge")
+
+        self.assertEqual(snapshot[0]["automation"][0]["provider"], "waiting-test")
+        self.assertEqual(snapshot[0]["automation"][0]["state"], "waiting")
+        self.assertTrue(await broker.submit(challenge["id"], "123456"))
+        self.assertEqual(await task, "123456")
+        self.assertTrue(provider.cancelled)
 
     async def test_cancel_unblocks_waiter_and_removes_challenge(self):
         broker = VerificationBroker()

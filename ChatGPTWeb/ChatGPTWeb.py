@@ -37,7 +37,7 @@ from .config import (
 from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
-from .verification import VerificationBroker
+from .verification import VerificationBroker, VerificationCodeProvider
 from .capabilities import (
     discover_account_plan,
     infer_plan_from_model_categories,
@@ -86,6 +86,7 @@ class chatgpt:
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
+                 verification_code_providers: typing.Sequence[VerificationCodeProvider] = (),
                
                  ) -> None:
         """
@@ -157,7 +158,7 @@ class chatgpt:
         self._control_login_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._activity: List[Dict[str, str]] = []
-        self.verification_broker = VerificationBroker()
+        self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
         self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol, Sequence
 from uuid import uuid4
 
 
@@ -19,6 +19,19 @@ class VerificationExpiredError(VerificationError):
 
 class VerificationCancelledError(VerificationError):
     """Raised when an operator cancels a pending challenge."""
+
+
+class VerificationCodeProvider(Protocol):
+    """Optional external source for a short-lived verification code.
+
+    Providers own their mailbox/API polling and must return ``None`` when they
+    cannot handle a challenge. They never receive broker internals or persist
+    submitted codes.
+    """
+
+    name: str
+
+    async def wait_for_code(self, challenge: "VerificationChallenge") -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -53,7 +66,11 @@ class VerificationBroker:
     all use the same ``submit`` and ``cancel`` operations.
     """
 
-    def __init__(self, default_timeout_seconds: int = 600):
+    def __init__(
+        self,
+        default_timeout_seconds: int = 600,
+        code_providers: Sequence[VerificationCodeProvider] = (),
+    ):
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
         self.default_timeout_seconds = default_timeout_seconds
@@ -61,6 +78,13 @@ class VerificationBroker:
         self._challenges: dict[str, VerificationChallenge] = {}
         self._account_ids: dict[str, str] = {}
         self._waiters: dict[str, asyncio.Future[str]] = {}
+        self._code_providers = list(code_providers)
+        self._provider_tasks: dict[str, list[asyncio.Task[None]]] = {}
+        self._provider_status: dict[str, list[dict[str, str]]] = {}
+
+    def add_code_provider(self, provider: VerificationCodeProvider) -> None:
+        """Register a process-local provider for future challenges."""
+        self._code_providers.append(provider)
 
     async def request_code(
         self,
@@ -97,6 +121,15 @@ class VerificationBroker:
             self._challenges[challenge.id] = challenge
             self._account_ids[account] = challenge.id
             self._waiters[challenge.id] = waiter
+            self._provider_status[challenge.id] = []
+
+        provider_tasks = [
+            asyncio.create_task(self._run_provider(provider, challenge))
+            for provider in self._code_providers
+        ]
+        if provider_tasks:
+            async with self._lock:
+                self._provider_tasks[challenge.id] = provider_tasks
 
         try:
             return await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout)
@@ -104,6 +137,7 @@ class VerificationBroker:
             await self._finish(challenge.id)
             raise VerificationExpiredError("verification challenge expired") from error
         finally:
+            await self._cancel_provider_tasks(challenge.id)
             await self._finish(challenge.id)
 
     async def submit(self, challenge_id: str, code: str) -> bool:
@@ -135,7 +169,54 @@ class VerificationBroker:
         """Return safe metadata for all pending challenges, newest first."""
         async with self._lock:
             challenges = sorted(self._challenges.values(), key=lambda item: item.created_at, reverse=True)
-            return [challenge.to_dict() for challenge in challenges]
+            snapshots = []
+            for challenge in challenges:
+                item = challenge.to_dict()
+                item["automation"] = [status.copy() for status in self._provider_status.get(challenge.id, [])]
+                snapshots.append(item)
+            return snapshots
+
+    @staticmethod
+    def _provider_name(provider: VerificationCodeProvider) -> str:
+        return str(getattr(provider, "name", provider.__class__.__name__))[:80]
+
+    async def _set_provider_status(self, challenge_id: str, provider: VerificationCodeProvider, state: str) -> None:
+        item = {"provider": self._provider_name(provider), "state": state}
+        async with self._lock:
+            statuses = self._provider_status.get(challenge_id)
+            if statuses is not None:
+                statuses.append(item)
+
+    async def _run_provider(self, provider: VerificationCodeProvider, challenge: VerificationChallenge) -> None:
+        await self._set_provider_status(challenge.id, provider, "waiting")
+        try:
+            code = await provider.wait_for_code(challenge)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self._set_provider_status(challenge.id, provider, "failed")
+            return
+        if code is None:
+            await self._set_provider_status(challenge.id, provider, "unavailable")
+            return
+        try:
+            accepted = await self.submit(challenge.id, code)
+        except ValueError:
+            await self._set_provider_status(challenge.id, provider, "invalid_code")
+            return
+        await self._set_provider_status(challenge.id, provider, "submitted" if accepted else "stale")
+
+    async def _cancel_provider_tasks(self, challenge_id: str) -> None:
+        async with self._lock:
+            tasks = self._provider_tasks.pop(challenge_id, [])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1)
+            except TimeoutError:
+                pass
 
     def _cancel_locked(self, challenge_id: str, message: str) -> bool:
         waiter = self._waiters.get(challenge_id)
@@ -148,5 +229,6 @@ class VerificationBroker:
         async with self._lock:
             challenge = self._challenges.pop(challenge_id, None)
             self._waiters.pop(challenge_id, None)
+            self._provider_status.pop(challenge_id, None)
             if challenge and self._account_ids.get(challenge.account) == challenge_id:
                 self._account_ids.pop(challenge.account, None)
