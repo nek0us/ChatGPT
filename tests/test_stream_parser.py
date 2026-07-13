@@ -122,6 +122,9 @@ class _FakeBackend:
         msg_data.msg_send = f"persona:{msg_data.msg_send}"
         return await self.continue_chat(msg_data)
 
+    async def get_persona_prompt(self, name):
+        return {"assistant": "stay concise"}.get(name, "")
+
     async def back_chat_from_input(self, msg_data):
         msg_data.msg_send = f"rewind:{msg_data.msg_send}"
         return await self.continue_chat(msg_data)
@@ -244,6 +247,12 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(estimate.estimated_tokens, 0)
         self.assertEqual(estimate.context_window_tokens, 100)
         self.assertIsNotNone(estimate.estimated_utilization)
+
+    async def test_persona_prompt_is_read_through_the_public_service(self):
+        service = ChatService(_FakeBackend())
+
+        self.assertEqual(await service.get_persona_prompt("assistant"), "stay concise")
+        self.assertEqual(await service.get_persona_prompt("missing"), "")
 
     async def test_stream_forwards_normalized_request_to_backend(self):
         service = ChatService(_FakeBackend())

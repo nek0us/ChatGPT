@@ -2920,6 +2920,12 @@ class chatgpt:
             msg_data.msg_recv = "not found"
             return msg_data
 
+    async def get_persona_prompt(self, name: str) -> str:
+        """Return one stored persona prompt without exposing personality storage."""
+        if not self.personality:
+            return ""
+        return self.personality.get_value_by_name(name) or ""
+
     async def back_init_personality(self, msg_data: MsgData):
         """
         back the init_personality time

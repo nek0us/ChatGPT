@@ -93,6 +93,8 @@ class ChatBackend(Protocol):
 
     async def init_personality(self, msg_data: MsgData) -> MsgData: ...
 
+    async def get_persona_prompt(self, name: str) -> str: ...
+
     async def back_chat_from_input(self, msg_data: MsgData) -> MsgData: ...
 
     async def back_init_personality(self, msg_data: MsgData) -> MsgData: ...
@@ -236,6 +238,10 @@ class ChatService:
     async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:
         """Return the repository-backed history for a known conversation."""
         return await self._backend.show_chat_history(MsgData(conversation_id=conversation_id))
+
+    async def get_persona_prompt(self, name: str) -> str:
+        """Return a stored persona prompt without exposing backend storage objects."""
+        return await self._backend.get_persona_prompt(name)
 
     async def estimate_context(
         self,
