@@ -1,13 +1,24 @@
 """Stable, transport-neutral service API for bot, HTTP, and agent adapters."""
 
 from dataclasses import dataclass, field, replace
+from enum import Enum
 import inspect
+import math
 
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Protocol, Union
 
 from .api import ChatStreamEvent
 from .content import ChatContent, UpstreamMarkupNormalizer, build_chat_content
 from .config import IOFile, MsgData
+
+
+class ConversationOperation(str, Enum):
+    """Explicit conversation operations supported by the public service API."""
+
+    SEND = "send"
+    START_PERSONA = "start_persona"
+    REWIND = "rewind"
+    RESET_TO_PERSONA = "reset_to_persona"
 
 
 @dataclass
@@ -23,9 +34,11 @@ class ChatRequest:
     deep_research: bool = False
     stream_idle_timeout_seconds: int = 0
     stream_status_interval_seconds: int = 15
+    operation: ConversationOperation = ConversationOperation.SEND
+    reference: str = ""
 
     def to_msg_data(self) -> MsgData:
-        return MsgData(
+        msg_data = MsgData(
             msg_send=self.prompt,
             conversation_id=self.conversation_id,
             p_msg_id=self.parent_message_id,
@@ -36,6 +49,10 @@ class ChatRequest:
             stream_idle_timeout_seconds=max(0, self.stream_idle_timeout_seconds),
             stream_status_interval_seconds=max(0, self.stream_status_interval_seconds),
         )
+        if self.operation is ConversationOperation.REWIND:
+            msg_data.msg_send = self.reference
+            msg_data.msg_type = "back_loop"
+        return msg_data
 
 
 @dataclass
@@ -56,8 +73,29 @@ class ChatResult:
     content: ChatContent = field(default_factory=ChatContent)
 
 
+@dataclass(frozen=True)
+class ConversationContextEstimate:
+    """A conservative local estimate, not an upstream context-window report."""
+
+    conversation_id: str
+    message_count: int
+    character_count: int
+    estimated_tokens: int
+    model: str = ""
+    context_window_tokens: int | None = None
+    estimated_utilization: float | None = None
+    context_window_source: str = "unavailable"
+    source: str = "local_history_heuristic"
+
+
 class ChatBackend(Protocol):
     async def continue_chat(self, msg_data: MsgData) -> MsgData: ...
+
+    async def init_personality(self, msg_data: MsgData) -> MsgData: ...
+
+    async def back_chat_from_input(self, msg_data: MsgData) -> MsgData: ...
+
+    async def back_init_personality(self, msg_data: MsgData) -> MsgData: ...
 
     def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]: ...
 
@@ -85,6 +123,19 @@ class ChatService:
     def __init__(self, backend: ChatBackend):
         self._backend = backend
 
+    async def _execute_buffered_request(self, request: ChatRequest) -> MsgData:
+        """Route explicit operations through the legacy runtime behind this facade."""
+        msg_data = request.to_msg_data()
+        if request.operation is ConversationOperation.SEND:
+            return await self._backend.continue_chat(msg_data)
+        if request.operation is ConversationOperation.START_PERSONA:
+            return await self._backend.init_personality(msg_data)
+        if request.operation is ConversationOperation.REWIND:
+            return await self._backend.back_chat_from_input(msg_data)
+        if request.operation is ConversationOperation.RESET_TO_PERSONA:
+            return await self._backend.back_init_personality(msg_data)
+        raise ValueError(f"Unsupported conversation operation: {request.operation}")
+
     @staticmethod
     def _result_from_msg_data(msg_data: MsgData) -> ChatResult:
         metadata = dict(msg_data.response_metadata)
@@ -107,11 +158,13 @@ class ChatService:
 
     async def send(self, request: ChatRequest) -> ChatResult:
         """Send a buffered request and return a normalized result."""
-        msg_data = await self._backend.continue_chat(request.to_msg_data())
+        msg_data = await self._execute_buffered_request(request)
         return self._result_from_msg_data(msg_data)
 
     async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
         """Yield upstream stream events without exposing Playwright objects."""
+        if request.operation is not ConversationOperation.SEND:
+            raise ValueError("Only the send operation supports streaming")
         upstream = self._backend.continue_chat_stream(request.to_msg_data())
         normalizer = UpstreamMarkupNormalizer()
         try:
@@ -183,6 +236,64 @@ class ChatService:
     async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:
         """Return the repository-backed history for a known conversation."""
         return await self._backend.show_chat_history(MsgData(conversation_id=conversation_id))
+
+    async def estimate_context(
+        self,
+        conversation_id: str,
+        *,
+        model: str = "",
+        account: str = "",
+    ) -> ConversationContextEstimate:
+        """Estimate locally retained conversation text without claiming upstream quota."""
+        history = await self.get_history(conversation_id)
+        parts: List[str] = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            for field_name in ("Q", "A", "input", "output"):
+                value = item.get(field_name)
+                if isinstance(value, str):
+                    parts.append(value)
+        text = "".join(parts)
+        ascii_count = sum(character.isascii() for character in text)
+        non_ascii_count = len(text) - ascii_count
+        estimated_tokens = math.ceil(ascii_count / 4 + non_ascii_count / 1.5)
+        context_window_tokens, context_window_source = await self._find_context_window(model, account)
+        return ConversationContextEstimate(
+            conversation_id=conversation_id,
+            message_count=len(history),
+            character_count=len(text),
+            estimated_tokens=estimated_tokens,
+            model=model,
+            context_window_tokens=context_window_tokens,
+            estimated_utilization=(estimated_tokens / context_window_tokens) if context_window_tokens else None,
+            context_window_source=context_window_source,
+        )
+
+    async def _find_context_window(self, model: str, account: str) -> tuple[int | None, str]:
+        if not model:
+            return None, "model_unavailable"
+        catalog = await self.get_model_catalog(fetch_remote=False)
+        accounts = catalog.get("accounts") if isinstance(catalog, dict) else None
+        if not isinstance(accounts, list):
+            return None, "catalog_unavailable"
+        ordered_accounts = sorted(
+            (item for item in accounts if isinstance(item, dict)),
+            key=lambda item: 0 if account and item.get("email") == account else 1,
+        )
+        for item in ordered_accounts:
+            for catalog_name, catalog_value in (("remote", item.get("remote")), *(
+                ("cached", value) for value in item.get("cached", []) if isinstance(item.get("cached"), list)
+            )):
+                if not isinstance(catalog_value, dict):
+                    continue
+                for candidate in catalog_value.get("models", []):
+                    if not isinstance(candidate, dict) or candidate.get("slug") != model:
+                        continue
+                    value = candidate.get("contextWindow")
+                    if isinstance(value, int) and value > 0:
+                        return value, f"{catalog_name}:{catalog_value.get('source', 'catalog')}"
+        return None, "context_window_unavailable"
 
     async def get_account_status(self) -> Dict[str, Any]:
         """Return sanitized account diagnostics; it never includes credentials."""

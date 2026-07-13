@@ -1221,6 +1221,7 @@ class chatgpt:
                                     slug: model.slug || "",
                                     title: model.title || "",
                                     description: model.description || "",
+                                    contextWindow: model.context_window || model.contextWindow || model.context_length || null,
                                     maxTokens: model.max_tokens || model.maxTokens || null,
                                     tags: Array.isArray(model.tags) ? model.tags : [],
                                 })),
@@ -1391,13 +1392,14 @@ class chatgpt:
                                         defaultModel: category.defaultModel || "",
                                         subscriptionLevel: category.subscriptionLevel || "",
                                     })),
-                                    models: models.slice(0, 80).map((model) => ({
-                                        slug: model.slug || "",
-                                        title: model.title || "",
-                                        description: model.description || "",
-                                        maxTokens: model.max_tokens || model.maxTokens || null,
-                                        tags: Array.isArray(model.tags) ? model.tags.slice(0, 10) : [],
-                                    })),
+                                models: models.slice(0, 80).map((model) => ({
+                                    slug: model.slug || "",
+                                    title: model.title || "",
+                                    description: model.description || "",
+                                    contextWindow: model.context_window || model.contextWindow || model.context_length || null,
+                                    maxTokens: model.max_tokens || model.maxTokens || null,
+                                    tags: Array.isArray(model.tags) ? model.tags.slice(0, 10) : [],
+                                })),
                                 };
                             };
                             const parseJsonOrNull = (text) => {

@@ -9,7 +9,7 @@ from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
 from ChatGPTWeb.http_api import chat_request_from_payload, create_control_app, create_http_app
-from ChatGPTWeb.service import ChatRequest, ChatService
+from ChatGPTWeb.service import ChatRequest, ChatService, ConversationOperation
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
@@ -118,6 +118,18 @@ class _FakeBackend:
         msg_data.response_metadata = {"finish_details": {"type": "stop"}}
         return msg_data
 
+    async def init_personality(self, msg_data):
+        msg_data.msg_send = f"persona:{msg_data.msg_send}"
+        return await self.continue_chat(msg_data)
+
+    async def back_chat_from_input(self, msg_data):
+        msg_data.msg_send = f"rewind:{msg_data.msg_send}"
+        return await self.continue_chat(msg_data)
+
+    async def back_init_personality(self, msg_data):
+        msg_data.msg_send = "reset_to_persona"
+        return await self.continue_chat(msg_data)
+
     async def continue_chat_stream(self, msg_data):
         yield ChatStreamEvent(type="status", metadata={"phase": "waiting_for_upstream", "idle_seconds": 15})
         yield ChatStreamEvent(type="delta", text="stream response", raw={"request": msg_data.msg_send})
@@ -134,7 +146,17 @@ class _FakeBackend:
         return {"account": ["account@example.com"]}
 
     async def get_model_catalog(self, fetch_remote=True):
-        return {"fetch_remote": fetch_remote}
+        return {
+            "fetch_remote": fetch_remote,
+            "accounts": [{
+                "email": "account@example.com",
+                "remote": {
+                    "source": "fetch:models",
+                    "models": [{"slug": "gpt-5-5-mini", "contextWindow": 100}],
+                },
+                "cached": [],
+            }],
+        }
 
     async def control_account(self, account, action):
         if account != "account@example.com":
@@ -207,6 +229,22 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage["accounts"][0]["email"], "account@example.com")
         self.assertIsNone(usage["accounts"][0]["usage"])
 
+    async def test_context_estimate_is_explicitly_local_and_non_authoritative(self):
+        service = ChatService(_FakeBackend())
+
+        estimate = await service.estimate_context(
+            "conversation-history",
+            model="gpt-5-5-mini",
+            account="account@example.com",
+        )
+
+        self.assertEqual(estimate.conversation_id, "conversation-history")
+        self.assertEqual(estimate.source, "local_history_heuristic")
+        self.assertEqual(estimate.message_count, 1)
+        self.assertGreater(estimate.estimated_tokens, 0)
+        self.assertEqual(estimate.context_window_tokens, 100)
+        self.assertIsNotNone(estimate.estimated_utilization)
+
     async def test_stream_forwards_normalized_request_to_backend(self):
         service = ChatService(_FakeBackend())
 
@@ -214,6 +252,41 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([event.type for event in events], ["status", "delta", "final"])
         self.assertEqual(events[-1].raw["request"], "stream me")
+
+    async def test_service_routes_typed_conversation_operations(self):
+        backend = _FakeBackend()
+        service = ChatService(backend)
+
+        persona_result = await service.send(ChatRequest(
+            prompt="assistant",
+            operation=ConversationOperation.START_PERSONA,
+        ))
+        rewind_result = await service.send(ChatRequest(
+            prompt="ignored",
+            conversation_id="conversation-service",
+            operation=ConversationOperation.REWIND,
+            reference="3",
+        ))
+        reset_result = await service.send(ChatRequest(
+            prompt="ignored",
+            conversation_id="conversation-service",
+            operation=ConversationOperation.RESET_TO_PERSONA,
+        ))
+
+        self.assertTrue(persona_result.ok)
+        self.assertEqual(backend.sent[0].msg_send, "persona:assistant")
+        self.assertEqual(backend.sent[1].msg_send, "rewind:3")
+        self.assertEqual(backend.sent[1].msg_type, "back_loop")
+        self.assertEqual(reset_result.text, "service response")
+
+    async def test_stream_rejects_non_send_conversation_operations(self):
+        service = ChatService(_FakeBackend())
+
+        with self.assertRaises(ValueError):
+            await anext(service.stream(ChatRequest(
+                prompt="assistant",
+                operation=ConversationOperation.START_PERSONA,
+            )))
 
     async def test_stream_to_callback_preserves_event_order_and_returns_result(self):
         service = ChatService(_FakeBackend())

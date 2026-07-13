@@ -65,6 +65,7 @@ Reasons:
 - Usage/quota may not be available as a realtime standalone endpoint. It can appear only after certain UI states, model picker interactions, or rate-limit responses, so treat missing quota data as unknown rather than zero.
 - For model catalog, prefer authenticated `/backend-api/models?...` when available, then localStorage model cache, then the static local alias catalog.
 - `ChatRequest` currently models ordinary sends only. A full NoneBot migration also needs a small, explicit conversation-control surface for starting a persona session, resetting/backtracking it, and selecting a named history branch. Do not make plugin code mutate `MsgData.msg_type` or browser internals again; add typed service-level operations when that migration reaches those commands.
+- Browser ChatGPT does not expose a reliable remaining-context budget. The authenticated model catalog can expose an explicit `context_window`/`contextWindow` field for some models; use it only as a model ceiling and combine it with a local history estimate plus a safety margin. Never treat `max_tokens` as a context window unless upstream explicitly defines it that way. Keep persona retention and compaction policy in the bot layer: summarize the active conversation, then create a fresh session from the original persona plus the summary. Re-sending a persona inside the same long conversation is a fallback, not compaction.
 
 ## Verified Smoke Commands
 
