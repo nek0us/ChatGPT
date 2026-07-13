@@ -32,6 +32,7 @@ class ChatRequest:
     files: List[IOFile] = field(default_factory=list)
     web_search: bool = False
     deep_research: bool = False
+    prefer_paid_account: bool = False
     stream_idle_timeout_seconds: int = 0
     stream_status_interval_seconds: int = 15
     operation: ConversationOperation = ConversationOperation.SEND
@@ -46,6 +47,7 @@ class ChatRequest:
             upload_file=self.files.copy(),
             web_search=self.web_search,
             deep_research=self.deep_research,
+            gpt_plus=self.prefer_paid_account,
             stream_idle_timeout_seconds=max(0, self.stream_idle_timeout_seconds),
             stream_status_interval_seconds=max(0, self.stream_status_interval_seconds),
         )

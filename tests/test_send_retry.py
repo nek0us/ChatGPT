@@ -104,3 +104,10 @@ class ConversationPayloadTests(unittest.TestCase):
 
         self.assertEqual(data.stream_idle_timeout_seconds, 90)
         self.assertEqual(data.stream_status_interval_seconds, 10)
+
+    def test_paid_account_preference_reaches_message_data(self):
+        from ChatGPTWeb.service import ChatRequest
+
+        data = ChatRequest(prompt="paid", prefer_paid_account=True).to_msg_data()
+
+        self.assertTrue(data.gpt_plus)
