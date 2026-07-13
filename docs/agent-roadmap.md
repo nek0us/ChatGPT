@@ -201,6 +201,8 @@ Expected streaming shape:
 - July 2026 live Microsoft testing reached OpenAI's terminal `auth.openai.com/error` page after provider authentication. Its current text says the account has been deleted or deactivated and may be preceded by a Playwright timeout, so account-lock matching must run before generic transient matching. The original browser-state capture happened too late, after `/api/auth/session` replaced the page; login now probes the terminal ChatGPT page before that legacy session check, and the concrete terminal wording is permanently classified as `account_locked/Stop`.
 - A live retry also exposed a race: a keep-alive task could pass its disabled check, sleep, and later overwrite a freshly assigned `Stop/account_locked` with `Update`. Keep-alive now checks again after its delay, legacy status writers preserve `Stop`, and `Session.mark_login_failure` refuses to downgrade an existing permanent failure. Explicit operator retry clears the permanent state first, so recovery remains intentional.
 - The local control dashboard now receives safe `login_guidance`, `retry_mode`, and cooldown seconds from `token_status`. It never renders raw upstream login-error text. Permanent locks, rejected credentials, and verification-required accounts remain manually retryable only by explicit operator action; rate/risk/transient failures expose their remaining cooldown for diagnosis, not a background retry promise.
+- NB2 integration uses `ChatService.stream_to_callback()` as its first public-service migration. Follow up in the core package: its streaming `ChatResult` currently cannot report the selected account because `ChatStreamEvent` has no account field, and it does not carry the legacy conversation title. Add explicit safe fields only if downstream callers need these for status UI or conversation labels; do not expose credentials or raw page data.
+- Before publishing a plugin release that imports `ChatService`/`ChatRequest`/`ChatResult`, increment ChatGPTWeb beyond the currently published baseline and make the plugin's minimum dependency match that release. Development may use the sibling repository directly, but the PyPI dependency must not silently resolve an older API surface.
 - The control plane now has a bounded, process-local activity feed exposed at authenticated `GET /v1/activity`. It records account control actions, controlled-login completion/cancellation/failure, unexpected runtime closure, and completed chat model names. It holds at most 200 credential-free entries, does not include prompts/OTP/errors, and is intentionally not persisted.
 
 ## Phase 2: Error And Retry Model
@@ -250,6 +252,11 @@ Expected streaming shape:
 
 ## Phase 6: MCP And Agent Integration
 
+- Keep `ChatGPTWeb` as the model transport and structured stream provider. It must not own host-command execution, authorization policy, or bot-specific conversation state.
+- Put agent orchestration in a separate upper-layer runtime that can be called by NoneBot, an HTTP API, or a CLI client. It should own the plan/tool/result loop, cancellation, run history, and per-user permission context.
+- Treat MCP as a tool interoperability protocol, not as an agent implementation. Machine-management tools should live in a separate local MCP server with an explicit allowlist, least-privilege process account, audit log, rate limits, and per-action approval for destructive or network-visible operations.
+- A system prompt is necessary for tool descriptions and behavior policy, but it is never the security boundary. Enforce tool schemas, authorization, and confirmation in code before each execution.
+- NoneBot should expose agent capability behind an opt-in config flag and preserve the normal chat path when disabled. Start with read-only diagnostics, then add explicitly approved write actions.
 - A minimal optional FastMCP server is implemented as `create_mcp_server(service)`. It uses the official `mcp` Python package only when the factory is called, so base package users do not need the extra dependency.
 - Implemented tools:
   - `chat_send` with explicit `confirm=true`
