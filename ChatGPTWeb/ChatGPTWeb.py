@@ -220,6 +220,13 @@ class chatgpt:
             proxy_settings["password"] = parsed_proxy.password
 
         return proxy_settings
+
+    @staticmethod
+    def _firefox_user_prefs() -> Dict[str, bool]:
+        return {
+            "dom.storageManager.prompt.testing": True,
+            "dom.storageManager.prompt.testing.allow": True,
+        }
     
     # 检测Firefox是否已经安装 
     async def is_firefox_installed(self):
@@ -238,6 +245,7 @@ class chatgpt:
                     headless=self.headless,
                     slow_mo=50,
                     proxy=self.proxy,
+                    firefox_user_prefs=self._firefox_user_prefs(),
                 ),
             )
             await browser.close()
@@ -306,6 +314,7 @@ class chatgpt:
                         headless=self.headless,
                         slow_mo=50,
                         proxy=self.proxy,
+                        firefox_user_prefs=self._firefox_user_prefs(),
                     ),
                 )
                 self.browser.on("disconnected", lambda *args: self.logger.warning("browser disconnected unexpectedly") if not self._closing else None)
@@ -1640,14 +1649,17 @@ class chatgpt:
             }
 
             const getToken = async (names, methodName, errorName) => {
-                for (const name of names) {
-                    let provider = window;
-                    for (const part of name.split(".")) {
-                        provider = provider && provider[part];
+                for (let attempt = 0; attempt < 30; attempt += 1) {
+                    for (const name of names) {
+                        let provider = window;
+                        for (const part of name.split(".")) {
+                            provider = provider && provider[part];
+                        }
+                        if (provider && typeof provider[methodName] === "function") {
+                            return await provider[methodName](requirements);
+                        }
                     }
-                    if (provider && typeof provider[methodName] === "function") {
-                        return await provider[methodName](requirements);
-                    }
+                    await new Promise((resolve) => setTimeout(resolve, 500));
                 }
                 throw new Error(`${errorName} provider is not ready`);
             };

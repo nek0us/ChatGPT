@@ -90,6 +90,15 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(created, context)
         runtime.browser.new_context.assert_awaited_once_with(storage_state="state.json")
 
+    def test_firefox_preferences_allow_persistent_storage_for_automation(self):
+        self.assertEqual(
+            chatgpt._firefox_user_prefs(),
+            {
+                "dom.storageManager.prompt.testing": True,
+                "dom.storageManager.prompt.testing.allow": True,
+            },
+        )
+
     async def test_startup_page_creation_failure_is_transient_not_stop(self):
         runtime = self._runtime()
         context = object()

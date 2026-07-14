@@ -1064,28 +1064,25 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
     try:
         await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=15000)
-    except Exception as e:
+    except Exception:
         pass
-    await asyncio.sleep(1)
-    res = await page.evaluate_handle(js[0])
-    await res.json_value()
-    await page.wait_for_load_state('networkidle')
-    js_test = await page.evaluate("window._chatp")
-    if not js_test:
-        js_res = await page.evaluate_handle(js[1])
-        await js_res.json_value()
-        await asyncio.sleep(2)
-        await page.wait_for_load_state("load")
-        await asyncio.sleep(4)
-        js_test2 = await page.evaluate("window._chatp")
-        if js_test2:
-            js_used = 1
-        else:
-            js_res = await page.evaluate(js[1])
-            js_used = 0
-    else:
-        js_used = 0
-    return js_used
+    for index in (0, 1):
+        await page.evaluate(js[index])
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const chat = window._chatp;
+                    const proofs = [window._chatp_old, window._proof, window._proof && window._proof.Z];
+                    return typeof chat === 'function' && proofs.some(
+                        (proof) => proof && typeof proof.getEnforcementToken === 'function'
+                    );
+                }""",
+                timeout=15000,
+            )
+            return index
+        except Exception:
+            continue
+    raise RuntimeError("browser bridge providers did not become ready")
 
 async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
     page: Page = await session.browser_contexts.new_page() # type: ignore
