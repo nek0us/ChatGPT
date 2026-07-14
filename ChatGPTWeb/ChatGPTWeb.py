@@ -529,7 +529,7 @@ class chatgpt:
         
 
     async def __alive__(self):
-        """keep cf cookie alive
+        """Keep browser session state and ChatGPT session tokens refreshed.
         保持cf cookie存活
         """
         while not self._closing and self.browser.contexts:
@@ -542,12 +542,12 @@ class chatgpt:
                         continue
                     tasks.append(self.__keep_alive__(session))
                 except Exception as e:
-                    self.logger.error(f"add {context_index} flush cf task error! {e}")
+                    self.logger.error(f"add {context_index} session refresh task error! {e}")
             try:
-                self.logger.debug(f"{session.email} will flush alive tasks")
+                self.logger.debug(f"{session.email} will refresh session keep-alive tasks")
                 await asyncio.wait_for(asyncio.gather(*tasks),timeout=300)
             except TimeoutError:
-                self.logger.warning(f"{session.email} flush alive tasks timeout 300")
+                self.logger.warning(f"{session.email} session keep-alive tasks timed out after 300 seconds")
             except Exception as e:
                 a, b, exc_traceback = sys.exc_info()
                 self.logger.warning(f"{session.email} flush alive tasks error:{e},line: {exc_traceback.tb_lineno}") # type: ignore
@@ -815,7 +815,7 @@ class chatgpt:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
             session = await retry_keep_alive(session, url_check, self.storage, self.js, self.js_used, self.save_screen, self.logger)
             try:
-                await page.goto("https://chatgpt.com/",timeout=20000,wait_until='load')
+                await page.goto("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
             except Exception as e:
                 self.logger.warning(e)
                 await save_screen(save_screen_status=self.save_screen,path=f"context_{session.email}_goto_chatgpt.com_faild!",page=page)
@@ -914,7 +914,7 @@ class chatgpt:
                 )
                 if attempt == 1:
                     try:
-                        await page.goto("https://chatgpt.com/", timeout=20000, wait_until="load")
+                        await page.goto("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
                     except Exception:
                         pass
 
@@ -937,7 +937,7 @@ class chatgpt:
             self._mark_bridge_initialization_failure(session, RuntimeError("recovered context has no page"))
             return False
         try:
-            await recovered_page.goto("https://chatgpt.com/", timeout=20000, wait_until="load")
+            await recovered_page.goto("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
         except Exception as error:
             self.logger.warning(f"context {session.email} recovery navigation failed: {error}")
         return await self._initialize_page_bridge(session, recovered_page, mark_failure=True)
@@ -2945,6 +2945,7 @@ class chatgpt:
             login_guidance, retry_mode = self._login_guidance(session, retry_pending, retry_after_seconds)
             accounts.append({
                 "email": session.email,
+                "mode": session.mode,
                 "status": session.status,
                 "login_state": session.login_state,
                 "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),

@@ -167,8 +167,6 @@ class ChatStreamParser:
             if parts and isinstance(parts[0], str):
                 events.extend(self._merge_full_text(parts[0], raw))
 
-        if message.get("is_complete") or self._is_finished(message.get("status")):
-            events.append(self.final_event(raw=raw))
         return events
 
     def _handle_image_results(self, value: List[Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
@@ -198,8 +196,6 @@ class ChatStreamParser:
         elif path.endswith("/message/content/parts") and isinstance(value, list):
             if value and isinstance(value[0], str):
                 events.extend(self._merge_full_text(value[0], raw))
-        elif path.endswith("/message/status") and self._is_finished(value):
-            events.append(self.final_event(raw=raw))
         elif path.endswith("/message/metadata/image_results") and isinstance(value, list):
             events.extend(self._handle_image_results(value, raw))
         elif path == "/message" and isinstance(value, dict):
@@ -748,7 +744,7 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
                                 if session.login_state is False:
                                     token = await page.evaluate(
                                         '() => JSON.parse(document.querySelector("body").innerText)')
-                                    logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
+                                    logger.debug(f"refresh {session.email}'s session state, Login to Ready")
                                     if "error" in token and session.status not in (Status.Login.value, Status.Stop.value):
                                         session.status = Status.Update.value
                                         logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
@@ -762,7 +758,7 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
                             if session.login_state_first is False or session.login_state is False:
                                 token = await page.evaluate(
                                         '() => JSON.parse(document.querySelector("body").innerText)')
-                                logger.debug(f"flush {session.email}'s cf cookie,Login to Ready")
+                                logger.debug(f"refresh {session.email}'s session state, Login to Ready")
                                 if "error" in token and session.status not in (Status.Login.value, Status.Stop.value):
                                     session.status = Status.Update.value
                                     logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
@@ -785,19 +781,19 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
                             session.status = Status.Update.value
                         logger.debug(f"the error in {session.email}'s access_token,it begin Status.Update")
                     if 'accessToken' not in token:
-                        logger.debug(f"flush {session.email}'s cookie but no accessToken in response,it begin Status.Update,html text: \n{await res.body()}\n")
+                        logger.debug(f"refresh {session.email}'s session state received no accessToken; begin Status.Update")
                         if session.status != Status.Stop.value:
                             session.status = Status.Update.value
                     else:
                         session.access_token = token['accessToken']
-                        logger.debug(f"flush {session.email} cf cookie OK!")
+                        logger.debug(f"refresh {session.email} session token and browser bridge OK!")
                 else:
-                    logger.debug(f"flush {session.email}'s cookie get a {res.status} code,html text: \n{await res.body()}\n,it begin Status.Update")
+                    logger.debug(f"refresh {session.email}'s session state got HTTP {res.status}; begin Status.Update")
                     if session.status != Status.Stop.value:
                         session.status = Status.Update.value
 
             else:
-                logger.error(f"flush {session.email} cf cookie error!")
+                logger.error(f"refresh {session.email} session state error!")
                 # await page.screenshot(path=f"flush error {session.email}.jpg")
                 session = await retry_keep_alive(session,url,storage,js,js_num,save_screen_status,logger,retry)
         except Exception as e:
@@ -1052,7 +1048,7 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
 
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
     try:
-        await page.goto("https://chatgpt.com",wait_until="load")
+        await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=15000)
     except Exception as e:
         pass
     await asyncio.sleep(1)

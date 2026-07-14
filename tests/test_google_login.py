@@ -20,6 +20,12 @@ class _Locator:
     async def fill(self, value):
         self.value = value
 
+    async def input_value(self):
+        return self.value
+
+    async def press(self, value):
+        self.value = self.value
+
     async def click(self, **_kwargs):
         self.clicked = True
 
@@ -213,6 +219,9 @@ class _EmailFirstMicrosoftPage:
             return self.submit
         return self.email if "email" in selector or "username" in selector else _Locator(0)
 
+    def get_by_role(self, _role, **_kwargs):
+        return self.submit
+
 
 class _BlockedPage:
     async def evaluate(self, _script):
@@ -320,6 +329,19 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.email.value, "account@example.com")
         self.assertTrue(page.submit.clicked)
         self.assertEqual(page.keyboard.presses, [])
+
+    async def test_existing_session_is_used_before_credential_flow(self):
+        page = _SessionTokenPage()
+        page.evaluate = AsyncMock(side_effect=["", {"accessToken": "existing-token"}])
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth.goto_chatgpt_home = AsyncMock()
+        auth._wait_for_document_ready = AsyncMock()
+
+        token = await auth._existing_session_access_token()
+
+        self.assertEqual(token, "existing-token")
+        auth.goto_chatgpt_home.assert_awaited_once_with(timeout=30000)
 
     async def test_openai_block_message_catches_current_deactivation_wording(self):
         page = _BlockedPage()

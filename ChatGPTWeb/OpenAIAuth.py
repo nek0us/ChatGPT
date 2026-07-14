@@ -199,7 +199,10 @@ class AsyncAuth0:
                 await button.first.click(timeout=10000)
                 self.logger.debug(f"{self.email_address} selected {provider} provider")
                 return True
-            self.logger.warning(f"{self.email_address} {provider} provider option was not found")
+            self.logger.debug(
+                f"{self.email_address} {provider} provider option was not found; "
+                "trying the email-first hand-off"
+            )
             return False
         except Exception as e:
             # self.logger.warning(f"{self.email_address} point button {self.mode} exception:{e}, will try old buttion")
@@ -229,9 +232,9 @@ class AsyncAuth0:
     async def _submit_provider_email(self) -> bool:
         """Advance an email-first OpenAI login page without submitting a password."""
         inputs = (
-            self.login_page.locator("input#email"),
-            self.login_page.locator("input[autocomplete='username']"),
-            self.login_page.locator("input[type='email']"),
+            self.login_page.locator("input#email:visible"),
+            self.login_page.locator("input[autocomplete='username']:visible"),
+            self.login_page.locator("input[type='email']:visible"),
         )
         for email_input in inputs:
             if await email_input.count() == 0:
@@ -239,20 +242,52 @@ class AsyncAuth0:
             try:
                 await email_input.first.wait_for(state="visible", timeout=10000)
                 await email_input.first.fill(self.email_address)
-                submit = self.login_page.locator(
-                    "form button[type='submit'], form input[type='submit']"
-                ).first
-                if await submit.count() > 0:
-                    await submit.click(timeout=10000)
+                if await email_input.first.input_value() != self.email_address:
+                    continue
+                submits = (
+                    self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
+                    self.login_page.locator("button[type='submit']:visible"),
+                    self.login_page.locator("input[type='submit']:visible"),
+                )
+                for submit in submits:
+                    if await submit.count() == 0:
+                        continue
+                    await submit.first.click(timeout=10000)
+                    break
                 else:
                     # Older auth pages have no semantic submit button and still
-                    # accept Enter from the email input.
-                    await self.login_page.keyboard.press(self.EnterKey)
+                    # accept Enter from the focused email input.
+                    await email_input.first.press(self.EnterKey)
                 self.logger.debug(f"{self.email_address} submitted email to start {self.mode} hand-off")
                 return True
             except Exception as error:
                 self.logger.debug(f"{self.email_address} provider email input was not usable: {error}")
         return False
+
+    async def _existing_session_access_token(self) -> str | None:
+        """Use restored browser state before clearing cookies for a credential flow."""
+        try:
+            await self.goto_chatgpt_home(timeout=30000)
+            await self._wait_for_document_ready()
+            for _ in range(3):
+                blocked_message = await self._openai_account_block_message()
+                if blocked_message:
+                    raise Error("OpenAI login error", 1, blocked_message)
+                token = await self.login_page.evaluate(
+                    """async () => {
+                        const response = await fetch('/api/auth/session', {credentials: 'include'});
+                        if (!response.ok) return {};
+                        return await response.json();
+                    }"""
+                )
+                if isinstance(token, dict) and isinstance(token.get("accessToken"), str):
+                    return token["accessToken"]
+                await asyncio.sleep(1)
+        except Error:
+            raise
+        except Exception as error:
+            self.logger.debug(f"{self.email_address} existing session probe did not complete: {error}")
+        return None
 
     async def _click_chatgpt_login_entry(self) -> bool:
         """Enter the auth flow from the current signed-out ChatGPT homepage."""
@@ -625,7 +660,6 @@ class AsyncAuth0:
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
         await self.goto_chatgpt_home()
         await asyncio.sleep(1)
-        await self.login_page.keyboard.press(self.EnterKey)
         check_login = self.login_page.locator('img[alt="User"]')
         self.logger.debug(f"{self.email_address} goto auth and relogin homepage check")
         await asyncio.sleep(1)
@@ -952,16 +986,24 @@ class AsyncAuth0:
             # A credential flow may be waiting for a human verification code.
             # Do not restart it behind the operator's back when no session is
             # available yet; callers can explicitly request another login.
-            self.logger.debug(f"{self.email_address} will run one normal_begin attempt")
-            access_token = await asyncio.wait_for(
-                self.normal_begin(logger, retry=0),
-                timeout=self._login_timeout_seconds(),
-            )
+            access_token = await self._existing_session_access_token()
+            if access_token:
+                self.logger.debug(f"{self.email_address} restored an existing ChatGPT session")
+            else:
+                self.logger.debug(f"{self.email_address} will run one normal_begin attempt")
+                access_token = await asyncio.wait_for(
+                    self.normal_begin(logger, retry=0),
+                    timeout=self._login_timeout_seconds(),
+                )
             if access_token:
                 self.logger.debug(f"{self.email_address} get access_token by normal_begin")
         except Exception as e:
             self.last_error_details = str(e)
-            self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
+            if isinstance(e, Error):
+                self.logger.info(f"{self.email_address} login flow stopped at: {e.location}")
+                self.logger.debug(f"{self.email_address} login details: {e}")
+            else:
+                self.logger.warning(f"save screenshot {self.email_address}_login_error.png,login error:{e}")
             await self.save_screen(path=f"{self.email_address}_login_error",page=self.login_page)
         finally:
             cookies = await self.browser_contexts.cookies()

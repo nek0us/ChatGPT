@@ -155,7 +155,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ready)
         runtime._recover_session_context_for_bridge.assert_awaited_once_with(session)
-        recovered_page.goto.assert_awaited_once_with("https://chatgpt.com/", timeout=20000, wait_until="load")
+        recovered_page.goto.assert_awaited_once_with("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
         self.assertEqual(session.status, "")
 
     async def test_context_recovery_suppresses_intentional_close_diagnostics(self):
@@ -197,6 +197,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         account = status["accounts"][0]
         self.assertFalse(account["available"])
+        self.assertEqual(account["mode"], "openai")
         self.assertEqual(account["conversation_count"], 1)
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)

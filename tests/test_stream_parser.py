@@ -36,8 +36,8 @@ class ChatStreamParserTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual([event.type for event in events], ["delta", "final"])
-        final = events[-1]
+        self.assertEqual([event.type for event in events], ["delta"])
+        final = parser.final_event()
         self.assertEqual(final.text, "Hello from ChatGPT.")
         self.assertEqual(final.conversation_id, "conversation-1")
         self.assertEqual(final.message_id, "message-1")
@@ -64,7 +64,7 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual([event.text for event in events], ["Hello", ", world", "!"])
         self.assertEqual(parser.text, "Hello, world!")
 
-    def test_decoder_does_not_suppress_final_after_empty_early_final(self):
+    def test_decoder_waits_for_transport_completion_before_emitting_final(self):
         decoder = ChatStreamDecoder()
         early_final = {
             "p": "/message/status",
@@ -81,7 +81,7 @@ class ChatStreamParserTests(unittest.TestCase):
         stream += "data: [DONE]\n\n"
 
         events = decoder.feed(stream)
-        self.assertEqual([event.type for event in events], ["final", "delta", "final"])
+        self.assertEqual([event.type for event in events], ["delta", "final"])
         self.assertEqual(events[-1].text, "later response")
 
     def test_image_patch_emits_one_event_and_final_contains_urls(self):
