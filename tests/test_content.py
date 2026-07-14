@@ -54,6 +54,8 @@ class ChatContentTests(unittest.TestCase):
         content = build_chat_content(markup)
 
         self.assertEqual(content.markdown, "Paris   \nSource: European Union - France overview")
+        self.assertNotIn("\ue200cite", content.markdown)
+        self.assertIn("\ue200cite", content.raw_markdown)
         self.assertEqual(content.source_references[0].label, "European Union - France overview")
         self.assertEqual(content.source_references[0].source_id, "turn0search0")
 

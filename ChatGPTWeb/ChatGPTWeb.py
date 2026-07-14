@@ -37,6 +37,7 @@ from .config import (
 from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
+from .content import build_chat_content
 from .storage import RuntimeStorage
 from .verification import VerificationBroker, VerificationCodeProvider
 from .capabilities import (
@@ -2734,10 +2735,10 @@ class chatgpt:
             self.logger.error(msg_data.error_info)
         else:
             if not msg_data.error_info or msg_data.status:
-                if msg_data.msg_raw:
-                    self.logger.info(f"receive message: {msg_data.msg_raw}")
-                else:
-                    self.logger.info(f"receive message: {msg_data.msg_recv}")
+                response_text = msg_data.msg_raw or msg_data.msg_recv
+                self.logger.info(
+                    f"receive message: {build_chat_content(response_text).markdown}"
+                )
         finally:
             if session.status not in (Status.Update.value, Status.Stop.value):
                 session.status = Status.Ready.value
@@ -2762,7 +2763,9 @@ class chatgpt:
                     session.login_state = True
                 await self.save_chat(msg_data, context_num)
                 self._record_usage(session, msg_data)
-                self.logger.info(f"receive stream message: {msg_data.msg_recv}")
+                self.logger.info(
+                    f"receive stream message: {build_chat_content(msg_data.msg_recv).markdown}"
+                )
         except Exception as e:
             if not msg_data.error_info:
                 msg_data.add_error(kind="continue_chat_stream_error", message=str(e), session_email=session.email)
