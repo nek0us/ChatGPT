@@ -1,6 +1,6 @@
 [project]
-name = "ChatGPTWeb"
-version = "0.4.0"
+name = "chatgptweb"
+version = "0.4.1"
 description = "ChatGPT PlayWright API"
 authors = [
     {name = "nek0us", email = "nekouss@mail.com"},
@@ -18,5 +18,5 @@ Homepage = "https://github.com/nek0us/ChatGPT"
 Repository = "https://github.com/nek0us/ChatGPT"
 
 [build-system]
-requires = ["pdm-pep517>=0.12.0"]
-build-backend = "pdm.pep517.api"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
