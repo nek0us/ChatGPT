@@ -64,6 +64,25 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual([event.text for event in events], ["Hello", ", world", "!"])
         self.assertEqual(parser.text, "Hello, world!")
 
+    def test_older_full_snapshot_cannot_truncate_accumulated_text(self):
+        parser = ChatStreamParser()
+        parser.feed({
+            "message": {
+                "author": {"role": "assistant"},
+                "content": {"parts": ["first paragraph\n\nsecond paragraph\n\nthird paragraph"]},
+            }
+        })
+
+        events = parser.feed({
+            "message": {
+                "author": {"role": "assistant"},
+                "content": {"parts": ["first paragraph\n\nsecond paragraph"]},
+            }
+        })
+
+        self.assertEqual(events, [])
+        self.assertEqual(parser.final_event().text, "first paragraph\n\nsecond paragraph\n\nthird paragraph")
+
     def test_decoder_waits_for_transport_completion_before_emitting_final(self):
         decoder = ChatStreamDecoder()
         early_final = {

@@ -128,14 +128,29 @@ class ChatStreamParser:
     def _merge_full_text(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         if not value:
             return []
-        if value.startswith(self.text):
-            delta = value[len(self.text):]
-        else:
-            delta = value
-        self.text = value
-        if not delta:
+        if value == self.text:
             return []
-        return [ChatStreamEvent(type="delta", text=delta, raw=raw)]
+        if value.startswith(self.text):
+            return self._append_delta(value[len(self.text):], raw)
+        if self.text.startswith(value):
+            # Conversation streams may replay an older, shorter message snapshot
+            # after tool/citation metadata arrives.  It is not an authoritative
+            # replacement for text that has already been observed.
+            return []
+
+        max_overlap = min(len(self.text), len(value))
+        for overlap in range(max_overlap, 0, -1):
+            if self.text.endswith(value[:overlap]):
+                return self._append_delta(value[overlap:], raw)
+
+        # A disjoint full snapshot can only be useful when it is longer than the
+        # accumulated response.  Prefer preserving the longer value over silently
+        # truncating an already delivered answer.
+        if len(value) > len(self.text):
+            delta = value
+            self.text = value
+            return [ChatStreamEvent(type="delta", text=delta, raw=raw)]
+        return []
 
     def _handle_message(self, item: Dict[str, Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         events: List[ChatStreamEvent] = []

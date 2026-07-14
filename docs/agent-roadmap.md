@@ -220,6 +220,7 @@ Expected streaming shape:
 - ChatGPT keeps resources open after the DOM becomes usable. All homepage navigation used by bridge initialization, recovery, and bridge injection must wait only for `domcontentloaded`; an internal `wait_until="load"` inside `flush_page()` consumes the entire outer bridge timeout and makes an otherwise healthy account look unavailable.
 - The control dashboard must render `login_failure_kind` before the generic boolean login state: a permanent `account_locked` session is unavailable, not "needs login". `token_status()` includes the configured account mode so the dashboard does not show an empty mode field.
 - The old "CF cookie refresh" name is historical. The periodic task opens a short-lived page to refresh browser/session state and the ChatGPT access token; it remains required for long-lived runtimes, but successful refreshes are debug-level noise rather than normal console output.
+- Stream message snapshots are not guaranteed to be monotonic: after search/citation metadata arrives, ChatGPT can replay an older shorter assistant snapshot. The parser must preserve already accumulated text in that case; a shorter snapshot is stale transport state, never authority to truncate the final answer. Regression coverage now verifies this explicitly.
 
 ## Phase 2: Error And Retry Model
 
