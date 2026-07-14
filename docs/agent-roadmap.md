@@ -304,6 +304,7 @@ Expected streaming shape:
 - Add state-machine tests for session transitions.
 - Add a fake transport for `send()` and `stream()` so most tests do not need a browser.
 - Keep live Playwright tests manual or opt-in because login flows are unstable and account-specific.
+- July 2026 investigation: upstream Playwright issue [#40882](https://github.com/microsoft/playwright/issues/40882) documents intermittent `newPage` hangs on Windows Firefox. The reporter found recreating a browser context insufficient; Playwright maintainers could not reproduce it reliably and closed the issue without a fix. Core must reject blank-page false readiness, bound page creation, and clean stale contexts. A full browser-process recycle and an upgrade experiment against maintained upstream Playwright belong to a dedicated compatibility task, not normal login retry.
 
 ## Suggested Commit Order
 

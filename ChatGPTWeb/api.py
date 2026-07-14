@@ -5,6 +5,7 @@ import uuid
 import json
 import base64
 import asyncio
+from urllib.parse import urlparse
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1062,10 +1063,17 @@ async def get_paid_by_httpx(cookies: str,token: str,device_id: str,ua: str,proxy
         raise e
 
 async def flush_page(page: Page,js: tuple, js_used: int) -> int:
+    navigation_error = None
     try:
         await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=15000)
-    except Exception:
-        pass
+    except Exception as error:
+        navigation_error = error
+    current_host = urlparse(page.url).hostname or ""
+    if current_host not in {"chatgpt.com", "chat.openai.com"}:
+        details = f"browser page is not on ChatGPT after bridge navigation: {page.url}"
+        if navigation_error:
+            raise RuntimeError(details) from navigation_error
+        raise RuntimeError(details)
     for index in (0, 1):
         await page.evaluate(js[index])
         try:

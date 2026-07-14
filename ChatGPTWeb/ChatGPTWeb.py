@@ -380,6 +380,7 @@ class chatgpt:
     async def _new_page_with_timeout(self, context, label: str):
         """Create a page without leaking a late Playwright task on startup stalls."""
         timeout = self.startup_timeout
+        known_pages = {id(page) for page in getattr(context, "pages", [])}
         page_task = asyncio.create_task(context.new_page())
         initial_wait = min(15, timeout)
         try:
@@ -395,8 +396,33 @@ class chatgpt:
             if not page_task.done():
                 page_task.cancel()
                 await asyncio.gather(page_task, return_exceptions=True)
+            for page in getattr(context, "pages", []):
+                if id(page) in known_pages or page.is_closed():
+                    continue
+                try:
+                    await page.close()
+                except Exception:
+                    pass
             self.logger.warning(f"{label}_page_create timeout after {timeout}s")
             raise TimeoutError(f"{label}_page_create timeout after {timeout}s") from error
+
+    async def _discard_session_context(self, session: Session) -> None:
+        """Close an unusable context so a later retry starts from a clean page."""
+        context = session.browser_contexts
+        session.browser_contexts = None
+        session.page = None
+        if not context:
+            return
+        suppressed = getattr(self, "_intentional_context_closures", None)
+        if suppressed is None:
+            suppressed = self._intentional_context_closures = set()
+        suppressed.add(session.email)
+        try:
+            await context.close()
+        except Exception as error:
+            self.logger.warning(f"{session.email} could not close unusable context: {error}")
+        finally:
+            self._intentional_context_closures.discard(session.email)
 
     def _mark_session_runtime_closed(self, session: Session, source: str):
         if self._closing:
@@ -421,20 +447,7 @@ class chatgpt:
 
     async def _recover_session_context_for_bridge(self, session: Session) -> bool:
         """Replace one stuck startup context without treating it as a login failure."""
-        context = session.browser_contexts
-        if context:
-            suppressed = getattr(self, "_intentional_context_closures", None)
-            if suppressed is None:
-                suppressed = self._intentional_context_closures = set()
-            suppressed.add(session.email)
-            try:
-                await context.close()
-            except Exception as error:
-                self.logger.warning(f"{session.email} bridge recovery could not close context: {error}")
-            finally:
-                suppressed.discard(session.email)
-        session.browser_contexts = None
-        session.page = None
+        await self._discard_session_context(session)
         try:
             recovered = await self._ensure_session_runtime(session)
         except Exception as error:
@@ -614,6 +627,8 @@ class chatgpt:
                 kind=LoginFailureKind.Transient.value,
                 details=f"login task failed: {e}",
             )
+            if session.page is None:
+                await self._discard_session_context(session)
             self.logger.warning(f"{session.email} login task failed:{e}")
         
 
@@ -1524,6 +1539,9 @@ class chatgpt:
     def _browser_fetch_bridge_script(self) -> str:
         return """
         async (options) => {
+            if (!["https://chatgpt.com", "https://chat.openai.com"].includes(location.origin)) {
+                throw new Error(`browser page is not on ChatGPT: ${location.href}`);
+            }
             const errors = [];
             const streamControllers = window.__chatgptwebStreamControllers ||
                 (window.__chatgptwebStreamControllers = Object.create(null));

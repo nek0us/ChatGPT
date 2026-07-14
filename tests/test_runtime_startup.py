@@ -8,6 +8,7 @@ import tempfile
 from aiohttp import ClientSession
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
+from ChatGPTWeb.api import flush_page
 from ChatGPTWeb.config import MsgData, Session, Status
 from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
@@ -33,6 +34,13 @@ class _Logger:
 class _Page:
     def __init__(self):
         self.goto = AsyncMock()
+
+
+class _BlankPage:
+    def __init__(self):
+        self.url = "about:newtab"
+        self.goto = AsyncMock(side_effect=TimeoutError("navigation stalled"))
+        self.evaluate = AsyncMock()
 
 
 class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
@@ -114,6 +122,15 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.status, Status.Update.value)
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.is_login_disabled())
+        self.assertIsNone(session.browser_contexts)
+
+    async def test_bridge_refuses_to_inject_into_a_blank_page(self):
+        page = _BlankPage()
+
+        with self.assertRaisesRegex(RuntimeError, "not on ChatGPT"):
+            await flush_page(page, ("first", "second"), 0)
+
+        page.evaluate.assert_not_awaited()
 
     async def test_bridge_initialization_retries_once_before_succeeding(self):
         runtime = self._runtime()
