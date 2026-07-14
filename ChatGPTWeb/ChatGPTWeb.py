@@ -684,7 +684,7 @@ class chatgpt:
             self.control_url = f"http://{self.control_host}:{port}"
             self.manage["control_url"] = self.control_url
             self.logger.info(f"ChatGPTWeb control dashboard: {self.control_url}")
-            self.logger.info(f"ChatGPTWeb control API key: {self.control_api_key}")
+            self.logger.info("ChatGPTWeb control API key is configured")
         except Exception as error:
             await runner.cleanup()
             self.logger.warning(f"control dashboard did not start: {error}")

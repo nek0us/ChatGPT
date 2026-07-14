@@ -141,6 +141,25 @@ class _LoginButtonHomepage:
         return _Locator(1 if selector == "button[data-testid='login-button']" else 0)
 
 
+class _NavigatingLoginSurfacePage:
+    def __init__(self):
+        self.url = "https://chatgpt.com/"
+        self._first_lookup = True
+
+    def locator(self, _selector):
+        page = self
+
+        class _NavigatingLocator:
+            async def count(self):
+                if page._first_lookup:
+                    page._first_lookup = False
+                    page.url = "https://auth.openai.com/log-in"
+                    raise RuntimeError("Execution context was destroyed")
+                return 1
+
+        return _NavigatingLocator()
+
+
 class _PopupInfo:
     def __init__(self, popup):
         self.value = self._resolve(popup)
@@ -408,6 +427,21 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         auth.login_page = page
 
         self.assertFalse(await auth._click_google_one_tap())
+
+    async def test_non_google_login_dismisses_google_one_tap(self):
+        page = _OneTapPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="openai")
+        auth.login_page = page
+
+        self.assertTrue(await auth._dismiss_google_one_tap())
+        self.assertTrue(page.button.clicked)
+
+    async def test_login_surface_retries_when_navigation_replaces_execution_context(self):
+        page = _NavigatingLoginSurfacePage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertTrue(await auth.wait_for_login_surface(timeout=1000))
 
     async def test_google_one_tap_switches_to_oauth_popup(self):
         page = _OneTapPage()

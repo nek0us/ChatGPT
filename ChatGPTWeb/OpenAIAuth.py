@@ -111,9 +111,16 @@ class AsyncAuth0:
         while asyncio.get_running_loop().time() < deadline:
             if self.is_login_surface_url(self.login_page.url):
                 return True
-            for selector in selectors:
-                if await self.login_page.locator(selector).count() > 0:
-                    return True
+            try:
+                for selector in selectors:
+                    if await self.login_page.locator(selector).count() > 0:
+                        return True
+            except Exception as error:
+                # A homepage login click can replace the execution context before
+                # the destination document exposes its auth controls.  The next
+                # polling iteration observes the new page instead of failing the
+                # entire credential flow.
+                self.logger.debug(f"{self.email_address} auth surface changed while navigating: {error}")
             await asyncio.sleep(0.25)
         return False
 
@@ -291,6 +298,8 @@ class AsyncAuth0:
 
     async def _click_chatgpt_login_entry(self) -> bool:
         """Enter the auth flow from the current signed-out ChatGPT homepage."""
+        if self.mode != "google":
+            await self._dismiss_google_one_tap()
         candidates = (
             self.login_page.locator("button[data-testid='login-button']"),
             self.login_page.get_by_role("button", name="Log in"),
@@ -311,6 +320,47 @@ class AsyncAuth0:
                     return True
                 except Exception as force_error:
                     self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {force_error}")
+        return False
+
+    async def _dismiss_google_one_tap(self) -> bool:
+        """Close Google One Tap before a non-Google ChatGPT login flow.
+
+        One Tap is an optional Google overlay on the signed-out homepage.  It
+        is useful only for Google accounts and can intercept the normal Log in
+        button for OpenAI and Microsoft accounts.
+        """
+        iframe_selector = "iframe[src*='accounts.google.com/gsi/iframe']"
+        try:
+            iframe = self.login_page.locator(iframe_selector)
+            if await iframe.count() == 0:
+                return False
+            frame_locator = getattr(self.login_page, "frame_locator", None)
+            if not callable(frame_locator):
+                return False
+            frame = frame_locator(iframe_selector)
+            close_selectors = (
+                "#close",
+                "button[aria-label='Close']",
+                "button[aria-label='关闭']",
+                "[role='button'][aria-label='Close']",
+                "[role='button'][aria-label='关闭']",
+            )
+            for selector in close_selectors:
+                close_button = frame.locator(selector).first
+                if await close_button.count() == 0:
+                    continue
+                await close_button.click(timeout=5000)
+                self.logger.debug(f"{self.email_address} dismissed Google One Tap for {self.mode} login")
+                return True
+            keyboard = getattr(self.login_page, "keyboard", None)
+            if keyboard:
+                await keyboard.press("Escape")
+                await asyncio.sleep(0.25)
+                if await iframe.count() == 0:
+                    self.logger.debug(f"{self.email_address} dismissed Google One Tap with Escape")
+                    return True
+        except Exception as error:
+            self.logger.debug(f"{self.email_address} could not dismiss Google One Tap: {error}")
         return False
 
     async def _click_google_one_tap(self) -> bool:
