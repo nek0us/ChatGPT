@@ -177,6 +177,48 @@ class _SessionTokenPage:
         self.evaluate = AsyncMock(return_value="")
 
 
+class _HomepagePage:
+    def __init__(self):
+        self.goto = AsyncMock()
+
+
+class _MissingProviderPage:
+    def __init__(self):
+        self.wait_for_load_state = AsyncMock()
+
+    def locator(self, _selector):
+        return _Locator(0)
+
+    def get_by_role(self, _role, **_kwargs):
+        return _Locator(0)
+
+    def get_by_text(self, _text, **_kwargs):
+        return _Locator(0)
+
+
+class _MicrosoftRedirectPage:
+    url = "https://login.live.com/oauth20_authorize.srf"
+
+
+class _EmailFirstMicrosoftPage:
+    url = "https://auth.openai.com/log-in"
+
+    def __init__(self):
+        self.email = _Locator(1)
+        self.submit = _Locator(1)
+        self.keyboard = _Keyboard()
+
+    def locator(self, selector):
+        if "submit" in selector:
+            return self.submit
+        return self.email if "email" in selector or "username" in selector else _Locator(0)
+
+
+class _BlockedPage:
+    async def evaluate(self, _script):
+        return "You do not have an account because it has been deleted or deactivated."
+
+
 class _SessionTokenContext:
     def __init__(self, page):
         self.new_page = AsyncMock(return_value=page)
@@ -240,6 +282,51 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(token)
         auth.normal_begin.assert_awaited_once_with(ANY, retry=0)
         page.close.assert_awaited_once()
+
+    async def test_chatgpt_home_navigation_uses_dom_content_loaded(self):
+        page = _HomepagePage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        await auth.goto_chatgpt_home()
+
+        page.goto.assert_awaited_once_with(
+            "https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000,
+        )
+
+    async def test_missing_microsoft_provider_does_not_continue_into_credentials(self):
+        page = _MissingProviderPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertFalse(await auth.point_login_button())
+
+    async def test_microsoft_provider_waits_for_the_identity_host(self):
+        page = _MicrosoftRedirectPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        await auth._wait_for_microsoft_identity_page()
+
+        self.assertTrue(auth.is_microsoft_identity_url(page.url))
+
+    async def test_email_first_microsoft_handoff_submits_only_the_email(self):
+        page = _EmailFirstMicrosoftPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertTrue(await auth._submit_provider_email())
+
+        self.assertEqual(page.email.value, "account@example.com")
+        self.assertTrue(page.submit.clicked)
+        self.assertEqual(page.keyboard.presses, [])
+
+    async def test_openai_block_message_catches_current_deactivation_wording(self):
+        page = _BlockedPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertIn("OpenAI account blocked", await auth._openai_account_block_message())
 
     async def test_login_route_detection_accepts_current_and_legacy_hosts(self):
         self.assertTrue(AsyncAuth0.is_login_surface_url("https://chatgpt.com/auth/login"))

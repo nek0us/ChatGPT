@@ -368,10 +368,25 @@ class chatgpt:
             self.logger.warning(f"{session.email} could not save local auth state: {error}")
 
     async def _new_page_with_timeout(self, context, label: str):
-        return await self._startup_wait_for(
-            f"{label}_page_create",
-            context.new_page(),
-        )
+        """Create a page without leaking a late Playwright task on startup stalls."""
+        timeout = self.startup_timeout
+        page_task = asyncio.create_task(context.new_page())
+        initial_wait = min(15, timeout)
+        try:
+            return await asyncio.wait_for(asyncio.shield(page_task), timeout=initial_wait)
+        except TimeoutError:
+            self.logger.warning(
+                f"{label}_page_create is still pending; "
+                "if Firefox is blank, bring its window to the foreground"
+            )
+        try:
+            return await asyncio.wait_for(page_task, timeout=timeout - initial_wait)
+        except TimeoutError as error:
+            if not page_task.done():
+                page_task.cancel()
+                await asyncio.gather(page_task, return_exceptions=True)
+            self.logger.warning(f"{label}_page_create timeout after {timeout}s")
+            raise TimeoutError(f"{label}_page_create timeout after {timeout}s") from error
 
     def _mark_session_runtime_closed(self, session: Session, source: str):
         if self._closing:
@@ -580,14 +595,14 @@ class chatgpt:
                 await session.browser_contexts.add_cookies(session.login_cookies)
         except asyncio.CancelledError:
             session.mark_login_failure(
+                kind=LoginFailureKind.Transient.value,
                 details="login task cancelled by startup timeout",
-                stop=True,
             )
             raise
         except Exception as e:
             session.mark_login_failure(
+                kind=LoginFailureKind.Transient.value,
                 details=f"login task failed: {e}",
-                stop=True,
             )
             self.logger.warning(f"{session.email} login task failed:{e}")
         

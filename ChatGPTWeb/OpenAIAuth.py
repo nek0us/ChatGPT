@@ -9,6 +9,7 @@ from .verification import VerificationBroker, VerificationError
 from pathlib import Path
 
 import asyncio
+import re
 import urllib.parse
 
 class Error(Exception):
@@ -99,6 +100,11 @@ class AsyncAuth0:
         path = parsed.path.rstrip("/") or "/"
         return host in {"chatgpt.com", "chat.openai.com"} and not path.startswith("/auth")
 
+    @staticmethod
+    def is_microsoft_identity_url(url: str) -> bool:
+        host = urllib.parse.urlsplit(url).netloc.lower()
+        return host in {"login.live.com", "account.live.com"}
+
     async def wait_for_login_surface(self, timeout: int = 10000) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         selectors = ("input[type='email']",)
@@ -118,6 +124,26 @@ class AsyncAuth0:
                 return True
             await asyncio.sleep(0.25)
         return False
+
+    async def goto_chatgpt_home(self, timeout: int = 60000) -> None:
+        """Enter the application without waiting for its long-lived load event."""
+        await self.login_page.goto(
+            "https://chatgpt.com/",
+            wait_until="domcontentloaded",
+            timeout=timeout,
+        )
+
+    async def _wait_for_document_ready(self, timeout: int = 5000) -> None:
+        """Let navigation settle without treating persistent page traffic as a failure."""
+        try:
+            await self.login_page.wait_for_load_state("domcontentloaded", timeout=timeout)
+        except TypeError:
+            # Keep compatibility with the small page doubles used by downstream tests.
+            await self.login_page.wait_for_load_state()
+        except Exception as error:
+            debug = getattr(self.logger, "debug", None)
+            if debug:
+                debug(f"{self.email_address} document did not settle quickly: {error}")
     
     async def find_cf(self,page: Page):
         # cf_check_box1 = page.locator("//html/body/div/div[2]/form/div/div/div")
@@ -145,11 +171,11 @@ class AsyncAuth0:
         
         # self.login_page.locator('//html/body/div[5]/div/div/div/div/div/button[1]/div')
 
-    async def point_login_button(self):
+    async def point_login_button(self) -> bool:
         self.logger.debug(f"{self.email_address} login with {self.mode}")
         await self.find_cf(self.login_page)
         try:
-            await self.login_page.wait_for_load_state('load')
+            await self._wait_for_document_ready()
         except Exception as e:
             self.logger.warning(f"get auth page by {self.mode} error,will pass:{e}")
             await self.save_screen(path=f"{self.email_address}_get_auth0__{self.mode}_error",page=self.login_page)
@@ -158,20 +184,23 @@ class AsyncAuth0:
         self.logger.debug(f"{self.email_address} will point {self.mode} button")
         try:
             if self.mode == "google" and await self._click_google_one_tap():
-                return
-            text = f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft'}"
-            button = self.login_page.get_by_text(text)
-            await asyncio.sleep(1)
-            # button = self.login_page.get_by_text(f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}", exact=True)
-            if await button.count() == 0:
-                text = f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}"
-                button = self.login_page.get_by_text(text)
-            await asyncio.sleep(1)
-            if await button.count() > 0:
-            # await button.wait_for(state="visible")
-                await button.click()
-            else:
-                self.logger.warning(f"{self.email_address} point button {self.mode} exception not found ,will skip")
+                return True
+            provider = "Microsoft" if self.mode == "microsoft" else self.mode.capitalize()
+            candidates = (
+                self.login_page.get_by_role("button", name=re.compile(rf"continue with {provider}", re.I)),
+                self.login_page.get_by_text(f"Continue with {provider}", exact=False),
+                self.login_page.get_by_text(f"Continue with {provider} Account", exact=False),
+                self.login_page.locator(f"button:has-text('{provider}')"),
+                self.login_page.locator(f"[data-provider='{self.mode}']"),
+            )
+            for button in candidates:
+                if await button.count() == 0:
+                    continue
+                await button.first.click(timeout=10000)
+                self.logger.debug(f"{self.email_address} selected {provider} provider")
+                return True
+            self.logger.warning(f"{self.email_address} {provider} provider option was not found")
+            return False
         except Exception as e:
             # self.logger.warning(f"{self.email_address} point button {self.mode} exception:{e}, will try old buttion")
             # text2 = f"Continue with {self.mode.capitalize() if self.mode != 'microsoft' else 'Microsoft Account'}"
@@ -179,7 +208,51 @@ class AsyncAuth0:
             # await button2.click()
             self.logger.warning(f"{self.email_address} point button {self.mode} exception:{e} ,will skip")
             await self.save_screen(path=f"{self.email_address}_ point_login_button_{self.mode}_exception",page=self.login_page)
-            # raise e
+            return False
+
+    async def _wait_for_microsoft_identity_page(self, timeout: int = 45000) -> None:
+        """Confirm provider hand-off before entering Microsoft credentials."""
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            if self.is_microsoft_identity_url(self.login_page.url):
+                return
+            blocked_message = await self._openai_account_block_message()
+            if blocked_message:
+                raise Error("OpenAI login error", 1, blocked_message)
+            await asyncio.sleep(0.25)
+        raise Error(
+            "Microsoft login error",
+            1,
+            "Microsoft sign-in page was not reached after selecting the provider",
+        )
+
+    async def _submit_provider_email(self) -> bool:
+        """Advance an email-first OpenAI login page without submitting a password."""
+        inputs = (
+            self.login_page.locator("input#email"),
+            self.login_page.locator("input[autocomplete='username']"),
+            self.login_page.locator("input[type='email']"),
+        )
+        for email_input in inputs:
+            if await email_input.count() == 0:
+                continue
+            try:
+                await email_input.first.wait_for(state="visible", timeout=10000)
+                await email_input.first.fill(self.email_address)
+                submit = self.login_page.locator(
+                    "form button[type='submit'], form input[type='submit']"
+                ).first
+                if await submit.count() > 0:
+                    await submit.click(timeout=10000)
+                else:
+                    # Older auth pages have no semantic submit button and still
+                    # accept Enter from the email input.
+                    await self.login_page.keyboard.press(self.EnterKey)
+                self.logger.debug(f"{self.email_address} submitted email to start {self.mode} hand-off")
+                return True
+            except Exception as error:
+                self.logger.debug(f"{self.email_address} provider email input was not usable: {error}")
+        return False
 
     async def _click_chatgpt_login_entry(self) -> bool:
         """Enter the auth flow from the current signed-out ChatGPT homepage."""
@@ -232,9 +305,8 @@ class AsyncAuth0:
         return True
         
     async def mc_help_email_verify(self):
-        await self.login_page.wait_for_load_state('load')
+        await self._wait_for_document_ready()
         await asyncio.sleep(1)
-        await self.login_page.wait_for_load_state('load')
         if await self._choose_microsoft_help_email_delivery():
             await self._submit_microsoft_help_email_code()
             return
@@ -245,7 +317,7 @@ class AsyncAuth0:
             else:
                 await select_verify_locator.click()
         await asyncio.sleep(2)
-        await self.login_page.wait_for_load_state('load')
+        await self._wait_for_document_ready()
         help_status = False
         verify_email_locator = self.login_page.locator("input[id='iProof0']")
         if await verify_email_locator.count() > 0:
@@ -260,12 +332,12 @@ class AsyncAuth0:
                 else:
                     self.logger.warning(f"{self.email_address} not input help_email,but it need help_email's verify code now")
                     raise Error("Microsoft login error",111,f"{self.email_address} need microsoft login help email")
-                await self.login_page.wait_for_load_state('load')
+                await self._wait_for_document_ready()
                 await asyncio.sleep(1)
                 help_status = True
 
             await self.login_page.keyboard.press(self.EnterKey)
-            await self.login_page.wait_for_load_state('load')
+            await self._wait_for_document_ready()
             await asyncio.sleep(1)
 
         verify_locator = self.login_page.locator('input[id="proof-confirmation-email-input"]')
@@ -303,7 +375,7 @@ class AsyncAuth0:
                 # await self.login_page.click('//*[@id="proofConfirmationText"]')
                 # await self.login_page.fill('//*[@id="proofConfirmationText"]', self.help_email)
                 await self.login_page.keyboard.press(self.EnterKey)
-                await self.login_page.wait_for_load_state()
+                await self._wait_for_document_ready()
                 # await self.login_page.wait_for_timeout(1000)
                 await self._submit_microsoft_help_email_code()
             else:
@@ -401,7 +473,7 @@ class AsyncAuth0:
             await full_input.fill(code)
 
         await self.login_page.keyboard.press(self.EnterKey)
-        await self.login_page.wait_for_load_state()
+        await self._wait_for_document_ready()
         await self.login_page.wait_for_timeout(2000)
         verify_new_password_locator = self.login_page.locator("input[aria-label='New password']")
         if await verify_new_password_locator.count() > 0:
@@ -551,10 +623,7 @@ class AsyncAuth0:
         await self.browser_contexts.clear_cookies()
         await self.browser_contexts.add_cookies(cookies) # type: ignore
         self.logger.debug(f"{self.email_address} relogin clear cookie ")
-        await self.login_page.goto(
-            url="https://chatgpt.com",
-            wait_until='load'
-        )
+        await self.goto_chatgpt_home()
         await asyncio.sleep(1)
         await self.login_page.keyboard.press(self.EnterKey)
         check_login = self.login_page.locator('img[alt="User"]')
@@ -642,7 +711,15 @@ class AsyncAuth0:
                 await asyncio.sleep(2)
                 # Select Mode
                 if self.mode != "openai":
-                    await self.point_login_button()
+                    provider_selected = await self.point_login_button()
+                    if not provider_selected and not await self._submit_provider_email():
+                        raise Error(
+                            "OpenAI login error",
+                            1,
+                            f"{self.mode.capitalize()} provider option and email entry were not available on the OpenAI login page",
+                        )
+                    if self.mode == "microsoft":
+                        await self._wait_for_microsoft_identity_page()
                 # await asyncio.sleep(2)
                 if self.mode == "google":
                     self.logger.debug(f"{self.email_address} login with google")
@@ -656,6 +733,8 @@ class AsyncAuth0:
                     # Start Fill
                     # TODO: SPlit Parts from select mode
                 if self.mode == "microsoft":
+                    if not self.password:
+                        raise Error("Microsoft login error", 1, "Microsoft account password is empty")
                     # enter email_address
                     await self.find_cf(self.login_page)
                     # await asyncio.sleep(5)
@@ -670,7 +749,7 @@ class AsyncAuth0:
                         await mc_username.fill(self.email_address)
                         await asyncio.sleep(1)
                         await self.login_page.keyboard.press(self.EnterKey)
-                        await self.login_page.wait_for_load_state()
+                        await self._wait_for_document_ready()
                     else:
                         self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     await asyncio.sleep(1)
@@ -683,14 +762,17 @@ class AsyncAuth0:
                         await mc_password.fill(self.password)
                         await asyncio.sleep(2)
                         await self.login_page.keyboard.press(self.EnterKey)
-                        await self.login_page.wait_for_load_state()
+                        await asyncio.sleep(2)
+                        blocked_message = await self._openai_account_block_message()
+                        if blocked_message:
+                            raise Error("OpenAI login error", 1, blocked_message)
+                        await self._wait_for_document_ready()
                     else:
                         self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     # verify code 
                     # await self.login_page.wait_for_timeout(1000)
                     await self.mc_help_email_verify()
-                    await self.login_page.wait_for_load_state()
-                    await self.login_page.wait_for_load_state('networkidle')
+                    await self._wait_for_document_ready()
                     await asyncio.sleep(3)
                     check_mc_next = self.login_page.locator('button[data-testid="primaryButton"]')
                     if await check_mc_next.count() > 0:
@@ -700,9 +782,9 @@ class AsyncAuth0:
                         except Exception as e:
                             self.logger.debug(f"{self.email_address} microsoft try to point Next Button exception:{e}")
                         await asyncio.sleep(1)
-                        await self.login_page.wait_for_load_state('networkidle')
+                        await self._wait_for_document_ready()
                         await asyncio.sleep(2)
-                        await self.login_page.wait_for_load_state()
+                        await self._wait_for_document_ready()
 
 
 
@@ -720,13 +802,13 @@ class AsyncAuth0:
                     try:
                         await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
                         await asyncio.sleep(1)
-                        await self.login_page.wait_for_load_state('load')
+                        await self._wait_for_document_ready()
                         stay_button = self.login_page.get_by_text("Yes")
                         if await stay_button.count() > 0:
                             await stay_button.click()
                     except:
                         pass
-                    await self.login_page.wait_for_load_state()
+                    await self._wait_for_document_ready()
 
 
                 elif self.mode == "google":
@@ -753,7 +835,7 @@ class AsyncAuth0:
                     await asyncio.sleep(2)
                     if not await self.wait_for_chat_app():
                         self.logger.debug(f"{self.email_address} will re waitfor chatgpt homepage ")
-                        await self.login_page.goto("https://chatgpt.com/")
+                        await self.goto_chatgpt_home()
                     self.logger.debug(f"{self.email_address} will check login status")
                     nologin_home_locator = self.login_page.locator('//html/body/div[1]/div[1]/div[1]/div/div/div/div/nav/div[2]/div[2]/button[2]')
                     auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
@@ -771,7 +853,7 @@ class AsyncAuth0:
                     self.logger.debug(f"{self.email_address} login not get access_token,will check again ")
                 except Exception as e:
                     self.logger.warning(e)
-                    await self.login_page.goto("https://chatgpt.com/")
+                    await self.goto_chatgpt_home()
 
         blocked_message = await self._openai_account_block_message()
         if blocked_message:
@@ -803,6 +885,9 @@ class AsyncAuth0:
         markers = (
             "your account has been deactivated",
             "your account was deactivated",
+            "account has been deleted or deactivated",
+            "account was deleted or deactivated",
+            "you do not have an account because it has been deleted or deactivated",
             "your account has been suspended",
             "your account was suspended",
             "account has been disabled",

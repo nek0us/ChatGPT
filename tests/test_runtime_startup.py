@@ -90,6 +90,22 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(created, context)
         runtime.browser.new_context.assert_awaited_once_with(storage_state="state.json")
 
+    async def test_startup_page_creation_failure_is_transient_not_stop(self):
+        runtime = self._runtime()
+        context = object()
+        session = Session(
+            email="startup@example.com",
+            password="password",
+            browser_contexts=context,
+        )
+        runtime._new_page_with_timeout = AsyncMock(side_effect=TimeoutError("page create timeout"))
+
+        await runtime._chatgpt__login(session)
+
+        self.assertEqual(session.status, Status.Update.value)
+        self.assertEqual(session.login_failure_kind, "transient")
+        self.assertTrue(session.is_login_disabled())
+
     async def test_bridge_initialization_retries_once_before_succeeding(self):
         runtime = self._runtime()
         session = Session(email="bridge@example.com")

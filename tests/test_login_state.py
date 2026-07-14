@@ -35,6 +35,7 @@ class LoginFailureClassificationTests(unittest.TestCase):
             ("Help us protect your account with a security code.", "microsoft", LoginFailureKind.NeedVerification.value),
             ("Too many attempts, try again later.", "microsoft", LoginFailureKind.RateLimited.value),
             ("net::ERR_CONNECTION_RESET", "microsoft", LoginFailureKind.Transient.value),
+            ("Page.goto: NS_ERROR_NET_INTERRUPT\nSecure Connection Failed", "microsoft", LoginFailureKind.Transient.value),
             ("Couldn't sign you in", "google", LoginFailureKind.RiskBlocked.value),
             ("This browser or app may not be secure", "google", LoginFailureKind.RiskBlocked.value),
             ("Verify it's you", "google", LoginFailureKind.NeedVerification.value),

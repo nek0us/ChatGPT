@@ -886,7 +886,9 @@ def classify_login_failure(details: str, mode: str) -> str:
         "turnstile",
     )):
         return LoginFailureKind.RiskBlocked.value
-    if any(x in text for x in ("timeout", "network", "net::", "closed", "context")):
+    if any(x in text for x in (
+        "timeout", "network", "net::", "ns_error_", "secure connection failed", "closed", "context",
+    )):
         return LoginFailureKind.Transient.value
     return LoginFailureKind.Unknown.value
 
