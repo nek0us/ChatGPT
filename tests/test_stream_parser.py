@@ -482,6 +482,8 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(page.status, 200)
         self.assertIn("ChatGPTWeb Control", body)
+        self.assertIn("chatgptweb-control-language", body)
+        self.assertIn("本地运维控制台", body)
         self.assertNotIn("test-key", body)
         self.assertEqual(protected.status, 401)
 

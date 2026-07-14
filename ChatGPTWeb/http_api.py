@@ -13,6 +13,7 @@ from aiohttp import web
 
 from .api import ChatStreamEvent
 from .config import IOFile
+from .control_ui import CONTROL_HTML
 from .service import ChatRequest, ChatResult, ChatService
 from .verification import VerificationBroker
 
@@ -335,7 +336,7 @@ def create_control_app(
     app = create_http_app(service, api_key=api_key, verification_broker=verification_broker)
 
     async def dashboard(_: web.Request) -> web.Response:
-        return web.Response(text=_CONTROL_HTML, content_type="text/html")
+        return web.Response(text=CONTROL_HTML, content_type="text/html")
 
     app.router.add_get("/", dashboard)
     return app
