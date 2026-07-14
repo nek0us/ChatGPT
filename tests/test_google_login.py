@@ -42,6 +42,27 @@ class _Keyboard:
         self.presses.append(value)
 
 
+class _PasswordSubmitLocator(_Locator):
+    pass
+
+
+class _OpenAIPasswordPage:
+    def __init__(self):
+        self.password = _Locator(1)
+        self.continue_button = _PasswordSubmitLocator(1)
+        self.keyboard = _Keyboard()
+
+    def locator(self, selector):
+        if selector == "input[type='password']":
+            return self.password
+        return _Locator(0)
+
+    def get_by_role(self, role, **kwargs):
+        if role == "button" and kwargs.get("name"):
+            return self.continue_button
+        return _Locator(0)
+
+
 class _Page:
     def __init__(self, email_count=1, history_count=0):
         self.email = _Locator(email_count)
@@ -262,6 +283,16 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_password_submit_clicks_continue_button(self):
+        page = _OpenAIPasswordPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        await auth._submit_openai_password(page.password)
+
+        self.assertTrue(page.continue_button.clicked)
+        self.assertEqual(page.keyboard.presses, [])
+
     async def test_auth_error_keeps_its_details_in_exception_text(self):
         error = Error("OpenAI login error", 1, "account has been deleted or deactivated")
 

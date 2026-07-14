@@ -715,7 +715,11 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
 
             if res.status == 403 and res.url == url:
                 session = await retry_keep_alive(session,url,storage,js,js_num,save_screen_status,logger,retry)
-            elif (res.status == 200 or res.status == 307 or res.status == 304) and res.url == url:
+            elif res.status in (301, 302, 303, 307, 308, 304) and res.url == url:
+                # Redirect and cache-validation responses intentionally have no
+                # JSON body. They are common while an interactive login is in progress.
+                logger.debug(f"refresh {session.email} session endpoint returned HTTP {res.status}; skip body parsing")
+            elif res.status == 200 and res.url == url:
                 if await res.json():
                     # await page.wait_for_timeout(1000)
                     cookies = await session.page.context.cookies()

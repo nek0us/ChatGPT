@@ -597,8 +597,8 @@ class AsyncAuth0:
             password_input = self.login_page.locator("input[type='password']")
             self.logger.debug(f"{self.email_address} openai login,will set password")
             await password_input.fill(self.password)
-            await self.login_page.keyboard.press(self.EnterKey)
-            state = await self._wait_for_openai_login_state()
+            await self._submit_openai_password(password_input)
+            state = await self._wait_for_openai_login_state(allow_password=False)
             if state == "otp":
                 await self._submit_openai_verification_code()
                 return
@@ -610,7 +610,35 @@ class AsyncAuth0:
         details = await self.get_login_error_details()
         raise Error("OpenAI login error", 1, f"OpenAI login state was not recognized\n{details}")
 
-    async def _wait_for_openai_login_state(self, timeout: int = 30000) -> str:
+    async def _submit_openai_password(self, password_input) -> None:
+        """Submit OpenAI's current password page without relying on Enter.
+
+        The current auth surface keeps focus on the password field after fill;
+        pressing Enter can leave the page unchanged. Prefer its semantic
+        Continue button, then retain Enter as a compatibility fallback.
+        """
+        submits = (
+            self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
+            self.login_page.locator("button[type='submit']:visible"),
+            self.login_page.locator("input[type='submit']:visible"),
+        )
+        for submit in submits:
+            if await submit.count() == 0:
+                continue
+            try:
+                await submit.first.click(timeout=10000)
+                self.logger.debug(f"{self.email_address} submitted OpenAI password")
+                return
+            except Exception as error:
+                self.logger.debug(f"{self.email_address} OpenAI password submit was not clickable: {error}")
+        await password_input.press(self.EnterKey)
+
+    async def _wait_for_openai_login_state(
+        self,
+        timeout: int = 30000,
+        *,
+        allow_password: bool = True,
+    ) -> str:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         while asyncio.get_running_loop().time() < deadline:
             try:
@@ -618,10 +646,12 @@ class AsyncAuth0:
                 if await otp.count() > 0:
                     return "otp"
                 password = self.login_page.locator("input[type='password']")
-                if await password.count() > 0:
+                if allow_password and await password.count() > 0:
                     return "password"
                 if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
                     return "password_choice"
+                if "/log-in" not in self.login_page.url:
+                    return "authenticated"
                 # The current login drawer keeps the email input visible while its
                 # continue action is loading. Do not mistake its background page
                 # login button for a guest-state result during that transition.
