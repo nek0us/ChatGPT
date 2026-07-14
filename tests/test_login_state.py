@@ -4,8 +4,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
-from ChatGPTWeb.api import Auth, classify_login_failure, get_session_token, login_failure_cooldown, update_session_token
+from ChatGPTWeb.api import Auth, classify_login_failure, login_failure_cooldown, restore_session_state, save_session_state
 from ChatGPTWeb.config import LoginFailureKind, Session, Status
+from ChatGPTWeb.storage import RuntimeStorage
 
 
 class _Logger:
@@ -117,14 +118,16 @@ class SessionLoginStateTests(unittest.TestCase):
         logger = _NoopLogger()
 
         with tempfile.TemporaryDirectory() as directory:
-            chat_file = Path(directory)
-            (chat_file / "sessions").mkdir()
-            update_session_token(session, chat_file, logger)
-            restored = get_session_token(Session(email="locked@example.com"), chat_file, logger)
+            storage = RuntimeStorage(Path(directory))
+            save_session_state(session, storage, logger)
+            restored = restore_session_state(Session(email="locked@example.com"), storage, logger)
+            persisted = storage.session_path("locked@example.com")
 
         self.assertEqual(restored.status, Status.Stop.value)
         self.assertEqual(restored.login_failure_kind, LoginFailureKind.AccountLocked.value)
         self.assertTrue(restored.is_login_disabled())
+        self.assertEqual(persisted.suffix, ".json")
+        self.assertNotIn("locked@example.com", persisted.name)
 
     def test_ready_state_is_not_restored_as_a_stale_runtime_state(self):
         session = Session(email="ready@example.com")
@@ -132,10 +135,9 @@ class SessionLoginStateTests(unittest.TestCase):
         logger = _NoopLogger()
 
         with tempfile.TemporaryDirectory() as directory:
-            chat_file = Path(directory)
-            (chat_file / "sessions").mkdir()
-            update_session_token(session, chat_file, logger)
-            restored = get_session_token(Session(email="ready@example.com"), chat_file, logger)
+            storage = RuntimeStorage(Path(directory))
+            save_session_state(session, storage, logger)
+            restored = restore_session_state(Session(email="ready@example.com"), storage, logger)
 
         self.assertEqual(restored.status, "")
         self.assertFalse(restored.login_state)

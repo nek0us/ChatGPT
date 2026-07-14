@@ -3,7 +3,6 @@ import sys
 import time
 import uuid
 import json
-import pickle
 import base64
 import asyncio
 
@@ -20,6 +19,7 @@ from playwright_firefox.async_api import Response,Route, Request
 
 from .OpenAIAuth import AsyncAuth0
 from .config import MsgData,Session,SetCookieParam,Status,LoginFailureKind,url_requirements,Payload
+from .storage import RuntimeStorage
 from .verification import VerificationBroker
 
 class MockResponse:
@@ -683,7 +683,7 @@ def create_session(**kwargs) -> Session:
         )
     return Session(**kwargs)
 
-async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,js_num: int,save_screen_status: bool,logger,retry:int = 2) -> Session:
+async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js: tuple,js_num: int,save_screen_status: bool,logger,retry:int = 2) -> Session:
     if session.is_login_disabled():
         logger.debug(f"{session.email} skip keep-alive, status:{session.status}, failure:{session.login_failure_kind}")
         return session
@@ -702,7 +702,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
             res = await a.value
 
             if res.status == 403 and res.url == url:
-                session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
+                session = await retry_keep_alive(session,url,storage,js,js_num,save_screen_status,logger,retry)
             elif (res.status == 200 or res.status == 307 or res.status == 304) and res.url == url:
                 if await res.json():
                     # await page.wait_for_timeout(1000)
@@ -739,7 +739,7 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
                         session.cookies = cookie_str.strip()
                         session.login_cookies = cookies
                         
-                        update_session_token(session,chat_file,logger)
+                        save_session_state(session, storage, logger)
                         
                         if session.status == Status.Login.value:
                             session.status = Status.Ready.value
@@ -799,12 +799,12 @@ async def retry_keep_alive(session: Session,url: str,chat_file: Path,js: tuple,j
             else:
                 logger.error(f"flush {session.email} cf cookie error!")
                 # await page.screenshot(path=f"flush error {session.email}.jpg")
-                session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
+                session = await retry_keep_alive(session,url,storage,js,js_num,save_screen_status,logger,retry)
         except Exception as e:
             logger.warning(f"retry_keep_alive {retry},error:{e}")
             # await page.screenshot(path=f"flush error {session.email}.jpg")
             await save_screen(save_screen_status=save_screen_status,path=f"context_{session.email}_page_flush_faild!",page=page)
-            session = await retry_keep_alive(session,url,chat_file,js,js_num,save_screen_status,logger,retry)
+            session = await retry_keep_alive(session,url,storage,js,js_num,save_screen_status,logger,retry)
         finally:
             await page.close()
     else:
@@ -943,93 +943,59 @@ async def Auth(session: Session, logger, verification_broker: VerificationBroker
         logger.warning("No email or password")
         
                 
-def update_session_token(session: Session,chat_file: Path,logger):
-    session_file = chat_file / "sessions" / session.email
+def save_session_state(session: Session, storage: RuntimeStorage, logger):
+    """Persist explicit runtime state without serializing Python objects."""
     try:
-        # tmp = copy.copy(session)
-        tmp = Session()
-        tmp.access_token = session.access_token
-        tmp.email = session.email
-        tmp.input_session_token = session.input_session_token
-        tmp.cookies = session.cookies
-        tmp.login_cookies = session.login_cookies
-        tmp.last_active = session.last_active
-        tmp.last_wss = session.last_wss
-        tmp.mode = session.mode
-        tmp.password = session.password
-        tmp.status = (
-            session.status
-            if session.status in (Status.Stop.value, Status.Update.value)
-            else ""
-        )
-        tmp.login_fail_count = session.login_fail_count
-        tmp.max_login_failures = session.max_login_failures
-        tmp.login_failure_kind = session.login_failure_kind
-        tmp.last_login_error = session.last_login_error
-        tmp.disabled_until = session.disabled_until
-        tmp.manual_disabled = session.manual_disabled
-        tmp.runtime_last_closed_source = session.runtime_last_closed_source
-        tmp.runtime_last_closed_at = session.runtime_last_closed_at
-        tmp.runtime_last_recovered_at = session.runtime_last_recovered_at
-        tmp.runtime_recovery_count = session.runtime_recovery_count
-        tmp.persist_auth_state = session.persist_auth_state
-        tmp.session_token = session.session_token
-        tmp.browser_contexts = None
-        tmp.page = None
-        with open(session_file,"wb") as file:
-            pickle.dump(tmp, file)
-        del tmp
-    except Exception as e:
-        logger.warning(f"save session_token error：{e}")
+        storage.save_session(session)
+    except Exception as error:
+        logger.warning(f"save session state error: {error}")
 
-def get_session_token(session: Session,chat_file: Path,logger):
-    session_file = chat_file / "sessions" / session.email
+
+def restore_session_state(session: Session, storage: RuntimeStorage, logger):
+    """Restore one V2 JSON session record, never legacy pickle files."""
     try:
-        with open(session_file, 'rb') as file:
-            load_session: Session = pickle.load(file)
-            if load_session:
-                if load_session.session_token:
-                    if 'url' in load_session.session_token:
-                        if load_session.session_token['url'] == 'https://chat.openai.com':
-                            load_session.session_token['url'] = 'https://chatgpt.com'
-            session.session_token = load_session.session_token
-            session.login_cookies = load_session.login_cookies
-            session.last_wss = load_session.last_wss
-            session.device_id = load_session.device_id
-            session.login_fail_count = getattr(load_session, "login_fail_count", 0)
-            session.max_login_failures = getattr(load_session, "max_login_failures", session.max_login_failures)
-            session.login_failure_kind = getattr(load_session, "login_failure_kind", "")
-            session.last_login_error = getattr(load_session, "last_login_error", "")
-            session.disabled_until = getattr(load_session, "disabled_until", None)
-            session.manual_disabled = getattr(load_session, "manual_disabled", False)
-            session.runtime_last_closed_source = getattr(load_session, "runtime_last_closed_source", "")
-            session.runtime_last_closed_at = getattr(load_session, "runtime_last_closed_at", None)
-            session.runtime_last_recovered_at = getattr(load_session, "runtime_last_recovered_at", None)
-            session.runtime_recovery_count = getattr(load_session, "runtime_recovery_count", 0)
-            saved_status = getattr(load_session, "status", "")
-            if saved_status in (Status.Stop.value, Status.Update.value):
-                session.status = saved_status
-            if not session.status:
-                permanent_kinds = {
-                    LoginFailureKind.BadCredentials.value,
-                    LoginFailureKind.AccountLocked.value,
-                    LoginFailureKind.NeedVerification.value,
-                }
-                if (
-                    session.login_failure_kind in permanent_kinds
-                    or session.login_fail_count >= session.max_login_failures
-                ):
-                    session.status = Status.Stop.value
-                elif session.disabled_until:
-                    session.status = Status.Update.value
+        record = storage.load_session(session.email)
+        if not record:
+            session.device_id = str(uuid.uuid4())
             return session
-    except FileNotFoundError:
-        session.device_id = str(uuid.uuid4())
+        session.session_token = record.get("session_token")
+        session.access_token = str(record.get("access_token", ""))
+        session.login_cookies = record.get("login_cookies")
+        session.last_wss = str(record.get("last_wss", ""))
+        session.device_id = str(record.get("device_id", "")) or str(uuid.uuid4())
+        session.login_fail_count = int(record.get("login_fail_count", 0))
+        session.max_login_failures = int(record.get("max_login_failures", session.max_login_failures))
+        session.login_failure_kind = str(record.get("login_failure_kind", ""))
+        session.last_login_error = str(record.get("last_login_error", ""))
+        session.manual_disabled = bool(record.get("manual_disabled", False))
+        session.runtime_last_closed_source = str(record.get("runtime_last_closed_source", ""))
+        session.runtime_recovery_count = int(record.get("runtime_recovery_count", 0))
+        for field_name in ("disabled_until", "runtime_last_closed_at", "runtime_last_recovered_at"):
+            value = record.get(field_name)
+            if isinstance(value, str) and value:
+                try:
+                    setattr(session, field_name, datetime.fromisoformat(value))
+                except ValueError:
+                    pass
+        saved_status = str(record.get("status", ""))
+        if saved_status in (Status.Stop.value, Status.Update.value):
+            session.status = saved_status
+        if not session.status:
+            permanent_kinds = {
+                LoginFailureKind.BadCredentials.value,
+                LoginFailureKind.AccountLocked.value,
+                LoginFailureKind.NeedVerification.value,
+            }
+            if session.login_failure_kind in permanent_kinds or session.login_fail_count >= session.max_login_failures:
+                session.status = Status.Stop.value
+            elif session.disabled_until:
+                session.status = Status.Update.value
         return session
-    except Exception as e:
-        logger.warning(f"get session_token from file error : {e}")
+    except Exception as error:
+        logger.warning(f"restore session state error: {error}")
         return session
-            
+
+
 async def get_paid(page: Page,token: str,chatp: str,device_id: str,logger):
     
     async def route_handle_paid(route: Route, request: Request):

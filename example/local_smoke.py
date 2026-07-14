@@ -9,6 +9,7 @@ from ChatGPTWeb.config import MsgData
 
 
 SESSIONS_FILE = Path(os.getenv("CHATGPTWEB_SESSIONS_FILE", "example/local_sessions.json"))
+STORAGE_DIR = Path(os.getenv("CHATGPTWEB_STORAGE_DIR", "data/chatgptweb"))
 SESSION_MODE = os.getenv("CHATGPTWEB_SESSION_MODE", "").strip().lower()
 SESSION_EMAIL = os.getenv("CHATGPTWEB_SESSION_EMAIL", "").strip().lower()
 SESSION_INDEX = os.getenv("CHATGPTWEB_SESSION_INDEX", "").strip()
@@ -72,6 +73,7 @@ async def main():
 
     chat = chatgpt(
         sessions=load_sessions(),
+        storage_dir=STORAGE_DIR,
         begin_sleep_time=False,
         headless=HEADLESS,
         httpx_status=False,

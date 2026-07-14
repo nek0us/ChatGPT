@@ -5,16 +5,15 @@ import unittest
 from pathlib import Path
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData
+from ChatGPTWeb.config import MsgData, Personality
+from ChatGPTWeb.storage import RuntimeStorage
 
 
 def _storage_runtime(path: Path):
     runtime = chatgpt.__new__(chatgpt)
-    runtime.chat_file = path
+    runtime.storage = RuntimeStorage(path)
     runtime._conversation_locks = {}
     runtime._conversation_locks_guard = asyncio.Lock()
-    runtime._conversation_map_lock = asyncio.Lock()
-    runtime.set_chat_file()
     return runtime
 
 
@@ -35,11 +34,14 @@ class HistoryStorageTests(unittest.IsolatedAsyncioTestCase):
 
             await asyncio.gather(*(runtime.save_chat(message, "account@example.com") for message in messages))
             history = await runtime.load_chat(MsgData(conversation_id="conversation-1"))
-            account_map = json.loads(runtime.cc_map.read_text("utf8"))
+            index = json.loads(runtime.storage.index_path.read_text("utf8"))
 
         self.assertEqual(len(history["message"]), 12)
         self.assertEqual({item["input"] for item in history["message"]}, {message.msg_send for message in messages})
-        self.assertEqual(account_map["account@example.com"], ["conversation-1"])
+        self.assertEqual(index["version"], 2)
+        self.assertEqual(index["conversations"]["conversation-1"]["account"], "account@example.com")
+        self.assertTrue(runtime.storage.conversation_path("conversation-1").suffix == ".json")
+        self.assertNotEqual(runtime.storage.conversation_path("conversation-1").name, "conversation-1")
 
     async def test_invalid_conversation_id_cannot_escape_history_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -51,3 +53,15 @@ class HistoryStorageTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.save_chat(message, "account@example.com")
 
         self.assertFalse((root / "outside").exists())
+
+    async def test_personas_use_the_shared_versioned_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = _storage_runtime(Path(directory))
+            runtime.personality = Personality()
+
+            await runtime.add_personality({"name": "helper", "value": "Be concise."})
+
+            self.assertEqual(runtime.storage.load_personas(), [{"name": "helper", "value": "Be concise."}])
+            stored = json.loads(runtime.storage.personas_path.read_text("utf8"))
+
+        self.assertEqual(stored["version"], 2)

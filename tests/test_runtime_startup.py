@@ -9,6 +9,7 @@ from aiohttp import ClientSession
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.config import MsgData, Session, Status
+from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
@@ -35,6 +36,12 @@ class _Page:
 
 
 class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._storage_directory = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._storage_directory.cleanup()
+
     def _runtime(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()
@@ -50,6 +57,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime.control_url = ""
         runtime.verification_broker = VerificationBroker()
         runtime.manage = {"control_url": ""}
+        runtime.storage = RuntimeStorage(Path(self._storage_directory.name))
         return runtime
 
     async def test_control_server_uses_runtime_lifecycle(self):
@@ -166,10 +174,10 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime.Sessions = [Session(email="runtime@example.com", status=Status.Update.value)]
         runtime.Sessions[0].runtime_last_closed_source = "context"
         runtime.Sessions[0].runtime_recovery_count = 2
-        with tempfile.TemporaryDirectory() as directory:
-            runtime.cc_map = Path(directory) / "map.json"
-            runtime.cc_map.write_text(json.dumps({"runtime@example.com": ["conversation-1"]}), "utf8")
-            status = await runtime.token_status()
+        runtime.storage.update_conversation_index(
+            "conversation-1", "runtime@example.com", "2026-01-01T00:00:00", "2026-01-01T00:00:00", 1,
+        )
+        status = await runtime.token_status()
 
         account = status["accounts"][0]
         self.assertFalse(account["available"])
@@ -364,16 +372,13 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auth_state_uses_a_hashed_per_account_path_and_restores_it(self):
         runtime = self._runtime()
-        with tempfile.TemporaryDirectory() as directory:
-            runtime.chat_file = Path(directory)
-            session = Session(email="state@example.com", persist_auth_state=True)
-            state_path = runtime._auth_state_path(session)
-            state_path.parent.mkdir(parents=True)
-            state_path.write_text("{}", "utf8")
-            context = object()
-            runtime._new_context_with_timeout = AsyncMock(return_value=context)
+        session = Session(email="state@example.com", persist_auth_state=True)
+        state_path = runtime._auth_state_path(session)
+        state_path.write_text("{}", "utf8")
+        context = object()
+        runtime._new_context_with_timeout = AsyncMock(return_value=context)
 
-            restored = await runtime._new_session_context(session, "startup_state")
+        restored = await runtime._new_session_context(session, "startup_state")
 
         self.assertIs(restored, context)
         self.assertTrue(session.auth_state_loaded)
@@ -382,12 +387,10 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auth_state_is_written_only_when_enabled(self):
         runtime = self._runtime()
-        with tempfile.TemporaryDirectory() as directory:
-            runtime.chat_file = Path(directory)
-            context = type("Context", (), {"storage_state": AsyncMock()})()
-            session = Session(email="state@example.com", persist_auth_state=True, browser_contexts=context)
+        context = type("Context", (), {"storage_state": AsyncMock()})()
+        session = Session(email="state@example.com", persist_auth_state=True, browser_contexts=context)
 
-            await runtime._save_auth_state(session)
+        await runtime._save_auth_state(session)
 
-            state_path = runtime._auth_state_path(session)
+        state_path = runtime._auth_state_path(session)
         context.storage_state.assert_awaited_once_with(path=str(state_path))

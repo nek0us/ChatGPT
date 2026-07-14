@@ -185,9 +185,9 @@ proxy: typing.Optional[str] = None,
 # chatgpt(proxy=proxy)
 # 要用代理的话就像这样 | proxy like it if u need use
 
-chat_file: Path = Path("data", "chat_history", "conversation"),
+storage_dir: Path = Path("data", "chatgptweb"),
 # 聊天记录保存位置，一般不需修改
-# The location where the chat history is saved, generally does not need to be modified.
+# Local runtime storage root for V2 session state, conversations, personas, and browser auth state.
 
 personality: Optional[Personality] = Personality([{"name": "cat", "value": "you are a cat now."}]),
 # 默认人格，用于初始化，推荐你使用类方法去添加你个人使用的
@@ -241,6 +241,10 @@ chat = chatgpt(
 ```
 
 The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, and model usage observed during the current process. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
+
+### Local Console
+
+`example/local_console.py` is the interactive manual test client. It uses `ChatService.stream()` and starts the dashboard in the same process. Configure `example/local_sessions.json`, then run `uv run python example/local_console.py`; open `http://127.0.0.1:8765` and use the configured `CHATGPTWEB_CONTROL_API_KEY` when one is set. Use `:new`, `:status`, and `:quit` in the terminal. Set `CHATGPTWEB_STORAGE_DIR` to isolate a test run from another local runtime.
 
 ### Verification Code Providers
 

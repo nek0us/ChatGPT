@@ -216,15 +216,12 @@ class Session:
 
 
 class Personality:
-    def __init__(self, 
-                 init_list: List[Dict[str, str]] = [],
-                 path: Path = None): # type: ignore
-        self.init_list = init_list
-        self.path =  path / "personality" if path else Path() / "data" / "chat_history" / "personality"
-        init_list += self.read_data(self.path)
-        for item in init_list:
-            if str(item) not in [str(x) for x in self.init_list]:
-                self.init_list.append(item)
+    """In-memory persona collection persisted by the runtime storage layer."""
+
+    def __init__(self, init_list: Optional[List[Dict[str, str]]] = None):
+        self.init_list = []
+        for item in init_list or []:
+            self.add_dict_to_list(item)
 
     def show_name(self):
         name = [f"{index + 1}. {x.get('name')}" for index, x in enumerate(self.init_list)]
@@ -234,34 +231,20 @@ class Personality:
         return next((x.get("value") for x in self.init_list if x.get("name") == name), "")
 
     def add_dict_to_list(self, new_dict: dict):
-        self.init_list.append(new_dict)
+        name = new_dict.get("name") if isinstance(new_dict, dict) else None
+        value = new_dict.get("value") if isinstance(new_dict, dict) else None
+        if not isinstance(name, str) or not name.strip() or not isinstance(value, str):
+            raise ValueError("personality requires a non-empty name and string value")
+        self.del_data_by_name(name)
+        self.init_list.append({"name": name, "value": value})
 
-    def save_data(self):
-        tmp = '\n'.join([json.dumps(x) for x in self.init_list])
-        try:
-            with open(self.path, "w") as f:
-                f.write(tmp)
-        except:
-            pass
-
-    @classmethod
-    def read_data(cls,path:str|Path):
-        try:
-            with open(path, "r") as f:
-                init_list = [json.loads(x) for x in f.read().split("\n")]
-        except:
-            init_list = []
-        return init_list
-
-    def flush_data(self,path: Path):
-        self.save_data()
-        self.read_data(path)
+    def replace_data(self, values: List[Dict[str, str]]):
+        self.init_list = []
+        for value in values:
+            self.add_dict_to_list(value)
 
     def del_data_by_name(self, name: str):
-        for item in self.init_list:
-            if item.get('name') == name:
-                self.init_list.remove(item)
-        self.save_data()
+        self.init_list = [item for item in self.init_list if item.get("name") != name]
 
 
 class SetCookieParam(TypedDict, total=False):

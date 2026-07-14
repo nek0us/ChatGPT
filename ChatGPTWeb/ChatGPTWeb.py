@@ -4,7 +4,6 @@ import sys
 import json
 import typing
 import base64
-import hashlib
 import random
 import asyncio
 import threading
@@ -38,6 +37,7 @@ from .config import (
 from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
+from .storage import RuntimeStorage
 from .verification import VerificationBroker, VerificationCodeProvider
 from .capabilities import (
     discover_account_plan,
@@ -52,8 +52,8 @@ from .api import (
     create_session,
     retry_keep_alive,
     Auth,
-    get_session_token,
-    update_session_token,
+    restore_session_state,
+    save_session_state,
     try_wss,
     flush_page,
     upload_file,
@@ -70,7 +70,7 @@ class chatgpt:
     def __init__(self,
                  sessions: list[dict] = [],
                  proxy: Optional[str] = None,
-                 chat_file: Path = Path("data", "chat_history", "conversation"),
+                 storage_dir: Path = Path("data", "chatgptweb"),
                  personality: Personality = None, # type: ignore
                  log_status: bool = True,
                  plugin: bool = False,
@@ -95,7 +95,7 @@ class chatgpt:
         your session_token or account | 你的session_token 或者账号密码  {"session_token":""}
         ### proxy : {"server": "http://ip:port"}
         your proxy for openai | 你用于访问openai的代理
-        ### chat_file : Path
+        ### storage_dir : Path
         save the chat history file path | 保存聊天文件的路径，默认 data/chat_history/..
         ### personality : list[dict]
         init personality | 初始化人格 [{"name":"人格名","value":"预设内容"},{"name":"personality name","value":"personality value"},....]
@@ -122,8 +122,9 @@ class chatgpt:
         self.data = MsgData()
         self.proxy: typing.Optional[ProxySettings] = self.parse_proxy(proxy)
         self.httpx_proxy = proxy
-        self.chat_file = chat_file
-        self.personality =  Personality([{"name": "cat", "value": "you are a cat now."}], chat_file) if personality is None else personality
+        self.storage = RuntimeStorage(storage_dir)
+        self.personality = Personality([{"name": "cat", "value": "you are a cat now."}]) if personality is None else personality
+        self.personality.replace_data(self.storage.load_personas() + self.personality.init_list)
         self.log_status = log_status
         self.plugin = plugin
         self.headless = headless
@@ -155,12 +156,10 @@ class chatgpt:
         self._intentional_context_closures = set()
         self._conversation_locks: Dict[str, asyncio.Lock] = {}
         self._conversation_locks_guard = asyncio.Lock()
-        self._conversation_map_lock = asyncio.Lock()
         self._control_login_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._activity: List[Dict[str, str]] = []
         self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
-        self.set_chat_file()
         self.logger = logging.getLogger("logger")
         self.logger.setLevel(logger_level)
         sh = logging.StreamHandler()
@@ -178,7 +177,7 @@ class chatgpt:
             if s.is_valid:
                 if not s.type:
                     s.type = "session"
-                s = get_session_token(s,self.chat_file,self.logger)
+                s = restore_session_state(s, self.storage, self.logger)
                 if not s.device_id:
                     s.device_id = str(uuid.uuid4())
                 self.Sessions.append(s)
@@ -342,8 +341,7 @@ class chatgpt:
     def _auth_state_path(self, session: Session) -> Path | None:
         if not session.persist_auth_state or not session.email:
             return None
-        digest = hashlib.sha256(session.email.lower().encode("utf8")).hexdigest()
-        return self.chat_file / "auth_states" / f"{digest}.json"
+        return self.storage.auth_state_path(session.email)
 
     async def _new_session_context(self, session: Session, label: str):
         state_path = self._auth_state_path(session)
@@ -479,31 +477,6 @@ class chatgpt:
 
         return True
     
-    def set_chat_file(self):
-        """
-        mkdir chat file path
-        创建聊天文件目录
-        """
-        self.chat_file.mkdir(parents=True, exist_ok=True)
-        session_file_dir = self.chat_file / "sessions"
-        session_file_dir.mkdir(parents=True, exist_ok=True)
-        if self.chat_file == Path("data", "chat_history", "conversation"):
-            # 兼容性更新
-            self.conversation_dir = self.chat_file
-        else:
-            # 规范性更新
-            self.conversation_dir = self.chat_file / "conversation"
-            self.conversation_dir.mkdir(parents=True, exist_ok=True)
-        self.cc_map = self.chat_file.joinpath("map.json")
-        self.cc_map.touch()
-        if not self.cc_map.stat().st_size:
-            self.cc_map.write_text("{}")
-
-    def _conversation_path(self, conversation_id: str) -> Path:
-        if not conversation_id or "/" in conversation_id or "\\" in conversation_id or conversation_id in (".", ".."):
-            raise ValueError("conversation_id must be a non-empty file name")
-        return self.conversation_dir / conversation_id
-
     async def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
         async with self._conversation_locks_guard:
             lock = self._conversation_locks.get(conversation_id)
@@ -511,16 +484,6 @@ class chatgpt:
                 lock = asyncio.Lock()
                 self._conversation_locks[conversation_id] = lock
             return lock
-
-    @staticmethod
-    def _write_json_atomic(path: Path, data: Dict[str, typing.Any]):
-        temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary_path.write_text(json.dumps(data), encoding="utf8")
-            os.replace(temporary_path, path)
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
 
     async def __keep_alive__(self, session: Session):
         url = url_check
@@ -539,7 +502,7 @@ class chatgpt:
             return
         if not await self._ensure_session_runtime(session):
             return
-        session = await retry_keep_alive(session,url,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
+        session = await retry_keep_alive(session, url, self.storage, self.js, self.js_used, self.save_screen, self.logger)
         # check session_token need update
         if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
@@ -682,7 +645,6 @@ class chatgpt:
 
         self.manage["browser_contexts"] = self.browser.contexts
 
-        self.personality.read_data(self.chat_file) # type: ignore
         self.manage["start"] = True
         self.logger.debug("start!")
         self.thread = threading.Thread(target=lambda: self.tmp(loop), daemon=True)
@@ -822,7 +784,7 @@ class chatgpt:
             tasks[session.email] = asyncio.create_task(self._run_controlled_login(session))
         else:
             await self._refresh_account_plan(session)
-        update_session_token(session, self.chat_file, self.logger)
+        save_session_state(session, self.storage, self.logger)
         self._record_activity(session.email, "account_control", f"action: {action}")
         self.logger.info(f"account {session.email} control action: {action}")
 
@@ -836,7 +798,7 @@ class chatgpt:
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-            session = await retry_keep_alive(session,url_check,self.chat_file,self.js,self.js_used,self.save_screen,self.logger)
+            session = await retry_keep_alive(session, url_check, self.storage, self.js, self.js_used, self.save_screen, self.logger)
             try:
                 await page.goto("https://chatgpt.com/",timeout=20000,wait_until='load')
             except Exception as e:
@@ -2420,47 +2382,40 @@ class chatgpt:
     async def save_chat(self, msg_data: MsgData, context_num: str):
         """save chat file
         保存聊天文件"""
-        path = self._conversation_path(msg_data.conversation_id)
         lock = await self._conversation_lock(msg_data.conversation_id)
         async with lock:
-            if not path.exists() or not path.stat().st_size:
-                history = {
-                    "conversation_id": msg_data.conversation_id,
-                    "message": [],
-                }
-            else:
-                history = json.loads(path.read_text("utf8"))
+            history = self.storage.load_conversation(msg_data.conversation_id)
+            now = datetime.now().isoformat()
+            if not history["created_at"]:
+                history["created_at"] = now
+            history["account"] = context_num
             message = {
                 "input": msg_data.msg_send,
                 "output": msg_data.msg_recv,
                 "type": msg_data.msg_type,
                 "next_msg_id": msg_data.next_msg_id,
+                "created_at": now,
             }
             if msg_data.p_msg_id:
                 message["p_msg_id"] = msg_data.p_msg_id
-            history["message"].append(message)
-            self._write_json_atomic(path, history)
-
-        async with self._conversation_map_lock:
-            map_tmp = json.loads(self.cc_map.read_text("utf8"))
-            conversations = map_tmp.setdefault(str(context_num), [])
-            if msg_data.conversation_id not in conversations:
-                conversations.append(msg_data.conversation_id)
-                self._write_json_atomic(self.cc_map, map_tmp)
+            history["messages"].append(message)
+            history["updated_at"] = now
+            self.storage.save_conversation(history)
+            self.storage.update_conversation_index(
+                msg_data.conversation_id,
+                context_num,
+                history["created_at"],
+                now,
+                len(history["messages"]),
+            )
 
     async def load_chat(self, msg_data: MsgData):
-        """load chat file
-        读取聊天文件"""
-        path = self._conversation_path(msg_data.conversation_id)
-        if not path.exists() or not path.stat().st_size:
-            # self.logger.warning(f"不存在{msg_data.conversation_id}历史记录文件")
-            return {
-                "conversation_id": msg_data.conversation_id,
-                "message": []
-            }
-        else:
-            return json.loads(path.read_text("utf8"))
-
+        """Load a conversation in the shape required by the legacy MsgData bridge."""
+        history = self.storage.load_conversation(msg_data.conversation_id)
+        return {
+            "conversation_id": history["conversation_id"],
+            "message": history["messages"],
+        }
     def sleep(self, sc: float | int):
         self.browser_event_loop.run_until_complete(asyncio.sleep(sc))
 
@@ -2558,40 +2513,34 @@ class chatgpt:
                     self.logger.error(msg_data.error_info)
                     return None
         else:
-            map_tmp = json.loads(self.cc_map.read_text("utf8"))
-            for context_name in map_tmp:
-                if msg_data.conversation_id in map_tmp[context_name]:
-                    sessions = [s for s in self.Sessions if s.email == context_name]
-                    if sessions:
-                        session = sessions[0]
-                    else:
-                        msg_data.add_error(
-                            kind="conversation_session_missing",
-                            message=f"the session corresponding to the conversation_id:{msg_data.conversation_id} was not found. Please check whether the session account has been removed.",
-                        )
-                        self.logger.error(msg_data.error_info)
-                        return None
-                    if session.is_login_disabled():
-                        self.logger.warning(f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.")
-                        msg_data.add_error(
-                            kind="conversation_session_stopped",
-                            message=f"ur conversation_id:{msg_data.conversation_id} 'session doesn't work.",
-                            session_email=session.email,
-                        )
-                        return None
-                    wait_ready_seconds = 0
-                    while session.status != Status.Ready.value:
-                        await asyncio.sleep(0.5)
-                        wait_ready_seconds += 0.5
-                        if wait_ready_seconds >= self.ready_timeout:
-                            msg_data.add_error(
-                                kind="conversation_session_not_ready",
-                                message=f"conversation session is not ready within {self.ready_timeout} seconds, status:{session.status}",
-                                session_email=session.email,
-                            )
-                            self.logger.error(msg_data.error_info)
-                            return None
-                    break
+            account = self.storage.conversation_owner(msg_data.conversation_id)
+            session = next((item for item in self.Sessions if item.email == account), None) # type: ignore
+            if not session:
+                msg_data.add_error(
+                    kind="conversation_session_missing",
+                    message="the account associated with this conversation is not configured",
+                )
+                self.logger.error(msg_data.error_info)
+                return None
+            if session.is_login_disabled():
+                msg_data.add_error(
+                    kind="conversation_session_stopped",
+                    message="the account associated with this conversation is not available",
+                    session_email=session.email,
+                )
+                return None
+            wait_ready_seconds = 0
+            while session.status != Status.Ready.value:
+                await asyncio.sleep(0.5)
+                wait_ready_seconds += 0.5
+                if wait_ready_seconds >= self.ready_timeout:
+                    msg_data.add_error(
+                        kind="conversation_session_not_ready",
+                        message=f"conversation account is not ready within {self.ready_timeout} seconds",
+                        session_email=session.email,
+                    )
+                    self.logger.error(msg_data.error_info)
+                    return None
 
             if not session.email:
                 msg_data.add_error(
@@ -2942,7 +2891,7 @@ class chatgpt:
         添加人格 ,请传像这样的json数据
         """
         self.personality.add_dict_to_list(personality) # type: ignore
-        self.personality.flush_data(self.chat_file) # type: ignore
+        self.storage.save_personas(self.personality.init_list) # type: ignore
 
     async def show_personality_list(self):
         """show_personality_list
@@ -2953,11 +2902,11 @@ class chatgpt:
         """del_personality by name
         删除人格根据名字"""
         self.personality.del_data_by_name(name) # type: ignore
+        self.storage.save_personas(self.personality.init_list) # type: ignore
         return self.personality.show_name() # type: ignore
 
     async def token_status(self):
         """get work status|查看session token状态和工作状态"""
-        cid_all = json.loads(self.cc_map.read_text("utf8"))
         verification_broker = getattr(self, "verification_broker", None)
         pending_verifications = await verification_broker.snapshot() if verification_broker else []
         verification_by_account = {
@@ -3007,7 +2956,7 @@ class chatgpt:
                 ),
                 "persist_auth_state": session.persist_auth_state,
                 "auth_state_loaded": session.auth_state_loaded,
-                "conversation_count": len(cid_all.get(session.email, [])),
+                "conversation_count": self.storage.conversation_count(session.email),
                 "usage": self._usage_snapshot(session.email),
                 "login_fail_count": session.login_fail_count,
                 "max_login_failures": session.max_login_failures,
@@ -3031,7 +2980,7 @@ class chatgpt:
             "login_failure_kind": [session.login_failure_kind for session in self.Sessions if session.type != "script"],
             "last_login_error": [session.last_login_error for session in self.Sessions if session.type != "script"],
             "disabled_until": [session.disabled_until.isoformat() if session.disabled_until else "" for session in self.Sessions if session.type != "script"],
-            "cid_num": [len(cid_all[session.email]) for session in self.Sessions if session.email in cid_all],
+            "cid_num": [self.storage.conversation_count(session.email) for session in self.Sessions if session.type != "script"],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
             "model_catalog": self._local_model_catalog(),
             "accounts": accounts,
