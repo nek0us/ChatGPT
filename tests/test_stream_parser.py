@@ -224,6 +224,17 @@ class _SilentPage:
         return {"ok": True}
 
 
+class _ReconcilePage:
+    async def evaluate(self, _script, argument=None):
+        if not isinstance(argument, dict) or "conversationId" not in argument:
+            return None
+        return {
+            "text": "complete answer from the conversation node",
+            "messageId": "message-final",
+            "metadata": {"citations": [{"title": "Source"}]},
+        }
+
+
 class _CoreStreamRuntime(chatgpt):
     pass
 
@@ -362,6 +373,25 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no upstream chunks", error.text)
         with self.assertRaises(TimeoutError):
             await anext(stream)
+
+    async def test_stream_final_reconciles_from_the_conversation_node(self):
+        runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
+        runtime.logger = _Logger()
+        session = Session(email="final@example.com", access_token="token", page=_ReconcilePage())
+        event = ChatStreamEvent(
+            type="final",
+            text="partial answer",
+            conversation_id="conversation-final",
+            message_id="message-partial",
+            metadata={"model_slug": "gpt-5-5"},
+        )
+
+        reconciled = await runtime._reconcile_stream_final(session, event)
+
+        self.assertEqual(reconciled.text, "complete answer from the conversation node")
+        self.assertEqual(reconciled.message_id, "message-final")
+        self.assertEqual(reconciled.metadata["model_slug"], "gpt-5-5")
+        self.assertEqual(reconciled.metadata["citations"][0]["title"], "Source")
 
 
 class HttpApiRequestTests(unittest.TestCase):

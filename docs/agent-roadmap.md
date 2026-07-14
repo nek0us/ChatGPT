@@ -221,6 +221,7 @@ Expected streaming shape:
 - The control dashboard must render `login_failure_kind` before the generic boolean login state: a permanent `account_locked` session is unavailable, not "needs login". `token_status()` includes the configured account mode so the dashboard does not show an empty mode field.
 - The old "CF cookie refresh" name is historical. The periodic task opens a short-lived page to refresh browser/session state and the ChatGPT access token; it remains required for long-lived runtimes, but successful refreshes are debug-level noise rather than normal console output.
 - Stream message snapshots are not guaranteed to be monotonic: after search/citation metadata arrives, ChatGPT can replay an older shorter assistant snapshot. The parser must preserve already accumulated text in that case; a shorter snapshot is stale transport state, never authority to truncate the final answer. Regression coverage now verifies this explicitly.
+- A July 2026 live search response showed that patch preservation alone is insufficient: the SSE accumulator can still contain text that differs from ChatGPT's final copyable conversation node. Keep the stream for low latency, but defer its public final event until one same-origin browser fetch reads the completed assistant node from the conversation mapping. The reconciliation fetch is best-effort and falls back to the stream text if the browser route is unavailable.
 
 ## Phase 2: Error And Retry Model
 

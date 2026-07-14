@@ -1803,6 +1803,7 @@ class chatgpt:
         decoder = ChatStreamDecoder()
         done = False
         emitted_final_signatures = set()
+        pending_final: ChatStreamEvent | None = None
         loop = asyncio.get_running_loop()
         last_content_event_at = loop.time()
         last_status_event_at = last_content_event_at
@@ -1819,6 +1820,16 @@ class chatgpt:
                 return False
             emitted_final_signatures.add(signature)
             return True
+
+        def ready_events(events: List[ChatStreamEvent]) -> List[ChatStreamEvent]:
+            nonlocal pending_final
+            ready = []
+            for event in events:
+                if event.type == "final":
+                    pending_final = event
+                elif should_emit(event):
+                    ready.append(event)
+            return ready
 
         try:
             while True:
@@ -1853,17 +1864,13 @@ class chatgpt:
                     events = decoder.feed(payload.get("text", ""))
                     if any(event.type != "final" or event.text or event.image_urls for event in events):
                         last_content_event_at = loop.time()
-                    for event in events:
-                        if not should_emit(event):
-                            continue
+                    for event in ready_events(events):
                         self._apply_stream_event(msg_data, event)
                         yield event
                     continue
                 if payload.get("type") == "done":
                     done = True
-                    for event in decoder.close():
-                        if not should_emit(event):
-                            continue
+                    for event in ready_events(decoder.close()):
                         self._apply_stream_event(msg_data, event)
                         yield event
                     break
@@ -1872,11 +1879,14 @@ class chatgpt:
             if not isinstance(result, dict) or not result.get("ok"):
                 raise RuntimeError(f"browser stream bridge returned invalid result: {result}")
             if not done:
-                for event in decoder.close():
-                    if not should_emit(event):
-                        continue
+                for event in ready_events(decoder.close()):
                     self._apply_stream_event(msg_data, event)
                     yield event
+            if pending_final:
+                final_event = await self._reconcile_stream_final(session, pending_final)
+                if should_emit(final_event):
+                    self._apply_stream_event(msg_data, final_event)
+                    yield final_event
         except Exception as e:
             if not stream_task.done():
                 stream_task.cancel()
@@ -1945,6 +1955,91 @@ class chatgpt:
         elif event.type == "image":
             msg_data.img_list = event.image_urls
             msg_data.image_gen = True
+
+    async def _reconcile_stream_final(
+        self,
+        session: Session,
+        event: ChatStreamEvent,
+    ) -> ChatStreamEvent:
+        """Read the final assistant node after an SSE response completes.
+
+        Search and rich-content turns can revise previously emitted text patches.
+        The conversation node is the browser's final canonical message, while the
+        stream remains the low-latency source for intermediate events.
+        """
+        if not event.conversation_id:
+            return event
+        page = session.page
+        if not page:
+            return event
+        try:
+            response = await page.evaluate(
+                """async ({ conversationId, messageId, accessToken }) => {
+                    const headers = { accept: 'application/json' };
+                    if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+                    const paths = [
+                        `/backend-api/conversation/${encodeURIComponent(conversationId)}`,
+                        `/api/backend-api/conversation/${encodeURIComponent(conversationId)}`,
+                    ];
+                    for (const path of paths) {
+                        try {
+                            const result = await fetch(path, {
+                                credentials: 'include',
+                                headers,
+                            });
+                            if (!result.ok) continue;
+                            const conversation = await result.json();
+                            const mapping = conversation && conversation.mapping;
+                            if (!mapping || typeof mapping !== 'object') continue;
+                            let node = messageId ? mapping[messageId] : null;
+                            if (!node || !node.message) {
+                                const nodes = Object.values(mapping);
+                                node = nodes.reverse().find((item) =>
+                                    item && item.message && item.message.author && item.message.author.role === 'assistant'
+                                );
+                            }
+                            const message = node && node.message;
+                            const parts = message && message.content && message.content.parts;
+                            if (!Array.isArray(parts) || typeof parts[0] !== 'string') continue;
+                            return {
+                                text: parts[0],
+                                messageId: message.id || messageId || '',
+                                metadata: message.metadata || {},
+                            };
+                        } catch (_) {
+                            // Try the next browser-observed route.
+                        }
+                    }
+                    return null;
+                }""",
+                {
+                    "conversationId": event.conversation_id,
+                    "messageId": event.message_id,
+                    "accessToken": session.access_token,
+                },
+            )
+        except Exception as error:
+            self.logger.debug(f"{session.email} stream final reconciliation was unavailable: {error}")
+            return event
+        if not isinstance(response, dict) or not isinstance(response.get("text"), str):
+            return event
+        text = response["text"]
+        if not text:
+            return event
+        metadata = event.metadata.copy()
+        if isinstance(response.get("metadata"), dict):
+            metadata.update(response["metadata"])
+        return ChatStreamEvent(
+            type="final",
+            text=text,
+            message_id=str(response.get("messageId") or event.message_id),
+            conversation_id=event.conversation_id,
+            image_urls=event.image_urls.copy(),
+            model=event.model,
+            usage=event.usage.copy(),
+            metadata=metadata,
+            raw=event.raw,
+        )
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function

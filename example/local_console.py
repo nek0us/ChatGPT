@@ -66,22 +66,17 @@ async def main():
                 parent_message_id=parent_message_id,
                 model=MODEL,
             )
-            printed = False
             async for event in service.stream(request):
-                if event.type == "delta":
-                    print(event.text, end="", flush=True)
-                    printed = True
-                elif event.type == "status":
+                if event.type == "status":
                     state = event.metadata.get("message", "working") if isinstance(event.metadata, dict) else "working"
                     print(f"\n[{state}]", flush=True)
                 elif event.type == "error":
                     print(f"\nerror: {event.text}")
                 elif event.type == "final":
-                    if not printed and event.text:
-                        print(event.text, end="")
+                    if event.text:
+                        print(event.text)
                     conversation_id = event.conversation_id or conversation_id
                     parent_message_id = event.message_id or parent_message_id
-                    print()
                     if conversation_id:
                         print(f"conversation: {conversation_id}")
     finally:
