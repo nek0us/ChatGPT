@@ -43,6 +43,7 @@ class AsyncAuth0:
             mode: Literal["openai", "google", "microsoft"] = "openai",
             help_email: str = "",
             verification_broker: VerificationBroker | None = None,
+            prefer_openai_otp: bool = False,
             loop=None
     ):
         self.email_address = email
@@ -53,6 +54,7 @@ class AsyncAuth0:
         self.mode = mode
         self.help_email = help_email
         self.verification_broker = verification_broker
+        self.prefer_openai_otp = prefer_openai_otp
 
         self.access_token = None
         self.last_error_details = ""
@@ -1171,7 +1173,9 @@ class AsyncAuth0:
 
                 else:
 
-                    await self.openai_code_password_login()
+                    await self.openai_code_password_login(
+                        prefer_password=not self.prefer_openai_otp,
+                    )
                     await self.login_page.wait_for_load_state('networkidle')
                     await asyncio.sleep(5)
 

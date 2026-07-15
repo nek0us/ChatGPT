@@ -176,6 +176,18 @@ class AuthStateIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.login_fail_count, 0)
         self.assertFalse(session.is_login_disabled())
 
+    async def test_auth_can_prefer_openai_otp_after_a_previous_verification_failure(self):
+        session = Session(email="otp@example.com", password="not-a-real-password")
+        logger = _Logger()
+        auth = AsyncMock()
+        auth.get_session_token.return_value = (None, None, "OpenAI login requires an email verification code")
+
+        with patch("ChatGPTWeb.api.AsyncAuth0", return_value=auth) as constructor:
+            await Auth(session, logger, prefer_openai_otp=True)
+
+        self.assertTrue(constructor.call_args.kwargs["prefer_openai_otp"])
+        self.assertEqual(session.login_failure_kind, LoginFailureKind.NeedVerification.value)
+
     async def test_auth_skips_provider_during_cooldown(self):
         session = Session(email="limited@example.com", password="not-a-real-password")
         session.mark_login_failure(kind=LoginFailureKind.RateLimited.value, cooldown_seconds=1800)

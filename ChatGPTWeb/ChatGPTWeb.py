@@ -723,9 +723,18 @@ class chatgpt:
         if runner:
             await runner.cleanup()
 
-    async def _run_controlled_login(self, session: Session) -> None:
+    async def _run_controlled_login(
+        self,
+        session: Session,
+        *,
+        prefer_openai_otp: bool = False,
+    ) -> None:
         try:
-            await self.load_page(session, immediate=True)
+            await self.load_page(
+                session,
+                immediate=True,
+                prefer_openai_otp=prefer_openai_otp,
+            )
         except asyncio.CancelledError:
             self._record_activity(session.email, "login_retry_cancelled", "controlled login was cancelled")
             self.logger.info(f"account {session.email} controlled login cancelled")
@@ -813,6 +822,10 @@ class chatgpt:
                 raise ValueError("account has no configured login credentials")
             if session.email in tasks and not tasks[session.email].done():
                 raise ValueError("account login is already in progress")
+            prefer_openai_otp = (
+                session.mode == "openai"
+                and session.login_failure_kind == LoginFailureKind.NeedVerification.value
+            )
             session.manual_disabled = False
             session.login_state = False
             session.login_state_first = False
@@ -821,7 +834,12 @@ class chatgpt:
             session.login_failure_kind = ""
             session.last_login_error = "manual login retry requested"
             session.disabled_until = None
-            tasks[session.email] = asyncio.create_task(self._run_controlled_login(session))
+            tasks[session.email] = asyncio.create_task(
+                self._run_controlled_login(
+                    session,
+                    prefer_openai_otp=prefer_openai_otp,
+                )
+            )
         else:
             await self._refresh_account_plan(session)
         save_session_state(session, self.storage, self.logger)
@@ -831,7 +849,13 @@ class chatgpt:
         status = await self.token_status()
         return next(item for item in status["accounts"] if item["email"] == account)
 
-    async def load_page(self, session: Session, immediate: bool = False):
+    async def load_page(
+        self,
+        session: Session,
+        immediate: bool = False,
+        *,
+        prefer_openai_otp: bool = False,
+    ):
         '''start page | 载入初始页面'''
         if self.begin_sleep_time and not immediate and session.type != "script":
             await asyncio.sleep(random.randint(1, len(self.Sessions)*6))
@@ -866,7 +890,12 @@ class chatgpt:
                     break
                 relogin_try += 1
                 self.logger.debug(f"context {session.email} begin relogin")
-                await Auth(session, self.logger, self.verification_broker)
+                await Auth(
+                    session,
+                    self.logger,
+                    self.verification_broker,
+                    prefer_openai_otp=prefer_openai_otp,
+                )
                 self.logger.debug(f"context {session.email} relogin over")
             
             if session.status in (Status.Stop.value, Status.Update.value):

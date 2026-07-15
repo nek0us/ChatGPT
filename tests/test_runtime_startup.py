@@ -380,7 +380,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(enabled["manual_disabled"])
             self.assertFalse(runtime.Sessions[0].is_login_disabled())
 
-    async def test_control_account_schedules_an_explicit_login_retry(self):
+    async def test_control_account_retries_openai_verification_without_repeating_password(self):
         runtime = self._runtime()
         runtime.begin_sleep_time = True
         runtime.Sessions = [Session(
@@ -409,7 +409,11 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.Sessions[0].status, Status.Update.value)
         self.assertEqual(runtime.Sessions[0].last_login_error, "manual login retry requested")
         self.assertTrue(account["login_retry_pending"])
-        runtime.load_page.assert_awaited_once_with(runtime.Sessions[0], immediate=True)
+        runtime.load_page.assert_awaited_once_with(
+            runtime.Sessions[0],
+            immediate=True,
+            prefer_openai_otp=True,
+        )
         release.set()
         await asyncio.sleep(0)
 

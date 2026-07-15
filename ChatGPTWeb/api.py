@@ -919,7 +919,13 @@ def login_failure_cooldown(kind: str) -> int:
     return 600
 
 
-async def Auth(session: Session, logger, verification_broker: VerificationBroker | None = None):
+async def Auth(
+    session: Session,
+    logger,
+    verification_broker: VerificationBroker | None = None,
+    *,
+    prefer_openai_otp: bool = False,
+):
     '''Auth account login func'''
     if session.is_login_disabled():
         logger.warning(
@@ -934,6 +940,7 @@ async def Auth(session: Session, logger, verification_broker: VerificationBroker
                             logger=logger,
                             help_email=session.help_email,
                             verification_broker=verification_broker,
+                            prefer_openai_otp=prefer_openai_otp,
                             # loop=self.browser_event_loop
                             )
         if session.status != Status.Update.value:
