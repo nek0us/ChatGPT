@@ -1817,7 +1817,37 @@ class chatgpt:
         )
         if not msg_data.status:
             raise RuntimeError("browser fetch stream parsed no final message")
+        await self._reconcile_nonstream_final(session, msg_data)
         return msg_data
+
+    async def _reconcile_nonstream_final(self, session: Session, msg_data: MsgData):
+        """Prefer the settled conversation node for a completed non-stream request.
+
+        The browser fetch bridge reads the whole SSE response, but some rich turns
+        still publish a short intermediate content patch before the conversation
+        mapping receives the final assistant text.  Normal ``continue_chat`` used
+        to return that patch directly while ``continue_chat_stream`` reconciled it.
+        Keep the two transports consistent without accepting a shorter stale node.
+        """
+        if not msg_data.conversation_id:
+            return
+        event = ChatStreamEvent(
+            type="final",
+            text=msg_data.msg_recv,
+            message_id=msg_data.next_msg_id,
+            conversation_id=msg_data.conversation_id,
+            image_urls=msg_data.img_list.copy(),
+            model=msg_data.model_used,
+            usage=msg_data.usage.copy(),
+            metadata=msg_data.response_metadata.copy(),
+        )
+        reconciled = await self._reconcile_stream_final(session, event, settle=True)
+        if reconciled.text != event.text:
+            self.logger.debug(
+                f"{session.email} reconciled non-stream response "
+                f"from {len(event.text)} to {len(reconciled.text)} characters"
+            )
+        self._apply_stream_event(msg_data, reconciled)
 
     async def _stream_msg_by_browser_fetch(
             self,
@@ -2020,6 +2050,8 @@ class chatgpt:
         self,
         session: Session,
         event: ChatStreamEvent,
+        *,
+        settle: bool = False,
     ) -> ChatStreamEvent:
         """Read the final assistant node after an SSE response completes.
 
@@ -2032,8 +2064,11 @@ class chatgpt:
         page = session.page
         if not page:
             return event
-        try:
-            response = await page.evaluate(
+        attempts = 3 if settle else 1
+        best_event = event
+        for attempt in range(attempts):
+            try:
+                response = await page.evaluate(
                 """async ({ conversationId, messageId, accessToken }) => {
                     const headers = { accept: 'application/json' };
                     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
@@ -2077,29 +2112,36 @@ class chatgpt:
                     "messageId": event.message_id,
                     "accessToken": session.access_token,
                 },
-            )
-        except Exception as error:
-            self.logger.debug(f"{session.email} stream final reconciliation was unavailable: {error}")
-            return event
-        if not isinstance(response, dict) or not isinstance(response.get("text"), str):
-            return event
-        text = response["text"]
-        if not text:
-            return event
-        metadata = event.metadata.copy()
-        if isinstance(response.get("metadata"), dict):
-            metadata.update(response["metadata"])
-        return ChatStreamEvent(
-            type="final",
-            text=text,
-            message_id=str(response.get("messageId") or event.message_id),
-            conversation_id=event.conversation_id,
-            image_urls=event.image_urls.copy(),
-            model=event.model,
-            usage=event.usage.copy(),
-            metadata=metadata,
-            raw=event.raw,
-        )
+                )
+            except Exception as error:
+                self.logger.debug(f"{session.email} stream final reconciliation was unavailable: {error}")
+                return best_event
+
+            if isinstance(response, dict) and isinstance(response.get("text"), str):
+                text = response["text"]
+                # A mapping node may briefly lag behind the final SSE patch.  It
+                # must never replace an already observed longer response.
+                if text and len(text) >= len(best_event.text):
+                    metadata = event.metadata.copy()
+                    if isinstance(response.get("metadata"), dict):
+                        metadata.update(response["metadata"])
+                    best_event = ChatStreamEvent(
+                        type="final",
+                        text=text,
+                        message_id=str(response.get("messageId") or event.message_id),
+                        conversation_id=event.conversation_id,
+                        image_urls=event.image_urls.copy(),
+                        model=event.model,
+                        usage=event.usage.copy(),
+                        metadata=metadata,
+                        raw=event.raw,
+                    )
+                    if len(text) > len(event.text):
+                        return best_event
+
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.6)
+        return best_event
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function

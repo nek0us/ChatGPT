@@ -235,6 +235,34 @@ class _ReconcilePage:
         }
 
 
+class _DelayedReconcilePage:
+    def __init__(self):
+        self.calls = 0
+
+    async def evaluate(self, _script, argument=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "text": "partial answer",
+                "messageId": "message-partial",
+                "metadata": {},
+            }
+        return {
+            "text": "complete answer after the conversation node settled",
+            "messageId": "message-final",
+            "metadata": {"citations": [{"title": "Source"}]},
+        }
+
+
+class _ShortReconcilePage:
+    async def evaluate(self, _script, argument=None):
+        return {
+            "text": "short answer",
+            "messageId": "message-final",
+            "metadata": {},
+        }
+
+
 class _CoreStreamRuntime(chatgpt):
     pass
 
@@ -392,6 +420,38 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reconciled.message_id, "message-final")
         self.assertEqual(reconciled.metadata["model_slug"], "gpt-5-5")
         self.assertEqual(reconciled.metadata["citations"][0]["title"], "Source")
+
+    async def test_nonstream_final_waits_for_the_settled_conversation_node(self):
+        runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
+        runtime.logger = _Logger()
+        page = _DelayedReconcilePage()
+        session = Session(email="settled@example.com", access_token="token", page=page)
+        data = MsgData(
+            msg_recv="partial answer",
+            conversation_id="conversation-final",
+            next_msg_id="message-partial",
+        )
+
+        await runtime._reconcile_nonstream_final(session, data)
+
+        self.assertEqual(data.msg_recv, "complete answer after the conversation node settled")
+        self.assertEqual(data.next_msg_id, "message-final")
+        self.assertGreaterEqual(page.calls, 2)
+
+    async def test_reconciliation_never_truncates_a_longer_stream_result(self):
+        runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
+        runtime.logger = _Logger()
+        session = Session(email="longer@example.com", access_token="token", page=_ShortReconcilePage())
+        event = ChatStreamEvent(
+            type="final",
+            text="this answer is already longer than the stale conversation node",
+            conversation_id="conversation-final",
+            message_id="message-final",
+        )
+
+        reconciled = await runtime._reconcile_stream_final(session, event)
+
+        self.assertEqual(reconciled.text, event.text)
 
 
 class HttpApiRequestTests(unittest.TestCase):
