@@ -289,6 +289,13 @@ class _HomepagePage:
         self.goto = AsyncMock()
 
 
+class _OtpFallbackPage(_HomepagePage):
+    url = "https://chatgpt.com/"
+
+    def locator(self, _selector):
+        return _Locator(0)
+
+
 class _MissingProviderPage:
     def __init__(self):
         self.wait_for_load_state = AsyncMock()
@@ -428,6 +435,22 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         page.goto.assert_awaited_once_with(
             "https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000,
         )
+
+    async def test_password_failure_restarts_once_without_clearing_cookies_and_prefers_otp(self):
+        page = _OtpFallbackPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth.wait_for_login_surface = AsyncMock(side_effect=[False, True])
+        auth._click_chatgpt_login_entry = AsyncMock(return_value=True)
+        auth.openai_code_password_login = AsyncMock()
+
+        await auth._restart_openai_login_for_otp("Operation timed out")
+
+        page.goto.assert_awaited_once_with(
+            "https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000,
+        )
+        auth._click_chatgpt_login_entry.assert_awaited_once()
+        auth.openai_code_password_login.assert_awaited_once_with(prefer_password=False)
 
     async def test_missing_microsoft_provider_does_not_continue_into_credentials(self):
         page = _MissingProviderPage()

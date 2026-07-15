@@ -579,13 +579,15 @@ class AsyncAuth0:
                 "Microsoft login requires a password change. Change it manually and retry.",
             )
     
-    async def openai_code_password_login(self):
+    async def openai_code_password_login(self, *, prefer_password: bool = True):
         self.logger.debug(f"{self.email_address} openai login,will find email input")
         openai_email_input = await self._wait_for_openai_initial_email_input()
         await openai_email_input.fill(self.email_address)
         self.logger.debug(f"{self.email_address} openai login,will point email continue")
         await self._submit_openai_continue(openai_email_input, stage="email")
-        state = await self._wait_for_openai_login_state(prefer_password=bool(self.password))
+        state = await self._wait_for_openai_login_state(
+            prefer_password=prefer_password and bool(self.password),
+        )
         if state == "password_choice":
             self.logger.debug(f"{self.email_address} openai login,will continue with password")
             await self.login_page.get_by_text("Continue with password", exact=True).click()
@@ -610,12 +612,11 @@ class AsyncAuth0:
             )
             if state == "unknown":
                 details = await self.get_login_error_details()
-                raise Error(
-                    "OpenAI login error",
-                    1,
-                    "OpenAI password submission did not transition before timeout\n"
-                    f"{details}",
+                self.logger.warning(
+                    f"{self.email_address} password submission did not transition; "
+                    "restarting this login once with email verification"
                 )
+                return await self._restart_openai_login_for_otp(details)
             if state == "otp":
                 await self._submit_openai_verification_code()
                 return
@@ -626,6 +627,27 @@ class AsyncAuth0:
         await self.save_screen(path=f"{self.email_address}_openai_login_unknown", page=self.login_page)
         details = await self.get_login_error_details()
         raise Error("OpenAI login error", 1, f"OpenAI login state was not recognized\n{details}")
+
+    async def _restart_openai_login_for_otp(self, password_failure_details: str) -> None:
+        """Restart the current native login once, preserving device cookies for OTP.
+
+        ``normal_begin`` has already removed only the stale ChatGPT session
+        token.  Repeating that cleanup would discard useful device state and
+        can make verification needlessly frequent, so this helper only returns
+        to the homepage and selects the OTP branch on the next auth surface.
+        """
+        await self.goto_chatgpt_home()
+        login_surface_detected = await self.wait_for_login_surface()
+        if not login_surface_detected and await self._click_chatgpt_login_entry():
+            login_surface_detected = await self.wait_for_login_surface(timeout=30000)
+        if not login_surface_detected:
+            raise Error(
+                "OpenAI login error",
+                1,
+                "OpenAI password submission failed and the OTP login surface did not become ready\n"
+                f"{password_failure_details}",
+            )
+        await self.openai_code_password_login(prefer_password=False)
 
     async def _wait_for_openai_initial_email_input(self, timeout: int = 30000):
         """Wait for the visible initial email field instead of trusting an early URL change.
