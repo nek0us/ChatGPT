@@ -609,7 +609,13 @@ class AsyncAuth0:
                 prefer_password=False,
             )
             if state == "unknown":
-                state = await self._switch_openai_password_to_otp()
+                details = await self.get_login_error_details()
+                raise Error(
+                    "OpenAI login error",
+                    1,
+                    "OpenAI password submission did not transition before timeout\n"
+                    f"{details}",
+                )
             if state == "otp":
                 await self._submit_openai_verification_code()
                 return
@@ -688,10 +694,15 @@ class AsyncAuth0:
         await password_input.wait_for(state="visible", timeout=10000)
         await asyncio.sleep(0.25)
         deadline = asyncio.get_running_loop().time() + 10000 / 1000
-        buttons = (
+        buttons = []
+        field_locator = getattr(password_input, "locator", None)
+        if callable(field_locator):
+            form = field_locator("xpath=ancestor::form").first
+            buttons.append(form.locator("button[type='submit']:visible"))
+        buttons.extend((
             self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
             self.login_page.locator("button[type='submit']:visible"),
-        )
+        ))
         last_error = None
         while asyncio.get_running_loop().time() < deadline:
             for button in buttons:
@@ -712,42 +723,6 @@ class AsyncAuth0:
             "OpenAI login error",
             1,
             f"OpenAI password Continue button did not become ready: {last_error}",
-        )
-
-    async def _switch_openai_password_to_otp(self) -> str:
-        """Leave a stalled password form through OpenAI's explicit OTP option."""
-        otp_choice = self.login_page.get_by_text("Log in with a one-time code", exact=True)
-        if await otp_choice.count() == 0:
-            details = await self.get_login_error_details()
-            raise Error(
-                "OpenAI login error",
-                1,
-                "OpenAI password submission did not transition and no one-time-code fallback is available\n"
-                f"{details}",
-            )
-        self.logger.warning(
-            f"{self.email_address} password submission did not transition; switching to email verification"
-        )
-        try:
-            await otp_choice.click(timeout=10000)
-        except Exception as error:
-            raise Error(
-                "OpenAI login error",
-                1,
-                f"OpenAI password submission stalled and email verification could not be selected: {error}",
-            ) from error
-        state = await self._wait_for_openai_login_state(
-            timeout=30000,
-            allow_password=False,
-            prefer_password=False,
-        )
-        if state != "unknown":
-            return state
-        details = await self.get_login_error_details()
-        raise Error(
-            "OpenAI login error",
-            1,
-            f"OpenAI password submission did not transition after selecting email verification\n{details}",
         )
 
     async def _wait_for_openai_login_state(

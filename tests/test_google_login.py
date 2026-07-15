@@ -83,15 +83,6 @@ class _OpenAIEmailPage(_OpenAIPasswordPage):
         return super().locator(selector)
 
 
-class _OpenAIPasswordFallbackPage(_OpenAIPasswordPage):
-    def __init__(self):
-        super().__init__()
-        self.otp_choice = _Locator(1)
-
-    def get_by_text(self, text, **_kwargs):
-        return self.otp_choice if text == "Log in with a one-time code" else _Locator(0)
-
-
 class _Page:
     def __init__(self, email_count=1, history_count=0):
         self.email = _Locator(email_count)
@@ -377,17 +368,6 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(page.password.waited)
         self.assertTrue(page.continue_button.clicked)
         self.assertEqual(page.keyboard.presses, [])
-
-    async def test_openai_password_stall_switches_to_one_time_code(self):
-        page = _OpenAIPasswordFallbackPage()
-        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
-        auth.login_page = page
-        auth._wait_for_openai_login_state = AsyncMock(return_value="otp")
-
-        state = await auth._switch_openai_password_to_otp()
-
-        self.assertEqual(state, "otp")
-        self.assertTrue(page.otp_choice.clicked)
 
     async def test_auth_error_keeps_its_details_in_exception_text(self):
         error = Error("OpenAI login error", 1, "account has been deleted or deactivated")
