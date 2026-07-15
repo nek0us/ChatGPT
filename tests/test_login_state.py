@@ -42,6 +42,7 @@ class LoginFailureClassificationTests(unittest.TestCase):
             ("OpenAI login requires an email verification code", "openai", LoginFailureKind.NeedVerification.value),
             ("Check your inbox to continue", "openai", LoginFailureKind.NeedVerification.value),
             ("Locator.wait_for: Timeout 30000ms exceeded", "google", LoginFailureKind.Transient.value),
+            ("Oops, an error occurred!\nOperation timed out", "openai", LoginFailureKind.Transient.value),
             ("url=https://accounts.google.com/v3/signin/identifier\nEmail or phone", "google", LoginFailureKind.Unknown.value),
         ]
         for details, mode, expected in cases:

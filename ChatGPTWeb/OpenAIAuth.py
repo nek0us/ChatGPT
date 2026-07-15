@@ -106,11 +106,21 @@ class AsyncAuth0:
         return host in {"login.live.com", "account.live.com"}
 
     async def wait_for_login_surface(self, timeout: int = 10000) -> bool:
+        """Wait for a usable login control, not merely an early auth URL.
+
+        ChatGPT can redirect the top-level document to ``auth.openai.com``
+        before Firefox has painted or initialized the actual sign-in form.
+        Treating that URL change as readiness lets the credential flow race
+        into a still-loading homepage or a stale dialog.
+        """
         deadline = asyncio.get_running_loop().time() + timeout / 1000
-        selectors = ("input[type='email']",)
+        selectors = (
+            "input#email:visible",
+            "input[name='email']:visible",
+            "input[autocomplete='username']:visible",
+            "input[type='email']:visible",
+        )
         while asyncio.get_running_loop().time() < deadline:
-            if self.is_login_surface_url(self.login_page.url):
-                return True
             try:
                 for selector in selectors:
                     if await self.login_page.locator(selector).count() > 0:
@@ -570,35 +580,36 @@ class AsyncAuth0:
             )
     
     async def openai_code_password_login(self):
-        await asyncio.sleep(1)
         self.logger.debug(f"{self.email_address} openai login,will find email input")
-        openai_email_input = self.login_page.locator("input[id='email']")
-        try:
-            if await openai_email_input.count() > 0:
-                await openai_email_input.type(self.email_address,delay=200)
-            else:
-                openai_email_input1 = self.login_page.locator("input[placeholder='Email address']")
-                await openai_email_input1.type(self.email_address,delay=200)
-        except Exception as e:
-            self.logger.debug(f"{self.email_address} openai login input email exception {e},will try old input ")
-            openai_email_input2 = self.login_page.locator("input[type='email']")
-            await openai_email_input2.type(self.email_address,delay=200)
+        openai_email_input = await self._wait_for_openai_initial_email_input()
+        await openai_email_input.fill(self.email_address)
         self.logger.debug(f"{self.email_address} openai login,will point email continue")
-        await self.login_page.keyboard.press(self.EnterKey)
-        state = await self._wait_for_openai_login_state()
+        await self._submit_openai_continue(openai_email_input, stage="email")
+        state = await self._wait_for_openai_login_state(prefer_password=bool(self.password))
         if state == "password_choice":
             self.logger.debug(f"{self.email_address} openai login,will continue with password")
             await self.login_page.get_by_text("Continue with password", exact=True).click()
-            state = await self._wait_for_openai_login_state()
+            state = await self._wait_for_openai_password_form()
         if state == "otp":
             await self._submit_openai_verification_code()
             return
         if state == "password":
             password_input = self.login_page.locator("input[type='password']")
             self.logger.debug(f"{self.email_address} openai login,will set password")
-            await password_input.fill(self.password)
+            await password_input.wait_for(state="visible", timeout=30000)
+            await password_input.fill("")
+            # Auth0's current password form can ignore a synthetic fill/click
+            # pair while its client-side validation is still settling.  Typed
+            # key events mirror the legacy successful flow and update it first.
+            await password_input.type(self.password, delay=100)
             await self._submit_openai_password(password_input)
-            state = await self._wait_for_openai_login_state(allow_password=False)
+            state = await self._wait_for_openai_login_state(
+                timeout=12000,
+                allow_password=False,
+                prefer_password=False,
+            )
+            if state == "unknown":
+                state = await self._switch_openai_password_to_otp()
             if state == "otp":
                 await self._submit_openai_verification_code()
                 return
@@ -610,13 +621,52 @@ class AsyncAuth0:
         details = await self.get_login_error_details()
         raise Error("OpenAI login error", 1, f"OpenAI login state was not recognized\n{details}")
 
-    async def _submit_openai_password(self, password_input) -> None:
-        """Submit OpenAI's current password page without relying on Enter.
+    async def _wait_for_openai_initial_email_input(self, timeout: int = 30000):
+        """Wait for the visible initial email field instead of trusting an early URL change.
 
-        The current auth surface keeps focus on the password field after fill;
-        pressing Enter can leave the page unchanged. Prefer its semantic
-        Continue button, then retain Enter as a compatibility fallback.
+        ChatGPT may update the page URL before the login drawer or auth document
+        has finished rendering, especially while Firefox is recovering a new page.
+        Proceeding from a locator count alone can type into a later verification
+        surface. This gate requires a visible email field before credentials move.
         """
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        selectors = (
+            "input#email:visible",
+            "input[name='email']:visible",
+            "input[autocomplete='username']:visible",
+        )
+        while asyncio.get_running_loop().time() < deadline:
+            blocked_message = await self._openai_account_block_message()
+            if blocked_message:
+                raise Error("OpenAI login error", 1, blocked_message)
+            url = getattr(self.login_page, "url", "")
+            on_openai_auth = urllib.parse.urlsplit(url).netloc.lower() == "auth.openai.com"
+            for selector in selectors:
+                field = self.login_page.locator(selector).first
+                try:
+                    if await field.count() == 0:
+                        continue
+                    await field.wait_for(state="visible", timeout=1000)
+                    # On ChatGPT's homepage only accept its explicit initial
+                    # email controls.  A generic email input can belong to a
+                    # late verification dialog from a stale navigation.
+                    if not on_openai_auth and selector not in {
+                        "input#email:visible",
+                        "input[name='email']:visible",
+                    }:
+                        continue
+                    return field
+                except Exception as error:
+                    self.logger.debug(f"{self.email_address} waiting for OpenAI email form: {error}")
+            await asyncio.sleep(0.25)
+        raise Error(
+            "OpenAI login error",
+            1,
+            "OpenAI initial email form did not become ready before timeout",
+        )
+
+    async def _submit_openai_continue(self, field, *, stage: str) -> None:
+        """Submit a stable OpenAI login form through its visible Continue action."""
         submits = (
             self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
             self.login_page.locator("button[type='submit']:visible"),
@@ -627,22 +677,108 @@ class AsyncAuth0:
                 continue
             try:
                 await submit.first.click(timeout=10000)
-                self.logger.debug(f"{self.email_address} submitted OpenAI password")
+                self.logger.debug(f"{self.email_address} submitted OpenAI {stage}")
                 return
             except Exception as error:
-                self.logger.debug(f"{self.email_address} OpenAI password submit was not clickable: {error}")
-        await password_input.press(self.EnterKey)
+                self.logger.debug(f"{self.email_address} OpenAI {stage} submit was not clickable: {error}")
+        await self.login_page.keyboard.press(self.EnterKey)
+
+    async def _submit_openai_password(self, password_input) -> None:
+        """Submit the password once through the enabled password-page button."""
+        await password_input.wait_for(state="visible", timeout=10000)
+        await asyncio.sleep(0.25)
+        deadline = asyncio.get_running_loop().time() + 10000 / 1000
+        buttons = (
+            self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
+            self.login_page.locator("button[type='submit']:visible"),
+        )
+        last_error = None
+        while asyncio.get_running_loop().time() < deadline:
+            for button in buttons:
+                if await button.count() == 0:
+                    continue
+                candidate = button.first
+                try:
+                    await candidate.wait_for(state="visible", timeout=1000)
+                    if not await candidate.is_enabled():
+                        continue
+                    await candidate.click(timeout=5000)
+                    self.logger.debug(f"{self.email_address} clicked enabled OpenAI password Continue")
+                    return
+                except Exception as error:
+                    last_error = error
+            await asyncio.sleep(0.25)
+        raise Error(
+            "OpenAI login error",
+            1,
+            f"OpenAI password Continue button did not become ready: {last_error}",
+        )
+
+    async def _switch_openai_password_to_otp(self) -> str:
+        """Leave a stalled password form through OpenAI's explicit OTP option."""
+        otp_choice = self.login_page.get_by_text("Log in with a one-time code", exact=True)
+        if await otp_choice.count() == 0:
+            details = await self.get_login_error_details()
+            raise Error(
+                "OpenAI login error",
+                1,
+                "OpenAI password submission did not transition and no one-time-code fallback is available\n"
+                f"{details}",
+            )
+        self.logger.warning(
+            f"{self.email_address} password submission did not transition; switching to email verification"
+        )
+        try:
+            await otp_choice.click(timeout=10000)
+        except Exception as error:
+            raise Error(
+                "OpenAI login error",
+                1,
+                f"OpenAI password submission stalled and email verification could not be selected: {error}",
+            ) from error
+        state = await self._wait_for_openai_login_state(
+            timeout=30000,
+            allow_password=False,
+            prefer_password=False,
+        )
+        if state != "unknown":
+            return state
+        details = await self.get_login_error_details()
+        raise Error(
+            "OpenAI login error",
+            1,
+            f"OpenAI password submission did not transition after selecting email verification\n{details}",
+        )
 
     async def _wait_for_openai_login_state(
         self,
         timeout: int = 30000,
         *,
         allow_password: bool = True,
+        prefer_password: bool = False,
     ) -> str:
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         while asyncio.get_running_loop().time() < deadline:
             try:
-                otp = self.login_page.locator("input[autocomplete='one-time-code']")
+                url = getattr(self.login_page, "url", "")
+                if self._is_openai_email_verification_url(url):
+                    password_choice = self.login_page.get_by_text("Continue with password", exact=True)
+                    if prefer_password and await password_choice.count() > 0:
+                        await password_choice.wait_for(state="visible", timeout=1000)
+                        return "password_choice"
+                    otp = self._openai_verification_input()
+                    if await otp.count() > 0:
+                        await otp.wait_for(state="visible", timeout=1000)
+                        return "otp"
+                    # Some current deployments expose an unlabelled Code input.
+                    # A generic field is safe only on this exact, known page.
+                    generic_otp = self.login_page.locator("input:visible").first
+                    if await generic_otp.count() > 0:
+                        await generic_otp.wait_for(state="visible", timeout=1000)
+                        return "otp"
+                    await asyncio.sleep(0.25)
+                    continue
+                otp = self._openai_verification_input()
                 if await otp.count() > 0:
                     return "otp"
                 password = self.login_page.locator("input[type='password']")
@@ -650,8 +786,29 @@ class AsyncAuth0:
                     return "password"
                 if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
                     return "password_choice"
-                if "/log-in" not in self.login_page.url:
-                    return "authenticated"
+                if urllib.parse.urlsplit(url).netloc.lower() == "auth.openai.com":
+                    if "/log-in" in urllib.parse.urlsplit(url).path:
+                        await asyncio.sleep(0.25)
+                        continue
+                # Clicking Continue from ChatGPT's homepage drawer does not
+                # immediately replace the top-level URL.  The old condition
+                # treated that still-signed-out homepage as authenticated and
+                # skipped the OTP/password step altogether.  Only a concrete
+                # account control may complete the OpenAI login state here.
+                if self.is_chat_app_url(url):
+                    authenticated_controls = (
+                        "img[alt='User']",
+                        "img[alt='Profile image']",
+                        "button[data-testid='account-menu-button']",
+                    )
+                    for selector in authenticated_controls:
+                        if await self.login_page.locator(selector).count() > 0:
+                            return "authenticated"
+                    await asyncio.sleep(0.25)
+                    continue
+                if not self.is_login_surface_url(url):
+                    await asyncio.sleep(0.25)
+                    continue
                 # The current login drawer keeps the email input visible while its
                 # continue action is loading. Do not mistake its background page
                 # login button for a guest-state result during that transition.
@@ -665,6 +822,71 @@ class AsyncAuth0:
                     raise
             await asyncio.sleep(0.25)
         return "unknown"
+
+    async def _wait_for_openai_password_form(self, timeout: int = 30000) -> str:
+        """Wait for the password page after selecting it from email verification.
+
+        OpenAI leaves the email-verification page visible for a short period
+        after the click.  Do not treat that transition as an OTP fallback until
+        the password form has had a chance to render.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            password = self.login_page.locator("input[type='password']")
+            try:
+                if await password.count() > 0:
+                    await password.wait_for(state="visible", timeout=1000)
+                    return "password"
+                url = getattr(self.login_page, "url", "")
+                if not self._is_openai_email_verification_url(url):
+                    state = await self._wait_for_openai_login_state(
+                        timeout=1000,
+                        prefer_password=False,
+                    )
+                    if state != "unknown":
+                        return state
+            except Exception as error:
+                if "Execution context was destroyed" not in str(error):
+                    raise
+            await asyncio.sleep(0.25)
+        return "unknown"
+
+    def _openai_verification_input(self):
+        """Locate both legacy OTP fields and the current email-verification Code field."""
+        return self.login_page.locator(
+            "input[autocomplete='one-time-code'], input[name='code'], input#code, "
+            "input[inputmode='numeric']"
+        ).first
+
+    @staticmethod
+    def _is_openai_email_verification_url(url: str) -> bool:
+        parsed = urllib.parse.urlsplit(url)
+        return (
+            parsed.netloc.lower() == "auth.openai.com"
+            and parsed.path.rstrip("/") == "/email-verification"
+        )
+
+    async def _wait_for_openai_verification_input(self, timeout: int = 30000):
+        """Wait for the Code field on the known OpenAI email-verification page."""
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            verification_input = self._openai_verification_input()
+            try:
+                if await verification_input.count() > 0:
+                    await verification_input.wait_for(state="visible", timeout=1000)
+                    return verification_input
+                # This page currently has a single plain text Code field in
+                # some deployments, without a stable id/name/autocomplete.
+                # The URL guard makes this generic fallback unambiguous.
+                if self._is_openai_email_verification_url(getattr(self.login_page, "url", "")):
+                    verification_input = self.login_page.locator("input:visible").first
+                    if await verification_input.count() > 0:
+                        await verification_input.wait_for(state="visible", timeout=1000)
+                        return verification_input
+            except Exception as error:
+                self.logger.debug(f"{self.email_address} waiting for OpenAI verification field: {error}")
+            await asyncio.sleep(0.25)
+        raise Error("OpenAI login error", 1, "OpenAI verification input did not become ready before timeout")
 
     async def _submit_openai_verification_code(self) -> None:
         """Wait for an operator-supplied OTP without writing it to disk."""
@@ -683,11 +905,9 @@ class AsyncAuth0:
             )
         except VerificationError as error:
             raise Error("OpenAI login error", 1, f"OpenAI login verification: {error}") from error
-        verification_input = self.login_page.locator("input[autocomplete='one-time-code']")
-        if await verification_input.count() == 0:
-            raise Error("OpenAI login error", 1, "OpenAI verification input is no longer available")
+        verification_input = await self._wait_for_openai_verification_input()
         await verification_input.fill(code)
-        await self.login_page.keyboard.press(self.EnterKey)
+        await self._submit_openai_continue(verification_input, stage="verification code")
         await asyncio.sleep(1)
     
     async def google_login(self, page: Page | None = None):

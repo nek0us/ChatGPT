@@ -20,6 +20,9 @@ class _Locator:
     async def fill(self, value):
         self.value = value
 
+    async def type(self, value, **_kwargs):
+        self.value += value
+
     async def input_value(self):
         return self.value
 
@@ -28,6 +31,9 @@ class _Locator:
 
     async def click(self, **_kwargs):
         self.clicked = True
+
+    async def is_enabled(self):
+        return True
 
     @property
     def first(self):
@@ -61,6 +67,29 @@ class _OpenAIPasswordPage:
         if role == "button" and kwargs.get("name"):
             return self.continue_button
         return _Locator(0)
+
+    def get_by_text(self, _text, **_kwargs):
+        return _Locator(0)
+
+
+class _OpenAIEmailPage(_OpenAIPasswordPage):
+    def __init__(self):
+        super().__init__()
+        self.email = _Locator(1)
+
+    def locator(self, selector):
+        if "email" in selector or "username" in selector:
+            return self.email
+        return super().locator(selector)
+
+
+class _OpenAIPasswordFallbackPage(_OpenAIPasswordPage):
+    def __init__(self):
+        super().__init__()
+        self.otp_choice = _Locator(1)
+
+    def get_by_text(self, text, **_kwargs):
+        return self.otp_choice if text == "Log in with a one-time code" else _Locator(0)
 
 
 class _Page:
@@ -181,6 +210,47 @@ class _NavigatingLoginSurfacePage:
         return _NavigatingLocator()
 
 
+class _EarlyAuthUrlPage:
+    url = "https://auth.openai.com/log-in"
+
+    def locator(self, _selector):
+        return _Locator(0)
+
+
+class _OpenAIEmailVerificationPage:
+    url = "https://auth.openai.com/email-verification"
+
+    def __init__(self, code_count=0):
+        self.code = _Locator(code_count)
+        self.password = _Locator(0)
+        self.password_choice = _Locator(0)
+
+    def locator(self, selector):
+        if "one-time-code" in selector or "name='code'" in selector:
+            return self.code
+        if "password" in selector:
+            return self.password
+        return _Locator(0)
+
+    def get_by_text(self, _text, **_kwargs):
+        return self.password_choice
+
+
+class _SignedOutChatHomepage:
+    url = "https://chatgpt.com/"
+
+    def locator(self, _selector):
+        return _Locator(0)
+
+    def get_by_text(self, _text, **_kwargs):
+        return _Locator(0)
+
+
+class _SignedInChatHomepage(_SignedOutChatHomepage):
+    def locator(self, selector):
+        return _Locator(1 if selector == "img[alt='User']" else 0)
+
+
 class _PopupInfo:
     def __init__(self, popup):
         self.value = self._resolve(popup)
@@ -281,17 +351,43 @@ class _Logger:
     def warning(self, _message):
         pass
 
+    def info(self, _message):
+        pass
+
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
-    async def test_openai_password_submit_clicks_continue_button(self):
+    async def test_openai_initial_email_waits_for_and_returns_visible_field(self):
+        page = _OpenAIEmailPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth._openai_account_block_message = AsyncMock(return_value="")
+
+        field = await auth._wait_for_openai_initial_email_input(timeout=1000)
+
+        self.assertIs(field, page.email)
+        self.assertTrue(page.email.waited)
+
+    async def test_openai_password_submit_clicks_the_enabled_continue_button(self):
         page = _OpenAIPasswordPage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
         auth.login_page = page
 
         await auth._submit_openai_password(page.password)
 
+        self.assertTrue(page.password.waited)
         self.assertTrue(page.continue_button.clicked)
         self.assertEqual(page.keyboard.presses, [])
+
+    async def test_openai_password_stall_switches_to_one_time_code(self):
+        page = _OpenAIPasswordFallbackPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth._wait_for_openai_login_state = AsyncMock(return_value="otp")
+
+        state = await auth._switch_openai_password_to_otp()
+
+        self.assertEqual(state, "otp")
+        self.assertTrue(page.otp_choice.clicked)
 
     async def test_auth_error_keeps_its_details_in_exception_text(self):
         error = Error("OpenAI login error", 1, "account has been deleted or deactivated")
@@ -473,6 +569,53 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         auth.login_page = page
 
         self.assertTrue(await auth.wait_for_login_surface(timeout=1000))
+
+    async def test_auth_url_without_visible_controls_is_not_a_ready_login_surface(self):
+        page = _EarlyAuthUrlPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertFalse(await auth.wait_for_login_surface(timeout=1))
+
+    async def test_openai_email_verification_url_enters_otp_flow_when_code_field_is_ready(self):
+        page = _OpenAIEmailVerificationPage(code_count=1)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=1), "otp")
+
+    async def test_openai_email_verification_prefers_configured_password_before_otp(self):
+        page = _OpenAIEmailVerificationPage()
+        page.password_choice = _Locator(1)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertEqual(
+            await auth._wait_for_openai_login_state(timeout=1, prefer_password=True),
+            "password_choice",
+        )
+
+    async def test_openai_email_verification_uses_otp_when_password_is_not_preferred(self):
+        page = _OpenAIEmailVerificationPage(code_count=1)
+        page.password_choice = _Locator(1)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=1), "otp")
+
+    async def test_signed_out_chatgpt_homepage_is_not_mistaken_for_authenticated(self):
+        page = _SignedOutChatHomepage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=1), "unknown")
+
+    async def test_signed_in_chatgpt_homepage_is_authenticated(self):
+        page = _SignedInChatHomepage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=1000), "authenticated")
 
     async def test_google_one_tap_switches_to_oauth_popup(self):
         page = _OneTapPage()

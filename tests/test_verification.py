@@ -44,6 +44,13 @@ class _OtpInput:
     async def fill(self, value):
         self.value = value
 
+    async def wait_for(self, **_kwargs):
+        pass
+
+    @property
+    def first(self):
+        return self
+
 
 class _Keyboard:
     def __init__(self):
@@ -59,9 +66,12 @@ class _OtpPage:
         self.keyboard = _Keyboard()
 
     def locator(self, selector):
-        if selector == "input[autocomplete='one-time-code']":
+        if "one-time-code" in selector:
             return self.otp
-        raise AssertionError(f"unexpected selector: {selector}")
+        return _MissingInput()
+
+    def get_by_role(self, _role, **_kwargs):
+        return _MissingInput()
 
 
 class _MissingInput:
