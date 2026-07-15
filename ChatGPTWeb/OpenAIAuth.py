@@ -282,7 +282,7 @@ class AsyncAuth0:
         return False
 
     async def _existing_session_access_token(self) -> str | None:
-        """Use restored browser state before clearing cookies for a credential flow."""
+        """Use the complete restored browser state before a credential flow."""
         try:
             await self.goto_chatgpt_home(timeout=30000)
             await self._wait_for_document_ready()
@@ -631,10 +631,11 @@ class AsyncAuth0:
     async def _restart_openai_login_for_otp(self, password_failure_details: str) -> None:
         """Restart the current native login once, preserving device cookies for OTP.
 
-        ``normal_begin`` has already removed only the stale ChatGPT session
-        token.  Repeating that cleanup would discard useful device state and
-        can make verification needlessly frequent, so this helper only returns
-        to the homepage and selects the OTP branch on the next auth surface.
+        The first credential attempt deliberately retains every restored
+        cookie, including the ChatGPT session cookie. Repeating any cleanup
+        here would discard useful device state and can make verification
+        needlessly frequent, so this helper only returns to the homepage and
+        selects the OTP branch on the next auth surface.
         """
         await self.goto_chatgpt_home()
         login_surface_detected = await self.wait_for_login_surface()
@@ -716,18 +717,18 @@ class AsyncAuth0:
         await password_input.wait_for(state="visible", timeout=10000)
         await asyncio.sleep(0.25)
         deadline = asyncio.get_running_loop().time() + 10000 / 1000
-        buttons = []
+        buttons: list[tuple[str, object]] = []
         field_locator = getattr(password_input, "locator", None)
         if callable(field_locator):
             form = field_locator("xpath=ancestor::form").first
-            buttons.append(form.locator("button[type='submit']:visible"))
+            buttons.append(("password form", form.locator("button[type='submit']:visible")))
         buttons.extend((
-            self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I)),
-            self.login_page.locator("button[type='submit']:visible"),
+            ("named Continue", self.login_page.get_by_role("button", name=re.compile(r"^continue$", re.I))),
+            ("page submit", self.login_page.locator("button[type='submit']:visible")),
         ))
         last_error = None
         while asyncio.get_running_loop().time() < deadline:
-            for button in buttons:
+            for source, button in buttons:
                 if await button.count() == 0:
                     continue
                 candidate = button.first
@@ -735,8 +736,38 @@ class AsyncAuth0:
                     await candidate.wait_for(state="visible", timeout=1000)
                     if not await candidate.is_enabled():
                         continue
-                    await candidate.click(timeout=5000)
-                    self.logger.debug(f"{self.email_address} clicked enabled OpenAI password Continue")
+                    auth_requests: list[str] = []
+
+                    def observe_auth_request(request) -> None:
+                        parsed = urllib.parse.urlsplit(request.url)
+                        if parsed.netloc.lower() == "auth.openai.com":
+                            auth_requests.append(f"{request.method} {parsed.path}")
+
+                    add_listener = getattr(self.login_page, "on", None)
+                    remove_listener = getattr(self.login_page, "remove_listener", None)
+                    observing = callable(add_listener) and callable(remove_listener)
+                    if observing:
+                        add_listener("request", observe_auth_request)
+                    try:
+                        await candidate.click(timeout=5000)
+                        # This is observation after a completed click, not a
+                        # timing dependency for the click itself.  It tells us
+                        # whether Auth0 actually started a follow-up request.
+                        if observing:
+                            await asyncio.sleep(1)
+                    finally:
+                        if observing:
+                            remove_listener("request", observe_auth_request)
+                    if auth_requests:
+                        self.logger.debug(
+                            f"{self.email_address} clicked enabled OpenAI password Continue "
+                            f"through {source}; auth request: {auth_requests[-1]}"
+                        )
+                    else:
+                        self.logger.warning(
+                            f"{self.email_address} clicked enabled OpenAI password Continue "
+                            f"through {source}, but no auth.openai.com request was observed"
+                        )
                     return
                 except Exception as error:
                     last_error = error
@@ -942,19 +973,14 @@ class AsyncAuth0:
         self.logger.debug(f"{self.email_address} google login,will point enter")
         await page.keyboard.press(self.EnterKey)
 
-    async def normal_begin(self,logger,retry: int = 1):
+    async def normal_begin(self, logger, retry: int = 1):
         if retry < 0:
             return None
         retry -= 1
         access_token = None
         cookies = await self.browser_contexts.cookies()
         self.logger.debug(f"cookie num:{len(cookies)}")
-        # cookies = [cookie for cookie in cookies if cookie['domain'] not in ('auth.openai.com','.auth.openai.com','auth0.openai.com','.auth0.openai.com','chatgpt.com','.chatgpt.com','.chat.openai.com','chat.openai.com','tcr9i.chat.openai.com','.tcr9i.chat.openai.com','oaistatic.com','.oaistatic.com')] # type: ignore
-        # self.logger.debug(f"cookie num:{len(cookies)}")
-        cookies = [cookie for cookie in cookies if cookie['name'] not in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
-        await self.browser_contexts.clear_cookies()
-        await self.browser_contexts.add_cookies(cookies) # type: ignore
-        self.logger.debug(f"{self.email_address} relogin clear cookie ")
+        self.logger.debug(f"{self.email_address} relogin preserves restored browser cookies")
         await self.goto_chatgpt_home()
         await asyncio.sleep(1)
         check_login = self.login_page.locator('img[alt="User"]')
@@ -1058,11 +1084,6 @@ class AsyncAuth0:
                 await self.find_cf(self.login_page)
                 await asyncio.sleep(2)
                 # await self.login_page.wait_for_load_state('networkidle')
-                cookies = await self.browser_contexts.cookies()
-                cookies = [cookie for cookie in cookies if cookie['name'] in ('__Secure-next-auth.session-token', '__Secure-next-auth.session-token.0')] # type: ignore
-                # if cookies == []:
-                    # Start Fill
-                    # TODO: SPlit Parts from select mode
                 if self.mode == "microsoft":
                     if not self.password:
                         raise Error("Microsoft login error", 1, "Microsoft account password is empty")
@@ -1172,10 +1193,10 @@ class AsyncAuth0:
                     auth_login = self.login_page.locator('//html/body/div[1]/div[1]/div[2]/div[1]/div/div/button[1]')
                     if await nologin_home_locator.count() > 0:
                         self.logger.debug(f"{self.email_address} nologin_home_locator.count() > 0,will re login ")
-                        access_token = await self.normal_begin(logger,retry)
+                        access_token = await self.normal_begin(logger, retry)
                     elif await auth_login.count() > 0:
                         self.logger.debug(f"{self.email_address} auth_login.count() > 0,will re login ")
-                        access_token = await self.normal_begin(logger,retry)
+                        access_token = await self.normal_begin(logger, retry)
                     # else:
                     #     await self.login_page.click('[data-testid="login-button"]')
                     if access_token:
