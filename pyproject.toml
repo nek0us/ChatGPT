@@ -1,6 +1,6 @@
 [project]
 name = "chatgptweb"
-version = "0.4.2"
+version = "0.4.3"
 description = "ChatGPT PlayWright API"
 authors = [
     {name = "nek0us", email = "nekouss@mail.com"},
