@@ -18,7 +18,5 @@ function renderAll(){if(state.status)renderAccounts(state.status);if(state.verif
 </script></body></html>"""
 
 # The document is intentionally compact to keep the packaged control surface small.
-CONTROL_HTML = CONTROL_HTML.replace(
-    "if(item.login_state)return t('ready');return item.login_failure_kind?t('needsLogin'):t('unavailable')",
-    "if(item.login_failure_kind)return failure(item.login_failure_kind);if(item.login_state)return t('ready');return t('unavailable')",
-)
+# A verified live session must take precedence over any stale failure metadata
+# restored from an earlier browser run.

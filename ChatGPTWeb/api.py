@@ -806,6 +806,10 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
                             session.status = Status.Update.value
                     else:
                         session.access_token = token['accessToken']
+                        # A valid session response is stronger evidence than a
+                        # stale login failure restored from local state.
+                        session.mark_login_success()
+                        save_session_state(session, storage, logger)
                         logger.debug(f"refresh {session.email} session token and browser bridge OK!")
                 else:
                     logger.debug(f"refresh {session.email}'s session state got HTTP {res.status}; begin Status.Update")
