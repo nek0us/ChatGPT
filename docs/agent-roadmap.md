@@ -2,6 +2,13 @@
 
 This document tracks the practical path from the current browser-driven ChatGPT wrapper to a cleaner bot and agent backend.
 
+## Protocol Anchor Sessions
+
+- Agent protocol roots are process-local `AgentAnchorPolicy` caches. A safety-review root and an Agent-control root are always separate, keyed by requested model and protocol version.
+- Only static protocol text lives in an anchor. Every user task branches from the control root; tool calls continue only inside that task branch. This preserves low-context task behavior without mixing users, groups, tool outputs, or roleplay into a shared conversation.
+- Do not reuse a semantic-review conversation for Agent control. That prompt leakage previously caused natural-language replies where strict Agent JSON was required.
+- Anchors are an optimization, not durable state: bootstrap or branch failure invalidates the relevant root and the next request rebuilds it. `AgentAnchorPolicy(enabled=False)` keeps the fully fresh request behavior for diagnostics.
+
 ## Current Direction
 
 The main transport should stay browser-resident. Protected ChatGPT requests should be made from the logged-in Playwright page with browser `fetch`, not from Python `httpx`.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, List
 
-from .agent import AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
+from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
 from .service import ChatRequest, ChatResult, ChatService
 
@@ -53,9 +53,16 @@ def _result_to_dict(result: ChatResult) -> Dict[str, Any]:
 class McpServiceAdapter:
     """Small, confirmation-aware agent facade over :class:`ChatService`."""
 
-    def __init__(self, service: ChatService, *, agent_safety_policy: AgentSafetyPolicy | None = None):
+    def __init__(
+        self,
+        service: ChatService,
+        *,
+        agent_safety_policy: AgentSafetyPolicy | None = None,
+        agent_anchor_policy: AgentAnchorPolicy | None = None,
+    ):
         self._service = service
         self._agent_safety_policy = agent_safety_policy
+        self._agent_anchor_policy = agent_anchor_policy
 
     async def chat_send(
         self,
@@ -164,7 +171,11 @@ class McpServiceAdapter:
         """Return one agent decision; the MCP host executes requested tools itself."""
         try:
             registered = [AgentTool.from_dict(item) for item in tools]
-            turn = await AgentService(self._service, safety_policy=self._agent_safety_policy).turn(
+            turn = await AgentService(
+                self._service,
+                safety_policy=self._agent_safety_policy,
+                anchor_policy=self._agent_anchor_policy,
+            ).turn(
                 task,
                 registered,
                 state=AgentState.from_dict(state),
@@ -176,7 +187,12 @@ class McpServiceAdapter:
         return _redact_sensitive(turn.to_dict())
 
 
-def create_mcp_server(service: ChatService, *, agent_safety_policy: AgentSafetyPolicy | None = None):
+def create_mcp_server(
+    service: ChatService,
+    *,
+    agent_safety_policy: AgentSafetyPolicy | None = None,
+    agent_anchor_policy: AgentAnchorPolicy | None = None,
+):
     """Create a FastMCP server without importing the optional SDK at package import time."""
     try:
         from mcp.server.fastmcp import Context, FastMCP
@@ -186,7 +202,11 @@ def create_mcp_server(service: ChatService, *, agent_safety_policy: AgentSafetyP
     # FastMCP evaluates nested tool annotations against this module's globals.
     globals()["Context"] = Context
 
-    adapter = McpServiceAdapter(service, agent_safety_policy=agent_safety_policy)
+    adapter = McpServiceAdapter(
+        service,
+        agent_safety_policy=agent_safety_policy,
+        agent_anchor_policy=agent_anchor_policy,
+    )
     server = FastMCP(
         "ChatGPTWeb",
         instructions=(

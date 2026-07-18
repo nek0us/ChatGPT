@@ -33,6 +33,10 @@ class ChatRequest:
     web_search: bool = False
     deep_research: bool = False
     prefer_paid_account: bool = False
+    # Internal adapters may pin a known conversation owner without persisting a
+    # full transcript. It is intentionally not accepted by public HTTP payloads.
+    account_hint: str = ""
+    persist_history: bool = True
     stream_idle_timeout_seconds: int = 0
     stream_status_interval_seconds: int = 15
     operation: ConversationOperation = ConversationOperation.SEND
@@ -48,6 +52,8 @@ class ChatRequest:
             web_search=self.web_search,
             deep_research=self.deep_research,
             gpt_plus=self.prefer_paid_account,
+            account_hint=self.account_hint,
+            persist_history=self.persist_history,
             stream_idle_timeout_seconds=max(0, self.stream_idle_timeout_seconds),
             stream_status_interval_seconds=max(0, self.stream_status_interval_seconds),
         )

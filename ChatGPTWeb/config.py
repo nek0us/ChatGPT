@@ -391,6 +391,8 @@ class MsgData(BaseModel):
     title: str = Field("", description="conversation title")
     image_gen: bool = Field(False, description="image generation")
     from_email: str = Field("", description="from email")
+    account_hint: str = Field("", description="internal conversation owner hint")
+    persist_history: bool = Field(True, description="whether this request is written to local conversation history")
     # 请求数据
     post_data: str = Field("", description="POST请求数据")
     # Arkose 验证相关

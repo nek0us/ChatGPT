@@ -2202,7 +2202,8 @@ class chatgpt:
                     msg_data.from_email = session.email
                     if session.login_state is False:
                         session.login_state = True
-                    await self.save_chat(msg_data, context_num)
+                    if msg_data.persist_history:
+                        await self.save_chat(msg_data, context_num)
                 return msg_data
             except Exception as e:
                 error_text = str(e)
@@ -2587,7 +2588,8 @@ class chatgpt:
         if msg_data.status:
             if session.login_state is False:
                 session.login_state = True
-            await self.save_chat(msg_data, context_num)
+            if msg_data.persist_history:
+                await self.save_chat(msg_data, context_num)
         return msg_data
 
         
@@ -2725,7 +2727,7 @@ class chatgpt:
                     self.logger.error(msg_data.error_info)
                     return None
         else:
-            account = self.storage.conversation_owner(msg_data.conversation_id)
+            account = msg_data.account_hint or self.storage.conversation_owner(msg_data.conversation_id)
             session = next((item for item in self.Sessions if item.email == account), None) # type: ignore
             if not session:
                 msg_data.add_error(
@@ -2761,6 +2763,8 @@ class chatgpt:
                 )
                 self.logger.error(msg_data.error_info)
                 return None
+
+            msg_data.account_hint = session.email
 
             if not msg_data.p_msg_id:
                 try:
@@ -2850,7 +2854,8 @@ class chatgpt:
             if msg_data.status:
                 if session.login_state is False:
                     session.login_state = True
-                await self.save_chat(msg_data, context_num)
+                if msg_data.persist_history:
+                    await self.save_chat(msg_data, context_num)
                 self._record_usage(session, msg_data)
                 self.logger.info(
                     f"receive stream message: {build_chat_content(msg_data.msg_recv).markdown}"

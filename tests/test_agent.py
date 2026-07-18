@@ -21,13 +21,20 @@ class _Backend:
         self.received_parent_message_ids.append(msg_data.p_msg_id)
         msg_data.status = True
         if "ChatGPTWeb Agent Safety Review" in msg_data.msg_send:
-            msg_data.msg_recv = self.safety_replies.pop(0) if self.safety_replies else '{"blocked":false}'
+            msg_data.msg_recv = (
+                '{"ready":true}'
+                if "Static classifier root" in msg_data.msg_send
+                else self.safety_replies.pop(0) if self.safety_replies else '{"blocked":false}'
+            )
+        elif "Static protocol root" in msg_data.msg_send and "Agent task data follows." not in msg_data.msg_send:
+            msg_data.msg_recv = '{"ready":true}'
         else:
             msg_data.msg_recv = self.replies.pop(0)
         msg_data.conversation_id = "agent-conversation"
         msg_data.next_msg_id = f"message-{len(self.requests)}"
         msg_data.model_requested = msg_data.gpt_model
         msg_data.model_used = "gpt-agent"
+        msg_data.from_email = "agent@example.com"
         return msg_data
 
 
@@ -86,12 +93,12 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.ok)
         self.assertEqual(first.decision.kind, "tool_call")
-        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[1].msg_send)
+        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[3].msg_send)
         self.assertTrue(second.ok)
         self.assertEqual(second.decision.kind, "final")
         self.assertEqual(second.decision.answer, "已在工作区创建 note.txt。")
-        self.assertEqual(backend.requests[1].conversation_id, "agent-conversation")
-        self.assertIn("created note.txt", backend.requests[2].msg_send)
+        self.assertEqual(backend.requests[3].conversation_id, "agent-conversation")
+        self.assertIn("created note.txt", backend.requests[4].msg_send)
 
     async def test_continuation_without_result_is_rejected_before_model_call(self):
         backend = _Backend([])
@@ -138,7 +145,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.decision.kind, "final")
-        self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(len(backend.requests), 2)
         self.assertIn("Agent Safety Review", backend.requests[0].msg_send)
 
     async def test_host_can_explicitly_disable_sensitive_task_guard(self):
@@ -151,7 +158,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.decision.answer, "completed")
-        self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(len(backend.requests), 2)
         self.assertNotIn("Agent Safety Review", backend.requests[0].msg_send)
 
     async def test_initial_agent_turn_can_explicitly_continue_a_persona_conversation(self):
@@ -167,8 +174,33 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.decision.kind, "final")
-        self.assertEqual(backend.received_conversation_ids[1], "persona-conversation")
-        self.assertEqual(backend.received_parent_message_ids[1], "persona-message")
+        self.assertEqual(backend.received_conversation_ids[2], "persona-conversation")
+        self.assertEqual(backend.received_parent_message_ids[2], "persona-message")
+
+    async def test_independent_tasks_reuse_only_isolated_protocol_anchors(self):
+        backend = _Backend([
+            '{"type":"final","answer":"first"}',
+            '{"type":"final","answer":"second"}',
+        ])
+        service = ChatService(backend)
+
+        first = await AgentService(service).turn("first task", _tools())
+        second = await AgentService(service).turn("second task", _tools())
+
+        self.assertEqual(first.decision.answer, "first")
+        self.assertEqual(second.decision.answer, "second")
+        self.assertEqual(len(backend.requests), 6)
+        self.assertIn("Static classifier root", backend.requests[0].msg_send)
+        self.assertIn("Static protocol root", backend.requests[2].msg_send)
+        self.assertNotIn("Static classifier root", backend.requests[4].msg_send)
+        self.assertNotIn("Static protocol root", backend.requests[5].msg_send)
+        self.assertEqual(backend.requests[4].conversation_id, "agent-conversation")
+        self.assertEqual(backend.requests[5].conversation_id, "agent-conversation")
+        self.assertEqual(backend.requests[4].p_msg_id, "message-1")
+        self.assertEqual(backend.requests[5].p_msg_id, "message-3")
+        self.assertTrue(all(not request.persist_history for request in backend.requests))
+        self.assertEqual(backend.requests[4].account_hint, "agent@example.com")
+        self.assertEqual(backend.requests[5].account_hint, "agent@example.com")
 
     async def test_http_agent_payload_keeps_state_for_a_remote_host_loop(self):
         backend = _Backend([
