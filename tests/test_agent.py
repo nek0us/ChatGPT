@@ -100,6 +100,21 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.requests[3].conversation_id, "agent-conversation")
         self.assertIn("created note.txt", backend.requests[4].msg_send)
 
+    async def test_malformed_decision_is_repaired_once_before_failing(self):
+        backend = _Backend([
+            "I can inspect that for you.",
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn("create a note", _tools())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        self.assertEqual(len(backend.requests), 5)
+        self.assertIn("previous response was not a valid agent decision", backend.requests[-1].msg_send)
+        self.assertEqual(backend.requests[-1].conversation_id, "agent-conversation")
+        self.assertEqual(backend.requests[-1].p_msg_id, "message-4")
+
     async def test_continuation_without_result_is_rejected_before_model_call(self):
         backend = _Backend([])
         result = await AgentService(ChatService(backend)).turn(
