@@ -1,0 +1,177 @@
+import unittest
+
+from aiohttp.test_utils import TestClient, TestServer
+
+from ChatGPTWeb.agent import AgentService, AgentState, AgentTool, AgentToolResult, parse_agent_decision
+from ChatGPTWeb.http_api import agent_turn_from_payload, create_http_app
+from ChatGPTWeb.service import ChatService
+
+
+class _Backend:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.requests = []
+        self.received_conversation_ids = []
+        self.received_parent_message_ids = []
+
+    async def continue_chat(self, msg_data):
+        self.requests.append(msg_data)
+        self.received_conversation_ids.append(msg_data.conversation_id)
+        self.received_parent_message_ids.append(msg_data.p_msg_id)
+        msg_data.status = True
+        msg_data.msg_recv = self.replies.pop(0)
+        msg_data.conversation_id = "agent-conversation"
+        msg_data.next_msg_id = f"message-{len(self.requests)}"
+        msg_data.model_requested = msg_data.gpt_model
+        msg_data.model_used = "gpt-agent"
+        return msg_data
+
+
+def _tools():
+    return [AgentTool(
+        "workspace.write_text",
+        "Write one UTF-8 text file inside the configured workspace.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "maxLength": 120},
+                "content": {"type": "string", "maxLength": 1000},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    )]
+
+
+class AgentDecisionTests(unittest.TestCase):
+    def test_registered_tool_call_is_validated(self):
+        decision = parse_agent_decision(
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',
+            _tools(),
+        )
+
+        self.assertEqual(decision.kind, "tool_call")
+        self.assertEqual(decision.arguments["path"], "note.txt")
+
+    def test_unknown_tool_and_bad_arguments_fail_closed(self):
+        unknown = parse_agent_decision('{"type":"tool_call","tool":"shell","arguments":{}}', _tools())
+        malformed = parse_agent_decision(
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt"}}',
+            _tools(),
+        )
+
+        self.assertEqual(unknown.kind, "error")
+        self.assertEqual(malformed.kind, "error")
+
+
+class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_result_continues_same_conversation_to_a_final_answer(self):
+        backend = _Backend([
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',
+            '{"type":"final","answer":"已在工作区创建 note.txt。"}',
+        ])
+        service = AgentService(ChatService(backend))
+
+        first = await service.turn("创建一个 hello 文件", _tools())
+        second = await service.turn(
+            "",
+            _tools(),
+            state=first.state,
+            tool_result=AgentToolResult("workspace.write_text", "created note.txt"),
+        )
+
+        self.assertTrue(first.ok)
+        self.assertEqual(first.decision.kind, "tool_call")
+        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[0].msg_send)
+        self.assertTrue(second.ok)
+        self.assertEqual(second.decision.kind, "final")
+        self.assertEqual(second.decision.answer, "已在工作区创建 note.txt。")
+        self.assertEqual(backend.requests[1].conversation_id, "agent-conversation")
+        self.assertIn("created note.txt", backend.requests[1].msg_send)
+
+    async def test_continuation_without_result_is_rejected_before_model_call(self):
+        backend = _Backend([])
+        result = await AgentService(ChatService(backend)).turn(
+            "",
+            _tools(),
+            state=AgentState(conversation_id="existing", parent_message_id="message"),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(backend.requests, [])
+
+    async def test_initial_agent_turn_can_explicitly_continue_a_persona_conversation(self):
+        backend = _Backend([
+            '{"type":"final","answer":"我会记住这件事。"}',
+        ])
+        result = await AgentService(ChatService(backend)).turn(
+            "ten minutes later remind me",
+            _tools(),
+            state=AgentState(conversation_id="persona-conversation", parent_message_id="persona-message"),
+            continue_existing=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "final")
+        self.assertEqual(backend.received_conversation_ids[0], "persona-conversation")
+        self.assertEqual(backend.received_parent_message_ids[0], "persona-message")
+
+    async def test_http_agent_payload_keeps_state_for_a_remote_host_loop(self):
+        backend = _Backend([
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"}}',
+        ])
+        payload = await agent_turn_from_payload(ChatService(backend), {
+            "task": "create a note",
+            "tools": [tool.to_dict() for tool in _tools()],
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["decision"]["type"], "tool_call")
+        self.assertEqual(payload["state"]["conversation_id"], "agent-conversation")
+
+
+class OpenAICompatibleAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.backend = _Backend([
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"}}',
+            '{"type":"final","answer":"created note.txt"}',
+        ])
+        self.client = TestClient(TestServer(create_http_app(ChatService(self.backend))))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_standard_openai_tool_call_round_trip_without_private_cursor_fields(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        first = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [{"role": "user", "content": "create note.txt"}],
+            "tools": tools,
+        })
+        first_payload = await first.json()
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(first_payload["choices"][0]["finish_reason"], "tool_calls")
+        call = first_payload["choices"][0]["message"]["tool_calls"][0]
+        self.assertEqual(call["function"]["name"], "workspace.write_text")
+
+        second = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [
+                first_payload["choices"][0]["message"],
+                {"role": "tool", "tool_call_id": call["id"], "content": "created note.txt"},
+            ],
+        })
+        second_payload = await second.json()
+
+        self.assertEqual(second.status, 200)
+        self.assertEqual(second_payload["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(second_payload["choices"][0]["message"]["content"], "created note.txt")

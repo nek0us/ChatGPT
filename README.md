@@ -301,7 +301,7 @@ server = create_mcp_server(service)
 server.run(transport="stdio")
 ```
 
-The MCP server is intentionally an adapter over an already initialized runtime; it does not create a second browser or expose browser/session credentials. Its initial tools are `chat_send`, `chat_stream`, `list_accounts`, `list_models`, and `get_conversation`. Both chat tools require `confirm=true` because they can consume account quota. `chat_stream` forwards upstream text deltas as MCP progress notifications, then returns the final structured result. Keep protocol stdout clean when using the `stdio` transport; send application logs to stderr or a file. File-upload MCP tools are deliberately deferred until explicit approval and file-size/content policy are designed.
+The MCP server is intentionally an adapter over an already initialized runtime; it does not create a second browser or expose browser/session credentials. Its tools are `chat_send`, `chat_stream`, `list_accounts`, `list_models`, `get_conversation`, and `agent_turn`. Both chat tools require `confirm=true` because they can consume account quota. `chat_stream` forwards upstream text deltas as MCP progress notifications, then returns the final structured result. `agent_turn` is a model-decision primitive: it returns one validated `tool_call` or `final` decision, while the MCP host executes only its own registered tools and sends the result back in the next call. Keep protocol stdout clean when using the `stdio` transport; send application logs to stderr or a file.
 
 ### Optional HTTP API
 ```python
@@ -316,7 +316,37 @@ app = create_http_app(
 web.run_app(app, host="127.0.0.1", port=8000)
 ```
 
-The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, `/v1/accounts/{account}/control`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
+The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, `/v1/accounts/{account}/control`, `/v1/agent/turn`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
+
+`/v1/chat/completions` also accepts the standard OpenAI `tools: [{"type":"function","function":...}]` shape. A tool round is deliberately non-streaming: the response returns ordinary `choices[0].message.tool_calls`, the host executes that one approved function, then sends a `role: "tool"` message with the same `tool_call_id`. The server recognizes the standard identifier directly, retains the narrow conversation cursor for ten minutes, and never executes the advertised function itself. Do not add or replace tools during a continuation; the initially accepted tool list remains authoritative.
+
+### Agent Host Protocol
+
+`/v1/agent/turn` and the MCP `agent_turn` tool provide the same host-driven loop for Codex/OpenCode-style agent hosts or a custom local runner. ChatGPTWeb only decides the next step; it never receives permission to execute arbitrary commands, access a host filesystem, or open a network connection itself.
+
+1. The host sends `task` and its own explicit `tools` list. Each tool has a stable `name`, a human-readable `description`, and an object-shaped `input_schema`.
+2. The response contains `decision.type`: `tool_call` with validated arguments, `final` with the answer, or `error`.
+3. The host enforces its own permission policy, runs an approved requested tool, then sends the returned `state` plus `tool_result` to continue the same ChatGPT conversation.
+
+An upper-layer adapter that intentionally starts an agent turn from an already established ChatGPT conversation may use `AgentService.turn(..., continue_existing=True)`. This preserves its existing persona and context for the decision, but it does not change the host-owned tool boundary or permission requirements.
+
+```json
+{
+  "task": "Create a short release note in the workspace",
+  "tools": [{
+    "name": "workspace.write_text",
+    "description": "Write a UTF-8 text file below the configured workspace.",
+    "input_schema": {
+      "type": "object",
+      "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["path", "content"],
+      "additionalProperties": false
+    }
+  }]
+}
+```
+
+After executing the returned tool call, continue with the response `state` and a bounded result such as `{"tool":"workspace.write_text","ok":true,"output":"created release.md"}`. Never pass credentials, raw browser state, or untrusted tool definitions from another user into this API. The API is a local LLM/decision bridge; whether a particular external product can use a custom OpenAI-compatible endpoint or custom MCP server depends on that product's own configuration and policy.
 
 ### async def continue_chat(self, msg_data: MsgData) -> MsgData
 ```bash

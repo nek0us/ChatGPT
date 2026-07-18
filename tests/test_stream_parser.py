@@ -494,7 +494,6 @@ class HttpApiRequestTests(unittest.TestCase):
                 "attachments": [{"name": "note.txt", "content_base64": "aGVsbG8="}],
             }, max_attachment_bytes=4)
 
-
 class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend = _FakeBackend()

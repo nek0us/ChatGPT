@@ -85,7 +85,38 @@ class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
         server = create_mcp_server(ChatService(self.backend))
         names = {tool.name for tool in await server.list_tools()}
 
-        self.assertEqual(names, {"chat_send", "chat_stream", "list_accounts", "list_models", "get_conversation"})
+        self.assertEqual(names, {"chat_send", "chat_stream", "list_accounts", "list_models", "get_conversation", "agent_turn"})
+
+    async def test_agent_turn_returns_a_host_executed_tool_request(self):
+        self.backend.sent = []
+        self.backend.continue_chat = self._agent_reply
+        result = await self.adapter.agent_turn(
+            "create a note",
+            [{
+                "name": "workspace.write_text",
+                "description": "write a workspace text file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            }],
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["decision"]["tool"], "workspace.write_text")
+        self.assertEqual(result["decision"]["arguments"]["path"], "note.txt")
+
+    async def _agent_reply(self, msg_data):
+        self.backend.sent.append(msg_data)
+        msg_data.status = True
+        msg_data.msg_recv = '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt"},"summary":"create note"}'
+        msg_data.conversation_id = "conversation-agent"
+        msg_data.next_msg_id = "message-agent"
+        msg_data.model_requested = msg_data.gpt_model
+        msg_data.model_used = "gpt-5-mini"
+        return msg_data
 
     async def test_stream_forwards_delta_events_and_returns_final_result(self):
         events = []
@@ -125,7 +156,7 @@ class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
                     progress_callback=on_progress,
                 )
 
-        self.assertEqual({tool.name for tool in tools.tools}, {"chat_send", "chat_stream", "list_accounts", "list_models", "get_conversation"})
+        self.assertEqual({tool.name for tool in tools.tools}, {"chat_send", "chat_stream", "list_accounts", "list_models", "get_conversation", "agent_turn"})
         self.assertFalse(result.isError)
         self.assertEqual(json.loads(result.content[0].text)["text"], "stdio response")
         self.assertEqual(progress_messages, ["[waiting_for_upstream]", "stdio "])

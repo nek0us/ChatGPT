@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, List
 
+from .agent import AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
 from .service import ChatRequest, ChatResult, ChatService
 
@@ -150,6 +151,29 @@ class McpServiceAdapter:
             return []
         return _redact_sensitive(await self._service.get_history(conversation_id))
 
+    async def agent_turn(
+        self,
+        task: str,
+        tools: List[Dict[str, Any]],
+        *,
+        state: Dict[str, Any] | None = None,
+        tool_result: Dict[str, Any] | None = None,
+        model: str = "auto",
+    ) -> Dict[str, Any]:
+        """Return one agent decision; the MCP host executes requested tools itself."""
+        try:
+            registered = [AgentTool.from_dict(item) for item in tools]
+            turn = await AgentService(self._service).turn(
+                task,
+                registered,
+                state=AgentState.from_dict(state),
+                tool_result=AgentToolResult.from_dict(tool_result),
+                model=model,
+            )
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        return _redact_sensitive(turn.to_dict())
+
 
 def create_mcp_server(service: ChatService):
     """Create a FastMCP server without importing the optional SDK at package import time."""
@@ -166,7 +190,9 @@ def create_mcp_server(service: ChatService):
         "ChatGPTWeb",
         instructions=(
             "ChatGPTWeb tools use an existing logged-in browser runtime. "
-            "chat_send requires confirm=true because it can consume account quota."
+            "chat_send requires confirm=true because it can consume account quota. "
+            "agent_turn returns one validated decision only; the MCP host owns tool execution "
+            "and must provide the next tool_result explicitly."
         ),
     )
 
@@ -235,5 +261,22 @@ def create_mcp_server(service: ChatService):
     async def get_conversation(conversation_id: str) -> List[Dict[str, str]]:
         """Read locally stored history for one conversation."""
         return await adapter.get_conversation(conversation_id)
+
+    @server.tool()
+    async def agent_turn(
+        task: str,
+        tools: List[Dict[str, Any]],
+        state: Dict[str, Any] | None = None,
+        tool_result: Dict[str, Any] | None = None,
+        model: str = "auto",
+    ) -> Dict[str, Any]:
+        """Get one validated agent tool-call/final decision; execute tools in the host, then call again with tool_result."""
+        return await adapter.agent_turn(
+            task,
+            tools,
+            state=state,
+            tool_result=tool_result,
+            model=model,
+        )
 
     return server

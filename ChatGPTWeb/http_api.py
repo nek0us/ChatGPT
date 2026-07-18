@@ -7,10 +7,12 @@ import hmac
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from aiohttp import web
 
+from .agent import AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_HTML
@@ -18,6 +20,14 @@ from .service import ChatRequest, ChatResult, ChatService
 from .verification import VerificationBroker
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
+
+
+@dataclass
+class _OpenAIAgentCursor:
+    state: AgentState
+    tools: list[AgentTool]
+    tool_name: str
+    expires_at: float
 
 
 def _text_content(value: Any) -> str:
@@ -120,6 +130,97 @@ def chat_request_from_payload(payload: Dict[str, Any], max_attachment_bytes: int
     )
 
 
+def _agent_tools_from_payload(payload: Dict[str, Any]) -> List[AgentTool]:
+    tools = payload.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise web.HTTPBadRequest(text="agent request requires a non-empty tools array")
+    if len(tools) > 64:
+        raise web.HTTPBadRequest(text="agent request supports at most 64 tools")
+    if not all(isinstance(item, dict) for item in tools):
+        raise web.HTTPBadRequest(text="every agent tool must be an object")
+    try:
+        return [AgentTool.from_dict(item) for item in tools]
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+
+
+async def agent_turn_from_payload(service: ChatService, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate an external host's agent turn without executing host tools."""
+    if not isinstance(payload, dict):
+        raise web.HTTPBadRequest(text="request body must be a JSON object")
+    task = payload.get("task", "")
+    if not isinstance(task, str):
+        raise web.HTTPBadRequest(text="agent task must be a string")
+    try:
+        state = AgentState.from_dict(payload.get("state"))
+        tool_result = AgentToolResult.from_dict(payload.get("tool_result"))
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    model = payload.get("model", state.model or "auto")
+    if not isinstance(model, str) or not model.strip():
+        raise web.HTTPBadRequest(text="agent model must be a non-empty string")
+    turn = await AgentService(service).turn(
+        task,
+        _agent_tools_from_payload(payload),
+        state=state,
+        tool_result=tool_result,
+        model=model,
+    )
+    return turn.to_dict()
+
+
+def _openai_agent_tools(payload: Dict[str, Any]) -> list[AgentTool]:
+    raw_tools = payload.get("tools")
+    if not isinstance(raw_tools, list) or not raw_tools:
+        raise web.HTTPBadRequest(text="tools must be a non-empty array")
+    converted: list[dict[str, Any]] = []
+    for item in raw_tools:
+        if not isinstance(item, dict):
+            raise web.HTTPBadRequest(text="every tool must be an object")
+        function = item.get("function") if item.get("type") == "function" else item
+        if not isinstance(function, dict):
+            raise web.HTTPBadRequest(text="OpenAI tool requires a function object")
+        converted.append({
+            "name": function.get("name"),
+            "description": function.get("description"),
+            "input_schema": function.get("parameters", {"type": "object", "properties": {}}),
+        })
+    try:
+        return [AgentTool.from_dict(item) for item in converted]
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+
+
+def _latest_openai_tool_call_id(payload: Dict[str, Any]) -> str:
+    """Return the most recent standard OpenAI tool-call identifier, if any."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return tool_call_id
+    return ""
+
+
+def _tool_result_from_openai_messages(
+    payload: Dict[str, Any], cursor: _OpenAIAgentCursor, tool_call_id: str,
+) -> AgentToolResult:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        raise web.HTTPBadRequest(text="tool continuation requires messages")
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        if message.get("tool_call_id") != tool_call_id:
+            continue
+        content = _text_content(message.get("content"))
+        return AgentToolResult(cursor.tool_name, content[:12000], ok=True)
+    raise web.HTTPBadRequest(text="tool continuation requires the matching role=tool result")
+
+
 def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
     return {
         "id": request_id,
@@ -142,6 +243,42 @@ def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
             "metadata": result.metadata,
             "errors": result.errors,
             "content": result.content.to_dict(),
+        },
+    }
+
+
+def _agent_completion_payload(turn, request_id: str, model: str, tool_call_id: str = "") -> Dict[str, Any]:
+    decision = turn.decision
+    if decision.kind == "tool_call":
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": decision.tool,
+                    "arguments": json.dumps(decision.arguments, ensure_ascii=False),
+                },
+            }],
+        }
+        finish_reason = "tool_calls"
+    elif decision.kind == "final":
+        message = {"role": "assistant", "content": decision.answer}
+        finish_reason = "stop"
+    else:
+        message = {"role": "assistant", "content": ""}
+        finish_reason = "error"
+    return {
+        "id": request_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": turn.used_model or model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "chatgptweb": {
+            "ok": turn.ok,
+            "agent": turn.to_dict(),
+            "tool_call_id": tool_call_id,
         },
     }
 
@@ -175,6 +312,13 @@ def create_http_app(
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
         raise ValueError("max_attachment_bytes must be positive")
+    agent_cursors: dict[str, _OpenAIAgentCursor] = {}
+
+    def discard_agent_cursors() -> None:
+        now = time.monotonic()
+        for token, cursor in tuple(agent_cursors.items()):
+            if cursor.expires_at <= now:
+                agent_cursors.pop(token, None)
 
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
@@ -256,8 +400,48 @@ def create_http_app(
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
-        chat_request = chat_request_from_payload(payload, max_attachment_bytes=max_attachment_bytes)
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
+        supplied_call_id = payload.get("chatgptweb_tool_call_id")
+        if supplied_call_id is not None and not isinstance(supplied_call_id, str):
+            raise web.HTTPBadRequest(text="chatgptweb_tool_call_id must be a string")
+        discard_agent_cursors()
+        tool_call_id = supplied_call_id or _latest_openai_tool_call_id(payload)
+        cursor = agent_cursors.get(tool_call_id) if tool_call_id else None
+        if tool_call_id and cursor is None and payload.get("tools") is None:
+            raise web.HTTPBadRequest(text="tool-call cursor is unknown or expired; restart the agent request")
+        if payload.get("tools") is not None or cursor is not None:
+            if payload.get("stream", False):
+                raise web.HTTPBadRequest(text="streaming tool calls are not supported; use non-streaming tool rounds")
+            if cursor is None:
+                tools = _openai_agent_tools(payload)
+            else:
+                tools = cursor.tools
+            try:
+                if cursor is None:
+                    turn = await AgentService(service).turn(
+                        _prompt_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
+                    )
+                else:
+                    # Keep the stored tool set instead of trusting a continuation to broaden it.
+                    result = _tool_result_from_openai_messages(payload, cursor, tool_call_id)
+                    agent_cursors.pop(tool_call_id, None)
+                    turn = await AgentService(service).turn(
+                        "", cursor.tools, state=cursor.state, tool_result=result, model=cursor.state.model,
+                    )
+            except ValueError as error:
+                raise web.HTTPBadRequest(text=str(error)) from error
+            call_id = ""
+            if turn.ok and turn.decision.kind == "tool_call":
+                call_id = f"call_{uuid.uuid4().hex}"
+                agent_cursors[call_id] = _OpenAIAgentCursor(
+                    state=turn.state,
+                    tools=tools if cursor is None else cursor.tools,
+                    tool_name=turn.decision.tool,
+                    expires_at=time.monotonic() + 600,
+                )
+            return web.json_response(_agent_completion_payload(turn, request_id, str(payload.get("model") or "auto"), call_id))
+
+        chat_request = chat_request_from_payload(payload, max_attachment_bytes=max_attachment_bytes)
         if not payload.get("stream", False):
             result = await service.send(chat_request)
             return web.json_response(_result_payload(result, request_id))
@@ -308,6 +492,13 @@ def create_http_app(
             await stream.aclose()
         return response
 
+    async def agent_turn(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        return web.json_response(await agent_turn_from_payload(service, payload))
+
     # JSON base64 is larger than decoded attachment bytes.
     app = web.Application(
         middlewares=[auth_middleware],
@@ -324,6 +515,7 @@ def create_http_app(
     app.router.add_post("/v1/verification/{challenge_id}", submit_verification)
     app.router.add_delete("/v1/verification/{challenge_id}", cancel_verification)
     app.router.add_post("/v1/chat/completions", chat_completions)
+    app.router.add_post("/v1/agent/turn", agent_turn)
     return app
 
 
