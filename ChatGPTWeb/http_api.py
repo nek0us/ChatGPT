@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
-from .agent import AgentService, AgentState, AgentTool, AgentToolResult
+from .agent import AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_HTML
@@ -144,7 +144,12 @@ def _agent_tools_from_payload(payload: Dict[str, Any]) -> List[AgentTool]:
         raise web.HTTPBadRequest(text=str(error)) from error
 
 
-async def agent_turn_from_payload(service: ChatService, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def agent_turn_from_payload(
+    service: ChatService,
+    payload: Dict[str, Any],
+    *,
+    agent_safety_policy: AgentSafetyPolicy | None = None,
+) -> Dict[str, Any]:
     """Translate an external host's agent turn without executing host tools."""
     if not isinstance(payload, dict):
         raise web.HTTPBadRequest(text="request body must be a JSON object")
@@ -159,7 +164,7 @@ async def agent_turn_from_payload(service: ChatService, payload: Dict[str, Any])
     model = payload.get("model", state.model or "auto")
     if not isinstance(model, str) or not model.strip():
         raise web.HTTPBadRequest(text="agent model must be a non-empty string")
-    turn = await AgentService(service).turn(
+    turn = await AgentService(service, safety_policy=agent_safety_policy).turn(
         task,
         _agent_tools_from_payload(payload),
         state=state,
@@ -308,6 +313,7 @@ def create_http_app(
     api_key: str | None = None,
     max_attachment_bytes: int = 20 * 1024 * 1024,
     verification_broker: VerificationBroker | None = None,
+    agent_safety_policy: AgentSafetyPolicy | None = None,
 ) -> web.Application:
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
@@ -418,14 +424,14 @@ def create_http_app(
                 tools = cursor.tools
             try:
                 if cursor is None:
-                    turn = await AgentService(service).turn(
+                    turn = await AgentService(service, safety_policy=agent_safety_policy).turn(
                         _prompt_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
                     )
                 else:
                     # Keep the stored tool set instead of trusting a continuation to broaden it.
                     result = _tool_result_from_openai_messages(payload, cursor, tool_call_id)
                     agent_cursors.pop(tool_call_id, None)
-                    turn = await AgentService(service).turn(
+                    turn = await AgentService(service, safety_policy=agent_safety_policy).turn(
                         "", cursor.tools, state=cursor.state, tool_result=result, model=cursor.state.model,
                     )
             except ValueError as error:
@@ -497,7 +503,11 @@ def create_http_app(
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
-        return web.json_response(await agent_turn_from_payload(service, payload))
+        return web.json_response(await agent_turn_from_payload(
+            service,
+            payload,
+            agent_safety_policy=agent_safety_policy,
+        ))
 
     # JSON base64 is larger than decoded attachment bytes.
     app = web.Application(

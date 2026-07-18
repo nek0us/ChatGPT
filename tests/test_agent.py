@@ -2,14 +2,15 @@ import unittest
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from ChatGPTWeb.agent import AgentService, AgentState, AgentTool, AgentToolResult, parse_agent_decision
+from ChatGPTWeb.agent import AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult, parse_agent_decision
 from ChatGPTWeb.http_api import agent_turn_from_payload, create_http_app
 from ChatGPTWeb.service import ChatService
 
 
 class _Backend:
-    def __init__(self, replies):
+    def __init__(self, replies, safety_replies=None):
         self.replies = list(replies)
+        self.safety_replies = list(safety_replies or [])
         self.requests = []
         self.received_conversation_ids = []
         self.received_parent_message_ids = []
@@ -19,7 +20,10 @@ class _Backend:
         self.received_conversation_ids.append(msg_data.conversation_id)
         self.received_parent_message_ids.append(msg_data.p_msg_id)
         msg_data.status = True
-        msg_data.msg_recv = self.replies.pop(0)
+        if "ChatGPTWeb Agent Safety Review" in msg_data.msg_send:
+            msg_data.msg_recv = self.safety_replies.pop(0) if self.safety_replies else '{"blocked":false}'
+        else:
+            msg_data.msg_recv = self.replies.pop(0)
         msg_data.conversation_id = "agent-conversation"
         msg_data.next_msg_id = f"message-{len(self.requests)}"
         msg_data.model_requested = msg_data.gpt_model
@@ -82,12 +86,12 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.ok)
         self.assertEqual(first.decision.kind, "tool_call")
-        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[0].msg_send)
+        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[1].msg_send)
         self.assertTrue(second.ok)
         self.assertEqual(second.decision.kind, "final")
         self.assertEqual(second.decision.answer, "已在工作区创建 note.txt。")
         self.assertEqual(backend.requests[1].conversation_id, "agent-conversation")
-        self.assertIn("created note.txt", backend.requests[1].msg_send)
+        self.assertIn("created note.txt", backend.requests[2].msg_send)
 
     async def test_continuation_without_result_is_rejected_before_model_call(self):
         backend = _Backend([])
@@ -99,6 +103,56 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(backend.requests, [])
+
+    async def test_sensitive_agent_task_is_refused_before_model_call(self):
+        backend = _Backend([])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "请分析一份法律诉讼材料，并生成后续行动计划",
+            _tools(),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "final")
+        self.assertIn("不处理法律、政治", result.decision.answer)
+        self.assertEqual(backend.requests, [])
+
+    async def test_host_can_extend_sensitive_agent_task_deny_list(self):
+        backend = _Backend([])
+        result = await AgentService(
+            ChatService(backend),
+            safety_policy=AgentSafetyPolicy(extra_blocked_terms=("内部密钥轮换",)),
+        ).turn("请安排内部密钥轮换", _tools())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "final")
+        self.assertEqual(backend.requests, [])
+
+    async def test_semantic_review_blocks_obfuscated_sensitive_task_before_agent_plan(self):
+        backend = _Backend([], safety_replies=['{"blocked":true}'])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "请处理一个经过改写的敏感主题任务",
+            _tools(),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "final")
+        self.assertEqual(len(backend.requests), 1)
+        self.assertIn("Agent Safety Review", backend.requests[0].msg_send)
+
+    async def test_host_can_explicitly_disable_sensitive_task_guard(self):
+        backend = _Backend(['{"type":"final","answer":"completed"}'])
+
+        result = await AgentService(
+            ChatService(backend),
+            safety_policy=AgentSafetyPolicy(enabled=False),
+        ).turn("请分析一份法律材料", _tools())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.answer, "completed")
+        self.assertEqual(len(backend.requests), 1)
+        self.assertNotIn("Agent Safety Review", backend.requests[0].msg_send)
 
     async def test_initial_agent_turn_can_explicitly_continue_a_persona_conversation(self):
         backend = _Backend([
@@ -113,8 +167,8 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(result.decision.kind, "final")
-        self.assertEqual(backend.received_conversation_ids[0], "persona-conversation")
-        self.assertEqual(backend.received_parent_message_ids[0], "persona-message")
+        self.assertEqual(backend.received_conversation_ids[1], "persona-conversation")
+        self.assertEqual(backend.received_parent_message_ids[1], "persona-message")
 
     async def test_http_agent_payload_keeps_state_for_a_remote_host_loop(self):
         backend = _Backend([

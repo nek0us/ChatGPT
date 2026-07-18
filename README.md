@@ -322,7 +322,7 @@ The app factory does not start a listener itself. It exposes `POST /v1/chat/comp
 
 ### Agent Host Protocol
 
-`/v1/agent/turn` and the MCP `agent_turn` tool provide the same host-driven loop for Codex/OpenCode-style agent hosts or a custom local runner. ChatGPTWeb only decides the next step; it never receives permission to execute arbitrary commands, access a host filesystem, or open a network connection itself.
+`/v1/agent/turn` and the MCP `agent_turn` tool provide the same host-driven loop for Codex/OpenCode-style agent hosts or a custom local runner. ChatGPTWeb only decides the next step; it never receives permission to execute arbitrary commands, access a host filesystem, or open a network connection itself. By default, agent tasks first pass a local deny list and then an isolated JSON-only semantic review for legal, political, and other high-risk sensitive work; malformed or unavailable review responses fail closed. Ordinary chat requests are unaffected. A host may add terms or explicitly disable this local preflight with `AgentSafetyPolicy(enabled=False)`, but that never relaxes its tool permissions, confirmation requirements, or upstream safeguards.
 
 1. The host sends `task` and its own explicit `tools` list. Each tool has a stable `name`, a human-readable `description`, and an object-shaped `input_schema`.
 2. The response contains `decision.type`: `tool_call` with validated arguments, `final` with the answer, or `error`.

@@ -111,7 +111,11 @@ class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def _agent_reply(self, msg_data):
         self.backend.sent.append(msg_data)
         msg_data.status = True
-        msg_data.msg_recv = '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt"},"summary":"create note"}'
+        msg_data.msg_recv = (
+            '{"blocked":false}'
+            if "ChatGPTWeb Agent Safety Review" in msg_data.msg_send
+            else '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt"},"summary":"create note"}'
+        )
         msg_data.conversation_id = "conversation-agent"
         msg_data.next_msg_id = "message-agent"
         msg_data.model_requested = msg_data.gpt_model
