@@ -55,6 +55,12 @@ def _tools():
 
 
 class AgentDecisionTests(unittest.TestCase):
+    def test_visual_task_protocol_forbids_product_native_tools(self):
+        prompt = AgentService._initial_task_prompt("create a visual card", _tools())
+
+        self.assertIn("product-native image generation", prompt)
+        self.assertIn("registered host tools", prompt)
+
     def test_registered_tool_call_is_validated(self):
         decision = parse_agent_decision(
             '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',
