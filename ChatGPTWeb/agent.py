@@ -344,24 +344,18 @@ class AgentService:
             json.dumps(task, ensure_ascii=False),
         ))
 
-    async def _safety_preflight(self, task: str, model: str) -> tuple[str | None, AgentState | None]:
+    async def _safety_refusal(self, task: str, model: str) -> str | None:
         local_refusal = self._safety_policy.refusal_for(task)
         if local_refusal or not self._safety_policy.enabled or not self._safety_policy.semantic_review:
-            return local_refusal, None
+            return local_refusal
         result = await self._service.send(ChatRequest(
             prompt=self._safety_review_prompt(task),
             model=model or "auto",
         ))
         verdict = _parse_safety_review(result.text) if result.ok else None
         if verdict is not False:
-            return self._safety_policy.refusal_message, None
-        if result.conversation_id and result.message_id:
-            return None, AgentState(
-                conversation_id=result.conversation_id,
-                parent_message_id=result.message_id,
-                model=result.used_model or model or "auto",
-            )
-        return None, None
+            return self._safety_policy.refusal_message
+        return None
 
     @staticmethod
     def _continuation_prompt(result: AgentToolResult, tools: list[AgentTool]) -> str:
@@ -397,15 +391,8 @@ class AgentService:
         state = state or AgentState(model=model)
         task = task.strip()
         selected_model = model if model != "auto" else state.model
-        reviewed_new_agent = False
-        if tool_result is None and task:
-            refusal, review_state = await self._safety_preflight(task, selected_model or "auto")
-            if refusal:
-                return AgentTurn(True, state, AgentDecision("final", answer=refusal))
-            if not state.conversation_id and review_state is not None:
-                state = review_state
-                selected_model = model if model != "auto" else state.model
-                reviewed_new_agent = True
+        if tool_result is None and task and (refusal := await self._safety_refusal(task, selected_model or "auto")):
+            return AgentTurn(True, state, AgentDecision("final", answer=refusal))
 
         registered = list(tools)
         names = [tool.name for tool in registered]
@@ -414,7 +401,7 @@ class AgentService:
         if len(names) != len(set(names)):
             return AgentTurn(False, state, AgentDecision("error", error="智能体工具名称重复，拒绝开始。"))
         if state.conversation_id:
-            if tool_result is None and not (continue_existing or reviewed_new_agent):
+            if tool_result is None and not continue_existing:
                 return AgentTurn(False, state, AgentDecision("error", error="继续智能体任务时必须提交上一轮工具结果。"))
             if tool_result is not None and tool_result.tool not in names:
                 return AgentTurn(False, state, AgentDecision("error", error="工具结果不属于当前智能体工具集。"))
