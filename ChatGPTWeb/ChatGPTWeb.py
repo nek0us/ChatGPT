@@ -14,7 +14,7 @@ from pathlib import Path
 from aiohttp import ClientSession, web
 from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
-from typing import AsyncIterator, Dict, Optional,Literal,List
+from typing import Any, AsyncIterator, Dict, Optional,Literal,List
 from urllib.parse import urlparse
 from .config import (
     Payload,
@@ -2878,7 +2878,7 @@ class chatgpt:
                 session.status = Status.Ready.value
             self.logger.debug(f"session {session.email} finish stream work")
 
-    async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, str]]:
+    async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, Any]]:
         """show chat history
         展示聊天记录"""
         msg_history = await self.load_chat(msg_data)
@@ -2889,6 +2889,10 @@ class chatgpt:
                 "Q": x['input'],
                 "A": x['output'],
                 "next_msg_id": x['next_msg_id'],
+                # These fields have always been persisted. Expose them so callers
+                # can build a readable history without reopening storage files.
+                "message_id": x['next_msg_id'],
+                "created_at": x.get('created_at'),
             })
         return msg
     

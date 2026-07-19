@@ -109,7 +109,7 @@ class ChatBackend(Protocol):
 
     def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]: ...
 
-    async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, str]]: ...
+    async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, Any]]: ...
 
     async def token_status(self) -> Dict[str, Any]: ...
 
@@ -243,7 +243,7 @@ class ChatService:
             content=content,
         )
 
-    async def get_history(self, conversation_id: str) -> List[Dict[str, str]]:
+    async def get_history(self, conversation_id: str) -> List[Dict[str, Any]]:
         """Return the repository-backed history for a known conversation."""
         return await self._backend.show_chat_history(MsgData(conversation_id=conversation_id))
 
