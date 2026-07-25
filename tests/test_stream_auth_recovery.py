@@ -21,6 +21,23 @@ class _Logger:
 
 
 class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repeated_expired_token_marks_session_for_relogin(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        session = Session(
+            email="refresh@example.com",
+            access_token="expired-token",
+            status=Status.Ready.value,
+            login_state=True,
+        )
+
+        runtime._mark_stream_authorization_unavailable(session, "token_expired")
+
+        self.assertEqual(session.status, Status.Update.value)
+        self.assertFalse(session.login_state)
+        self.assertEqual(session.access_token, "")
+        self.assertEqual(session.login_failure_kind, "transient")
+
     async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()

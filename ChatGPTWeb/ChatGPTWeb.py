@@ -1145,6 +1145,18 @@ class chatgpt:
                 )
         return True
 
+    def _mark_stream_authorization_unavailable(self, session: Session, error: Exception | str) -> None:
+        """Avoid reporting a session as ready after two confirmed expired-token responses."""
+        session.access_token = ""
+        session.mark_login_failure(
+            kind=LoginFailureKind.Transient.value,
+            details=f"stream authorization remained expired after refresh: {error}",
+            cooldown_seconds=0,
+        )
+        self.logger.warning(
+            f"{session.email} stream authorization remained expired after refresh; scheduling relogin"
+        )
+
     def _build_conversation_payload(self, msg_data: MsgData) -> str:
         msg_data.model_requested = msg_data.gpt_model
         if not msg_data.conversation_id:
@@ -2941,6 +2953,11 @@ class chatgpt:
                             f"{session.email} retrying stream after refreshing expired authorization"
                         )
                         continue
+                    if (
+                        not emitted_content
+                        and (suppressed_auth_error or self._is_expired_stream_auth_error(error))
+                    ):
+                        self._mark_stream_authorization_unavailable(session, error)
                     raise
 
             if msg_data.status:
