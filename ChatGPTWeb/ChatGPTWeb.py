@@ -545,7 +545,12 @@ class chatgpt:
         if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
             self.logger.debug(f"{session.email} begin relogin")
-            await Auth(session, self.logger, self.verification_broker)
+            await Auth(
+                session,
+                self.logger,
+                self.verification_broker,
+                force_fresh_login=session.force_fresh_login,
+            )
             self.logger.debug(f"{session.email} relogin over")
         elif session.status == Status.Login.value:
             self.logger.debug(f"{session.email} loging in")
@@ -895,6 +900,7 @@ class chatgpt:
                     self.logger,
                     self.verification_broker,
                     prefer_openai_otp=prefer_openai_otp,
+                    force_fresh_login=session.force_fresh_login,
                 )
                 self.logger.debug(f"context {session.email} relogin over")
             
@@ -1148,6 +1154,7 @@ class chatgpt:
     def _mark_stream_authorization_unavailable(self, session: Session, error: Exception | str) -> None:
         """Avoid reporting a session as ready after two confirmed expired-token responses."""
         session.access_token = ""
+        session.force_fresh_login = True
         session.mark_login_failure(
             kind=LoginFailureKind.Transient.value,
             details=f"stream authorization remained expired after refresh: {error}",

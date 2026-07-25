@@ -162,6 +162,7 @@ class AuthStateIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auth_success_resets_previous_failure_metadata(self):
         session = Session(email="ready@example.com", password="not-a-real-password")
+        session.force_fresh_login = True
         session.mark_login_failure(kind=LoginFailureKind.Transient.value, cooldown_seconds=300)
         session.disabled_until = datetime.datetime.now() - datetime.timedelta(seconds=1)
         logger = _Logger()
@@ -175,6 +176,19 @@ class AuthStateIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.access_token, "access-token")
         self.assertEqual(session.login_fail_count, 0)
         self.assertFalse(session.is_login_disabled())
+        self.assertFalse(session.force_fresh_login)
+
+    async def test_auth_forwards_confirmed_expiration_to_fresh_login_flow(self):
+        session = Session(email="expired@example.com", password="not-a-real-password")
+        session.force_fresh_login = True
+        logger = _Logger()
+        auth = AsyncMock()
+        auth.get_session_token.return_value = (None, None, "verification required")
+
+        with patch("ChatGPTWeb.api.AsyncAuth0", return_value=auth) as constructor:
+            await Auth(session, logger, force_fresh_login=session.force_fresh_login)
+
+        self.assertTrue(constructor.call_args.kwargs["force_fresh_login"])
 
     async def test_auth_can_prefer_openai_otp_after_a_previous_verification_failure(self):
         session = Session(email="otp@example.com", password="not-a-real-password")

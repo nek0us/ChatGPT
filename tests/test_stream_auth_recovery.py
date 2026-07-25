@@ -37,6 +37,7 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.login_state)
         self.assertEqual(session.access_token, "")
         self.assertEqual(session.login_failure_kind, "transient")
+        self.assertTrue(session.force_fresh_login)
 
     async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
         runtime = chatgpt.__new__(chatgpt)

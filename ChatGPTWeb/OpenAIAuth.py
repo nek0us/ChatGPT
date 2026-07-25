@@ -44,6 +44,7 @@ class AsyncAuth0:
             help_email: str = "",
             verification_broker: VerificationBroker | None = None,
             prefer_openai_otp: bool = False,
+            force_fresh_login: bool = False,
             loop=None
     ):
         self.email_address = email
@@ -55,6 +56,7 @@ class AsyncAuth0:
         self.help_email = help_email
         self.verification_broker = verification_broker
         self.prefer_openai_otp = prefer_openai_otp
+        self.force_fresh_login = force_fresh_login
 
         self.access_token = None
         self.last_error_details = ""
@@ -307,6 +309,25 @@ class AsyncAuth0:
         except Exception as error:
             self.logger.debug(f"{self.email_address} existing session probe did not complete: {error}")
         return None
+
+    async def _clear_chatgpt_login_cookies(self) -> None:
+        """Drop only the stale NextAuth session, preserving the browser profile."""
+        cookies = await self.browser_contexts.cookies()
+        retained = [
+            cookie
+            for cookie in cookies
+            if not cookie.get("name", "").startswith(
+                ("__Secure-next-auth.session-token", "next-auth.session-token")
+            )
+        ]
+        if len(retained) == len(cookies):
+            return
+        await self.browser_contexts.clear_cookies()
+        if retained:
+            await self.browser_contexts.add_cookies(retained)
+        self.logger.info(
+            f"{self.email_address} cleared the rejected ChatGPT login cookie before a fresh login"
+        )
 
     async def _click_chatgpt_login_entry(self) -> bool:
         """Enter the auth flow from the current signed-out ChatGPT homepage."""
@@ -1308,7 +1329,11 @@ class AsyncAuth0:
             # A credential flow may be waiting for a human verification code.
             # Do not restart it behind the operator's back when no session is
             # available yet; callers can explicitly request another login.
-            access_token = await self._existing_session_access_token()
+            if self.force_fresh_login:
+                await self._clear_chatgpt_login_cookies()
+                access_token = None
+            else:
+                access_token = await self._existing_session_access_token()
             if access_token:
                 self.logger.debug(f"{self.email_address} restored an existing ChatGPT session")
             else:

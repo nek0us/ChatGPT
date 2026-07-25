@@ -929,6 +929,7 @@ async def Auth(
     verification_broker: VerificationBroker | None = None,
     *,
     prefer_openai_otp: bool = False,
+    force_fresh_login: bool = False,
 ):
     '''Auth account login func'''
     if session.is_login_disabled():
@@ -945,6 +946,7 @@ async def Auth(
                             help_email=session.help_email,
                             verification_broker=verification_broker,
                             prefer_openai_otp=prefer_openai_otp,
+                            force_fresh_login=force_fresh_login,
                             # loop=self.browser_event_loop
                             )
         if session.status != Status.Update.value:
@@ -953,6 +955,7 @@ async def Auth(
         if cookie and access_token:
             session.session_token = cookie
             session.access_token = access_token
+            session.force_fresh_login = False
             session.mark_login_success()
             logger.debug(f"{session.email} login success")
         else:

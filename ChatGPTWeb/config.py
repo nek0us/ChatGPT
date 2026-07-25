@@ -157,6 +157,9 @@ class Session:
     runtime_recovery_count: int = 0
     persist_auth_state: bool = False
     auth_state_loaded: bool = False
+    # Only set after Sentinel has explicitly rejected the current access token.
+    # It is runtime-only: persisted browser state remains available for normal starts.
+    force_fresh_login: bool = False
     input_session_token = session_token
     
     def __post_init__(self):
