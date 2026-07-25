@@ -540,6 +540,17 @@ class chatgpt:
             return
         if not await self._ensure_session_runtime(session):
             return
+        if session.force_fresh_login:
+            # Sentinel has already rejected this browser auth state.  Do not
+            # let a cached /api/auth/session response mark it ready again.
+            self.logger.debug(f"{session.email} bypass keep-alive for forced fresh login")
+            await Auth(
+                session,
+                self.logger,
+                self.verification_broker,
+                force_fresh_login=True,
+            )
+            return
         session = await retry_keep_alive(session, url, self.storage, self.js, self.js_used, self.save_screen, self.logger)
         # check session_token need update
         if session.status == Status.Update.value and not session.is_login_disabled():

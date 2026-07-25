@@ -39,6 +39,29 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.force_fresh_login)
 
+    async def test_keep_alive_does_not_restore_a_sentinel_rejected_session(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime.verification_broker = None
+        runtime.Sessions = []
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        session = Session(
+            email="refresh@example.com",
+            status=Status.Update.value,
+            force_fresh_login=True,
+        )
+
+        with (
+            patch("ChatGPTWeb.ChatGPTWeb.asyncio.sleep", AsyncMock()),
+            patch("ChatGPTWeb.ChatGPTWeb.retry_keep_alive", AsyncMock()) as refresh,
+            patch("ChatGPTWeb.ChatGPTWeb.Auth", AsyncMock()) as auth,
+        ):
+            await runtime.__keep_alive__(session)
+
+        refresh.assert_not_awaited()
+        auth.assert_awaited_once()
+        self.assertTrue(auth.await_args.kwargs["force_fresh_login"])
+
     async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()
