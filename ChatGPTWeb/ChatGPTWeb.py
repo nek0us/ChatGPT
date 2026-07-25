@@ -878,7 +878,22 @@ class chatgpt:
         page = session.page
         if page:
             session.user_agent = await page.evaluate('() => navigator.userAgent')
-            session = await retry_keep_alive(session, url_check, self.storage, self.js, self.js_used, self.save_screen, self.logger)
+            if session.force_fresh_login:
+                # A manual retry reaches this path too.  Sentinel already
+                # rejected the browser session, so defer to Auth below instead
+                # of allowing the keep-alive probe to restore stale state.
+                self.logger.debug(f"context {session.email} bypass initial keep-alive for forced fresh login")
+                session.status = Status.Update.value
+            else:
+                session = await retry_keep_alive(
+                    session,
+                    url_check,
+                    self.storage,
+                    self.js,
+                    self.js_used,
+                    self.save_screen,
+                    self.logger,
+                )
             try:
                 await page.goto("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
             except Exception as e:
