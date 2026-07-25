@@ -479,25 +479,14 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await auth.point_login_button())
 
-    async def test_microsoft_provider_retries_a_semantic_button_after_a_stale_candidate(self):
+    async def test_microsoft_provider_uses_the_email_first_route_even_with_a_legacy_label(self):
         page = _MicrosoftProviderRetryPage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
         auth.login_page = page
 
-        self.assertTrue(await auth.point_login_button())
-        self.assertTrue(page.fallback.clicked)
-        self.assertTrue(auth._provider_option_seen)
-
-    async def test_microsoft_provider_button_failure_is_treated_as_transient_by_login_state(self):
-        # The detailed failure text is intentionally stable so the runtime can
-        # retry it in the short transient cooldown rather than treating it as
-        # an unexplained ten-minute failure.
-        from ChatGPTWeb.api import classify_login_failure
-
-        self.assertEqual(
-            classify_login_failure("Microsoft provider button was present but could not be activated", "microsoft"),
-            "transient",
-        )
+        self.assertFalse(await auth.point_login_button())
+        self.assertFalse(page.fallback.clicked)
+        self.assertFalse(auth._provider_option_seen)
 
     async def test_microsoft_provider_waits_for_the_identity_host(self):
         page = _MicrosoftRedirectPage()
@@ -507,6 +496,13 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         await auth._wait_for_microsoft_identity_page()
 
         self.assertTrue(auth.is_microsoft_identity_url(page.url))
+
+    async def test_email_first_state_detects_microsoft_redirect(self):
+        page = _MicrosoftRedirectPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=100), "microsoft")
 
     async def test_email_first_microsoft_handoff_submits_only_the_email(self):
         page = _EmailFirstMicrosoftPage()

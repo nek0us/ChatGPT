@@ -194,10 +194,6 @@ class AsyncAuth0:
 
     async def point_login_button(self) -> bool:
         self.logger.debug(f"{self.email_address} login with {self.mode}")
-        # ``normal_begin`` may later use the email-first hand-off only when a
-        # provider control genuinely is absent.  Seeing a provider button but
-        # failing to activate it is a different failure: typing the address
-        # into that page selects the OpenAI OTP flow instead of Microsoft.
         self._provider_option_seen = False
         await self.find_cf(self.login_page)
         try:
@@ -213,6 +209,14 @@ class AsyncAuth0:
         try:
             if self.mode == "google" and await self._click_google_one_tap():
                 return True
+            if self.mode == "microsoft":
+                # The current ChatGPT drawer no longer exposes a Microsoft
+                # provider button.  Its email form decides whether the account
+                # continues through OpenAI verification or login.live.com.
+                self.logger.debug(
+                    f"{self.email_address} Microsoft login uses the OpenAI email-first route"
+                )
+                return False
             provider = "Microsoft" if self.mode == "microsoft" else self.mode.capitalize()
             candidates = (
                 self.login_page.get_by_role("button", name=re.compile(rf"continue with {provider}", re.I)),
@@ -231,10 +235,6 @@ class AsyncAuth0:
                     self.logger.debug(f"{self.email_address} selected {provider} provider")
                     return True
                 except Exception as error:
-                    # Text nodes are sometimes returned before their enclosing
-                    # button settles.  Keep trying the semantic button and the
-                    # provider-specific controls instead of falling through to
-                    # an unrelated email-first OpenAI flow.
                     self.logger.debug(
                         f"{self.email_address} {provider} provider candidate was not clickable: {error}"
                     )
@@ -638,6 +638,11 @@ class AsyncAuth0:
         state = await self._wait_for_openai_login_state(
             prefer_password=prefer_password and bool(self.password),
         )
+        if state == "microsoft":
+            # Email-first ChatGPT login can hand this account to Microsoft
+            # after the address is submitted. The caller must then use the
+            # Microsoft-specific verification flow on the new domain.
+            return "microsoft"
         if state == "password_choice":
             self.logger.debug(f"{self.email_address} openai login,will continue with password")
             await self.login_page.get_by_text("Continue with password", exact=True).click()
@@ -839,6 +844,8 @@ class AsyncAuth0:
         while asyncio.get_running_loop().time() < deadline:
             try:
                 url = getattr(self.login_page, "url", "")
+                if self.is_microsoft_identity_url(url):
+                    return "microsoft"
                 if self._is_openai_email_verification_url(url):
                     password_choice = self.login_page.get_by_text("Continue with password", exact=True)
                     if prefer_password and await password_choice.count() > 0:
@@ -1116,8 +1123,18 @@ class AsyncAuth0:
             if await check_login.count() == 0:
                 await self.find_cf(self.login_page)
                 await asyncio.sleep(2)
-                # Select Mode
-                if self.mode != "openai":
+                microsoft_identity_flow = False
+                openai_email_flow_completed = False
+                # Google still has a dedicated OAuth control. Microsoft does
+                # not on the current ChatGPT login drawer: submit its address
+                # through the native email form first, then inspect the actual
+                # next page instead of assuming a particular provider domain.
+                if self.mode == "microsoft":
+                    microsoft_identity_flow = await self.openai_code_password_login(
+                        prefer_password=False,
+                    ) == "microsoft"
+                    openai_email_flow_completed = not microsoft_identity_flow
+                elif self.mode != "openai":
                     provider_selected = await self.point_login_button()
                     provider_seen = getattr(self, "_provider_option_seen", False)
                     if not provider_selected and provider_seen:
@@ -1132,8 +1149,6 @@ class AsyncAuth0:
                             1,
                             f"{self.mode.capitalize()} provider option and email entry were not available on the OpenAI login page",
                         )
-                    if self.mode == "microsoft":
-                        await self._wait_for_microsoft_identity_page()
                 # await asyncio.sleep(2)
                 if self.mode == "google":
                     self.logger.debug(f"{self.email_address} login with google")
@@ -1141,7 +1156,7 @@ class AsyncAuth0:
                 await self.find_cf(self.login_page)
                 await asyncio.sleep(2)
                 # await self.login_page.wait_for_load_state('networkidle')
-                if self.mode == "microsoft":
+                if self.mode == "microsoft" and microsoft_identity_flow:
                     if not self.password:
                         raise Error("Microsoft login error", 1, "Microsoft account password is empty")
                     # enter email_address
@@ -1226,7 +1241,7 @@ class AsyncAuth0:
 
                     
 
-                else:
+                elif not openai_email_flow_completed:
 
                     await self.openai_code_password_login(
                         prefer_password=not self.prefer_openai_otp,
