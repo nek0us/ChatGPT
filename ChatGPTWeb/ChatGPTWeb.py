@@ -1084,6 +1084,51 @@ class chatgpt:
         )
         return any(mark in text for mark in retryable_marks)
 
+    @staticmethod
+    def _is_expired_stream_auth_error(error: Exception | str) -> bool:
+        """Return whether a browser stream failed before generation due to stale auth."""
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            "provided authentication token is expired",
+            "token_expired",
+            "requirements token unavailable",
+            "chat-requirements 401",
+        ))
+
+    async def _recover_expired_stream_session(self, session: Session) -> bool:
+        """Refresh an expired browser session once before failing a fresh stream request."""
+        if session.is_login_disabled():
+            return False
+
+        self.logger.warning(
+            f"{session.email} stream authorization expired; refreshing the browser session once"
+        )
+        session.status = Status.Update.value
+        try:
+            refreshed = await retry_keep_alive(
+                session,
+                url_check,
+                self.storage,
+                self.js,
+                self.js_used,
+                self.save_screen,
+                self.logger,
+            )
+        except Exception as error:
+            self.logger.warning(f"{session.email} stream authorization refresh failed: {error}")
+            return False
+
+        if (
+            refreshed.status != Status.Ready.value
+            or not refreshed.login_state
+            or not refreshed.access_token
+        ):
+            self.logger.warning(
+                f"{session.email} stream authorization refresh did not restore a ready session"
+            )
+            return False
+        return True
+
     def _build_conversation_payload(self, msg_data: MsgData) -> str:
         msg_data.model_requested = msg_data.gpt_model
         if not msg_data.conversation_id:
@@ -2848,9 +2893,40 @@ class chatgpt:
         context_num = session.email
         msg_data.from_email = session.email
         self.logger.debug(f"session {session.email} begin stream work")
+        stream_attempt = 1
         try:
-            async for event in self._stream_msg_by_browser_fetch(msg_data, session):
-                yield event
+            while True:
+                emitted_content = False
+                suppressed_auth_error = False
+                try:
+                    async for event in self._stream_msg_by_browser_fetch(msg_data, session, attempt=stream_attempt):
+                        if (
+                            event.type == "error"
+                            and not emitted_content
+                            and self._is_expired_stream_auth_error(event.text)
+                        ):
+                            suppressed_auth_error = True
+                            continue
+                        if event.type in {"delta", "image", "image_pending", "final"}:
+                            emitted_content = True
+                        yield event
+                    break
+                except Exception as error:
+                    if (
+                        stream_attempt == 1
+                        and not emitted_content
+                        and (suppressed_auth_error or self._is_expired_stream_auth_error(error))
+                        and await self._recover_expired_stream_session(session)
+                    ):
+                        msg_data.error_info = ""
+                        msg_data.error_list.clear()
+                        stream_attempt += 1
+                        self.logger.info(
+                            f"{session.email} retrying stream after refreshing expired authorization"
+                        )
+                        continue
+                    raise
+
             if msg_data.status:
                 if session.login_state is False:
                     session.login_state = True
