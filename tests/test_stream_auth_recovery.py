@@ -54,13 +54,12 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("ChatGPTWeb.ChatGPTWeb.asyncio.sleep", AsyncMock()),
             patch("ChatGPTWeb.ChatGPTWeb.retry_keep_alive", AsyncMock()) as refresh,
-            patch("ChatGPTWeb.ChatGPTWeb.Auth", AsyncMock()) as auth,
+            patch.object(runtime, "load_page", AsyncMock()) as load_page,
         ):
             await runtime.__keep_alive__(session)
 
         refresh.assert_not_awaited()
-        auth.assert_awaited_once()
-        self.assertTrue(auth.await_args.kwargs["force_fresh_login"])
+        load_page.assert_awaited_once_with(session, immediate=True)
 
     async def test_keep_alive_does_not_compete_with_controlled_login(self):
         runtime = chatgpt.__new__(chatgpt)
@@ -69,10 +68,28 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         runtime._ensure_session_runtime = AsyncMock(return_value=True)
         session = Session(email="refresh@example.com", status=Status.Update.value, force_fresh_login=True)
 
-        with patch("ChatGPTWeb.ChatGPTWeb.Auth", AsyncMock()) as auth:
+        with patch.object(runtime, "load_page", AsyncMock()) as load_page:
             await runtime.__keep_alive__(session)
 
-        auth.assert_not_awaited()
+        load_page.assert_not_awaited()
+
+    async def test_keep_alive_yields_when_controlled_login_starts_during_delay(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime.Sessions = []
+        runtime._control_login_tasks = {}
+        session = Session(email="refresh@example.com", status=Status.Update.value)
+
+        async def delay(_seconds):
+            runtime._control_login_tasks[session.email] = MagicMock(done=MagicMock(return_value=False))
+
+        with (
+            patch("ChatGPTWeb.ChatGPTWeb.asyncio.sleep", delay),
+            patch.object(runtime, "load_page", AsyncMock()) as load_page,
+        ):
+            await runtime.__keep_alive__(session)
+
+        load_page.assert_not_awaited()
 
     async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
         runtime = chatgpt.__new__(chatgpt)
@@ -138,6 +155,34 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event.type for event in events], ["final"])
         self.assertEqual(attempts, [1, 2])
         runtime._recover_expired_stream_session.assert_awaited_once_with(session)
+        self.assertEqual(data.error_list, [])
+
+    async def test_unready_proof_provider_is_warmed_up_before_stream_retry(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        session = Session(email="refresh@example.com", status=Status.Ready.value, login_state=True)
+        runtime._prepare_chat_session = AsyncMock(return_value=session)
+        runtime._recover_unready_stream_bridge = AsyncMock(return_value=True)
+        runtime._record_usage = lambda *_args: None
+        attempts = []
+
+        async def stream_once(data, _session, attempt=1):
+            attempts.append(attempt)
+            if attempt == 1:
+                yield ChatStreamEvent(type="error", text="proof provider is not ready")
+                raise RuntimeError("proof provider is not ready")
+            data.status = True
+            data.msg_recv = "warmed answer"
+            yield ChatStreamEvent(type="final", text="warmed answer")
+
+        runtime._stream_msg_by_browser_fetch = stream_once
+        data = MsgData(msg_send="hello", persist_history=False)
+
+        events = [event async for event in runtime.continue_chat_stream(data)]
+
+        self.assertEqual([event.type for event in events], ["final"])
+        self.assertEqual(attempts, [1, 2])
+        runtime._recover_unready_stream_bridge.assert_awaited_once_with(session)
         self.assertEqual(data.error_list, [])
 
     async def test_unrecoverable_expired_session_schedules_login_and_exposes_a_typed_error(self):

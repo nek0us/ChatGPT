@@ -547,15 +547,21 @@ class chatgpt:
             # chat failure for up to a minute.
             if not await self._ensure_session_runtime(session):
                 return
+            controlled_login = getattr(self, "_control_login_tasks", {}).get(session.email)
+            if controlled_login and not controlled_login.done():
+                self.logger.debug(f"{session.email} keep-alive yielded to controlled login after runtime recovery")
+                return
             self.logger.debug(f"{session.email} bypass keep-alive delay for forced fresh login")
-            await Auth(
-                session,
-                self.logger,
-                self.verification_broker,
-                force_fresh_login=True,
-            )
+            # Authentication alone can return an access token before the
+            # Sentinel proof provider is installed.  ``load_page`` keeps the
+            # account non-ready until that browser bridge has been rebuilt.
+            await self.load_page(session, immediate=True)
             return
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
+        controlled_login = getattr(self, "_control_login_tasks", {}).get(session.email)
+        if controlled_login and not controlled_login.done():
+            self.logger.debug(f"{session.email} keep-alive yielded to controlled login after delay")
+            return
         if session.status == Status.Stop.value or session.is_login_disabled():
             self.logger.debug(
                 f"{session.email} keep-alive skipped after delay, status:{session.status}, "
@@ -564,28 +570,22 @@ class chatgpt:
             return
         if not await self._ensure_session_runtime(session):
             return
+        controlled_login = getattr(self, "_control_login_tasks", {}).get(session.email)
+        if controlled_login and not controlled_login.done():
+            self.logger.debug(f"{session.email} keep-alive yielded to controlled login after runtime check")
+            return
         if session.force_fresh_login:
             # Sentinel has already rejected this browser auth state.  Do not
             # let a cached /api/auth/session response mark it ready again.
             self.logger.debug(f"{session.email} bypass keep-alive for forced fresh login")
-            await Auth(
-                session,
-                self.logger,
-                self.verification_broker,
-                force_fresh_login=True,
-            )
+            await self.load_page(session, immediate=True)
             return
         session = await retry_keep_alive(session, url, self.storage, self.js, self.js_used, self.save_screen, self.logger)
         # check session_token need update
         if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
             self.logger.debug(f"{session.email} begin relogin")
-            await Auth(
-                session,
-                self.logger,
-                self.verification_broker,
-                force_fresh_login=session.force_fresh_login,
-            )
+            await self.load_page(session, immediate=True)
             self.logger.debug(f"{session.email} relogin over")
         elif session.status == Status.Login.value:
             self.logger.debug(f"{session.email} loging in")
@@ -1150,6 +1150,33 @@ class chatgpt:
             "requirements token unavailable",
             "chat-requirements 401",
         ))
+
+    @staticmethod
+    def _is_unready_stream_bridge_error(error: Exception | str) -> bool:
+        """Return whether a newly restored page has not installed Sentinel providers yet."""
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            "proof provider is not ready",
+            "turnstile provider is not ready",
+            "arkose provider is not ready",
+            "window._chatp is not ready",
+            "browser bridge providers did not become ready",
+        ))
+
+    async def _recover_unready_stream_bridge(self, session: Session) -> bool:
+        """Finish initializing a freshly authenticated page before one stream retry."""
+        page = session.page
+        if not page or page.is_closed() or session.is_login_disabled():
+            return False
+        self.logger.warning(
+            f"{session.email} stream bridge is still warming up; rebuilding it once before retry"
+        )
+        try:
+            self.js_used = await flush_page(page, self.js, self.js_used)
+        except Exception as error:
+            self.logger.warning(f"{session.email} stream bridge warm-up failed: {error}")
+            return False
+        return True
 
     async def _recover_expired_stream_session(self, session: Session) -> bool:
         """Refresh an expired browser session once before failing a fresh stream request."""
@@ -3001,6 +3028,7 @@ class chatgpt:
             while True:
                 emitted_content = False
                 suppressed_auth_error = False
+                suppressed_bridge_error = False
                 try:
                     async for event in self._stream_msg_by_browser_fetch(msg_data, session, attempt=stream_attempt):
                         if (
@@ -3009,6 +3037,13 @@ class chatgpt:
                             and self._is_expired_stream_auth_error(event.text)
                         ):
                             suppressed_auth_error = True
+                            continue
+                        if (
+                            event.type == "error"
+                            and not emitted_content
+                            and self._is_unready_stream_bridge_error(event.text)
+                        ):
+                            suppressed_bridge_error = True
                             continue
                         if event.type in {"delta", "image", "image_pending", "final"}:
                             emitted_content = True
@@ -3026,6 +3061,19 @@ class chatgpt:
                         stream_attempt += 1
                         self.logger.info(
                             f"{session.email} retrying stream after refreshing expired authorization"
+                        )
+                        continue
+                    if (
+                        stream_attempt == 1
+                        and not emitted_content
+                        and (suppressed_bridge_error or self._is_unready_stream_bridge_error(error))
+                        and await self._recover_unready_stream_bridge(session)
+                    ):
+                        msg_data.error_info = ""
+                        msg_data.error_list.clear()
+                        stream_attempt += 1
+                        self.logger.info(
+                            f"{session.email} retrying stream after browser bridge warm-up"
                         )
                         continue
                     if (
