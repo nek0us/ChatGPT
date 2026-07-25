@@ -1105,9 +1105,15 @@ class chatgpt:
         )
         session.status = Status.Update.value
         try:
+            # A fixed ``/api/auth/session`` navigation can be served from the
+            # browser cache even after Sentinel has rejected its access token.
+            # Use a one-off URL so this recovery obtains a genuinely current
+            # session document, then rebuild the runtime bridge on the page
+            # which will send the retry.
+            refresh_url = f"{url_check}?_chatgptweb_refresh={uuid.uuid4().hex}"
             refreshed = await retry_keep_alive(
                 session,
-                url_check,
+                refresh_url,
                 self.storage,
                 self.js,
                 self.js_used,
@@ -1127,6 +1133,16 @@ class chatgpt:
                 f"{session.email} stream authorization refresh did not restore a ready session"
             )
             return False
+
+        if refreshed.page:
+            try:
+                self.js_used = await flush_page(refreshed.page, self.js, self.js_used)
+            except Exception as error:
+                # The new token remains useful even when a page reload is
+                # temporarily flaky; the retry below will still validate it.
+                self.logger.warning(
+                    f"{session.email} could not rebuild the browser bridge after authorization refresh: {error}"
+                )
         return True
 
     def _build_conversation_payload(self, msg_data: MsgData) -> str:

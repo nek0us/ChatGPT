@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamEvent
@@ -21,6 +21,41 @@ class _Logger:
 
 
 class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime.storage = object()
+        runtime.js = ("first bridge", "second bridge")
+        runtime.js_used = 0
+        runtime.save_screen = False
+        session = Session(
+            email="refresh@example.com",
+            access_token="expired-token",
+            status=Status.Ready.value,
+            login_state=True,
+            page=object(),
+        )
+        refresh = AsyncMock()
+        rebuild = AsyncMock(return_value=1)
+
+        async def refresh_session(refreshed, _url, *_args):
+            refreshed.access_token = "fresh-token"
+            refreshed.mark_login_success()
+            return refreshed
+
+        refresh.side_effect = refresh_session
+        with (
+            patch("ChatGPTWeb.ChatGPTWeb.retry_keep_alive", refresh),
+            patch("ChatGPTWeb.ChatGPTWeb.flush_page", rebuild),
+        ):
+            self.assertTrue(await runtime._recover_expired_stream_session(session))
+
+        refresh_url = refresh.await_args.args[1]
+        self.assertTrue(refresh_url.startswith("https://chatgpt.com/api/auth/session?"))
+        self.assertIn("_chatgptweb_refresh=", refresh_url)
+        rebuild.assert_awaited_once_with(session.page, runtime.js, 0)
+        self.assertEqual(runtime.js_used, 1)
+
     async def test_expired_requirements_token_is_refreshed_before_error_reaches_caller(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()
