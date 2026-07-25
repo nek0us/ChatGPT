@@ -218,7 +218,11 @@ class ChatService:
                 if event.image_urls:
                     image_urls = event.image_urls.copy()
             elif event.type == "error":
-                errors.append({"kind": "stream_error", "message": event.text, "retryable": False})
+                errors.append({
+                    "kind": str(event.metadata.get("error_kind") or "stream_error"),
+                    "message": event.text,
+                    "retryable": bool(event.metadata.get("retryable", False)),
+                })
 
             callback_result = callback(event)
             if inspect.isawaitable(callback_result):

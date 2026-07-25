@@ -194,6 +194,11 @@ class AsyncAuth0:
 
     async def point_login_button(self) -> bool:
         self.logger.debug(f"{self.email_address} login with {self.mode}")
+        # ``normal_begin`` may later use the email-first hand-off only when a
+        # provider control genuinely is absent.  Seeing a provider button but
+        # failing to activate it is a different failure: typing the address
+        # into that page selects the OpenAI OTP flow instead of Microsoft.
+        self._provider_option_seen = False
         await self.find_cf(self.login_page)
         try:
             await self._wait_for_document_ready()
@@ -202,6 +207,8 @@ class AsyncAuth0:
             await self.save_screen(path=f"{self.email_address}_get_auth0__{self.mode}_error",page=self.login_page)
         await asyncio.sleep(2)
         await self.find_cf(self.login_page)
+        if self.mode != "google":
+            await self._dismiss_google_one_tap()
         self.logger.debug(f"{self.email_address} will point {self.mode} button")
         try:
             if self.mode == "google" and await self._click_google_one_tap():
@@ -209,17 +216,28 @@ class AsyncAuth0:
             provider = "Microsoft" if self.mode == "microsoft" else self.mode.capitalize()
             candidates = (
                 self.login_page.get_by_role("button", name=re.compile(rf"continue with {provider}", re.I)),
+                self.login_page.locator(f"button:has-text('Continue with {provider}')"),
+                self.login_page.locator(f"[data-provider='{self.mode}']"),
                 self.login_page.get_by_text(f"Continue with {provider}", exact=False),
                 self.login_page.get_by_text(f"Continue with {provider} Account", exact=False),
                 self.login_page.locator(f"button:has-text('{provider}')"),
-                self.login_page.locator(f"[data-provider='{self.mode}']"),
             )
             for button in candidates:
                 if await button.count() == 0:
                     continue
-                await button.first.click(timeout=10000)
-                self.logger.debug(f"{self.email_address} selected {provider} provider")
-                return True
+                self._provider_option_seen = True
+                try:
+                    await button.first.click(timeout=5000)
+                    self.logger.debug(f"{self.email_address} selected {provider} provider")
+                    return True
+                except Exception as error:
+                    # Text nodes are sometimes returned before their enclosing
+                    # button settles.  Keep trying the semantic button and the
+                    # provider-specific controls instead of falling through to
+                    # an unrelated email-first OpenAI flow.
+                    self.logger.debug(
+                        f"{self.email_address} {provider} provider candidate was not clickable: {error}"
+                    )
             self.logger.debug(
                 f"{self.email_address} {provider} provider option was not found; "
                 "trying the email-first hand-off"
@@ -317,10 +335,19 @@ class AsyncAuth0:
             cookie
             for cookie in cookies
             if not cookie.get("name", "").startswith(
-                ("__Secure-next-auth.session-token", "next-auth.session-token")
+                (
+                    "__Secure-next-auth.session-token",
+                    "next-auth.session-token",
+                    "__Secure-authjs.session-token",
+                    "authjs.session-token",
+                )
             )
         ]
         if len(retained) == len(cookies):
+            self.logger.debug(
+                f"{self.email_address} fresh login found no known ChatGPT session cookie; "
+                "preserving the restored browser profile"
+            )
             return
         await self.browser_contexts.clear_cookies()
         if retained:
@@ -1092,6 +1119,13 @@ class AsyncAuth0:
                 # Select Mode
                 if self.mode != "openai":
                     provider_selected = await self.point_login_button()
+                    provider_seen = getattr(self, "_provider_option_seen", False)
+                    if not provider_selected and provider_seen:
+                        raise Error(
+                            f"{self.mode.capitalize()} login error",
+                            1,
+                            f"{self.mode.capitalize()} provider button was present but could not be activated",
+                        )
                     if not provider_selected and not await self._submit_provider_email():
                         raise Error(
                             "OpenAI login error",

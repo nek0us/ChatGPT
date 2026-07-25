@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamEvent
@@ -127,6 +127,27 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, [1, 2])
         runtime._recover_expired_stream_session.assert_awaited_once_with(session)
         self.assertEqual(data.error_list, [])
+
+    async def test_unrecoverable_expired_session_schedules_login_and_exposes_a_typed_error(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        session = Session(email="refresh@example.com", status=Status.Ready.value, login_state=True)
+        runtime._prepare_chat_session = AsyncMock(return_value=session)
+        runtime._recover_expired_stream_session = AsyncMock(return_value=False)
+        runtime._record_activity = MagicMock()
+        runtime._schedule_stream_reauthentication = MagicMock()
+
+        async def stream_once(_data, _session, attempt=1):
+            yield ChatStreamEvent(type="error", text="requirements token unavailable: token_expired")
+            raise RuntimeError("requirements token unavailable: token_expired")
+
+        runtime._stream_msg_by_browser_fetch = stream_once
+        events = [event async for event in runtime.continue_chat_stream(MsgData(msg_send="hello"))]
+
+        self.assertEqual(events[-1].type, "error")
+        self.assertEqual(events[-1].metadata["error_kind"], "session_reauthentication_pending")
+        self.assertTrue(events[-1].metadata["retryable"])
+        runtime._schedule_stream_reauthentication.assert_called_once_with(session)
 
     async def test_non_auth_stream_error_is_returned_without_refresh_retry(self):
         runtime = chatgpt.__new__(chatgpt)

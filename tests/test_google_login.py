@@ -310,6 +310,26 @@ class _MissingProviderPage:
         return _Locator(0)
 
 
+class _FailingClickLocator(_Locator):
+    async def click(self, **_kwargs):
+        raise RuntimeError("button is still covered")
+
+
+class _MicrosoftProviderRetryPage(_MissingProviderPage):
+    def __init__(self):
+        super().__init__()
+        self.primary = _FailingClickLocator(1)
+        self.fallback = _Locator(1)
+
+    def get_by_role(self, _role, **_kwargs):
+        return self.primary
+
+    def locator(self, selector):
+        if selector == "button:has-text('Continue with Microsoft')":
+            return self.fallback
+        return _Locator(0)
+
+
 class _MicrosoftRedirectPage:
     url = "https://login.live.com/oauth20_authorize.srf"
 
@@ -458,6 +478,26 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         auth.login_page = page
 
         self.assertFalse(await auth.point_login_button())
+
+    async def test_microsoft_provider_retries_a_semantic_button_after_a_stale_candidate(self):
+        page = _MicrosoftProviderRetryPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertTrue(await auth.point_login_button())
+        self.assertTrue(page.fallback.clicked)
+        self.assertTrue(auth._provider_option_seen)
+
+    async def test_microsoft_provider_button_failure_is_treated_as_transient_by_login_state(self):
+        # The detailed failure text is intentionally stable so the runtime can
+        # retry it in the short transient cooldown rather than treating it as
+        # an unexplained ten-minute failure.
+        from ChatGPTWeb.api import classify_login_failure
+
+        self.assertEqual(
+            classify_login_failure("Microsoft provider button was present but could not be activated", "microsoft"),
+            "transient",
+        )
 
     async def test_microsoft_provider_waits_for_the_identity_host(self):
         page = _MicrosoftRedirectPage()

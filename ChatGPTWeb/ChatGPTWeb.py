@@ -531,6 +531,21 @@ class chatgpt:
                 f"failure:{session.login_failure_kind}"
             )
             return
+        if session.force_fresh_login:
+            # A request just received an authoritative Sentinel rejection.  Do
+            # not leave recovery behind this account's randomized keep-alive
+            # delay; it would turn a recoverable expiry into a user-visible
+            # chat failure for up to a minute.
+            if not await self._ensure_session_runtime(session):
+                return
+            self.logger.debug(f"{session.email} bypass keep-alive delay for forced fresh login")
+            await Auth(
+                session,
+                self.logger,
+                self.verification_broker,
+                force_fresh_login=True,
+            )
+            return
         await asyncio.sleep(random.randint(1, 60 if len(self.Sessions) < 10 else 6 * len(self.Sessions)))
         if session.status == Status.Stop.value or session.is_login_disabled():
             self.logger.debug(
@@ -1188,6 +1203,24 @@ class chatgpt:
         )
         self.logger.warning(
             f"{session.email} stream authorization remained expired after refresh; scheduling relogin"
+        )
+
+    def _schedule_stream_reauthentication(self, session: Session) -> None:
+        """Start the confirmed-expiry recovery immediately and expose it to the control UI."""
+        if session.is_login_disabled() or not session.email:
+            return
+        tasks = getattr(self, "_control_login_tasks", None)
+        if tasks is None:
+            tasks = self._control_login_tasks = {}
+        task = tasks.get(session.email)
+        if task and not task.done():
+            return
+        task = asyncio.create_task(self._run_controlled_login(session))
+        tasks[session.email] = task
+        self._record_activity(
+            session.email,
+            "login_retry_started",
+            "started automatic recovery after stream authorization expiry",
         )
 
     def _build_conversation_payload(self, msg_data: MsgData) -> str:
@@ -2991,6 +3024,13 @@ class chatgpt:
                         and (suppressed_auth_error or self._is_expired_stream_auth_error(error))
                     ):
                         self._mark_stream_authorization_unavailable(session, error)
+                        self._schedule_stream_reauthentication(session)
+                        msg_data.add_error(
+                            kind="session_reauthentication_pending",
+                            message="the account session expired and automatic reauthentication has started",
+                            retryable=True,
+                            session_email=session.email,
+                        )
                     raise
 
             if msg_data.status:
@@ -3013,7 +3053,14 @@ class chatgpt:
                 conversation_id=msg_data.conversation_id,
                 model=msg_data.model_used,
                 usage=msg_data.usage.copy(),
-                metadata=msg_data.response_metadata.copy(),
+                metadata={
+                    **msg_data.response_metadata,
+                    **(
+                        {"error_kind": "session_reauthentication_pending", "retryable": True}
+                        if any(item.get("kind") == "session_reauthentication_pending" for item in msg_data.error_list)
+                        else {}
+                    ),
+                },
             )
         finally:
             if session.status not in (Status.Update.value, Status.Stop.value):
