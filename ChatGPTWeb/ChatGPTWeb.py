@@ -525,6 +525,15 @@ class chatgpt:
 
     async def __keep_alive__(self, session: Session):
         url = url_check
+        controlled_tasks = getattr(self, "_control_login_tasks", {})
+        controlled_login = controlled_tasks.get(session.email)
+        if controlled_login and not controlled_login.done():
+            # Stream-expiry recovery owns this account's page until it either
+            # restores a session or reaches a concrete login outcome.  A
+            # second keep-alive login can navigate away from the native email
+            # drawer midway through the first attempt.
+            self.logger.debug(f"{session.email} keep-alive skipped while controlled login is in progress")
+            return
         if session.is_login_disabled():
             self.logger.debug(
                 f"{session.email} keep-alive skipped, status:{session.status}, "

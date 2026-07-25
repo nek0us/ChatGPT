@@ -114,6 +114,18 @@ class _ChatLoginPage:
         return self.text
 
 
+class _VisibleEmailOnlyPage:
+    url = "https://chatgpt.com/"
+
+    def __init__(self):
+        self.email = _Locator(1)
+
+    def locator(self, selector):
+        if selector == "input[placeholder='Email address']:visible":
+            return self.email
+        return _Locator(0)
+
+
 class _ForceClickLocator(_Locator):
     def __init__(self):
         super().__init__(1)
@@ -334,6 +346,10 @@ class _MicrosoftRedirectPage:
     url = "https://login.live.com/oauth20_authorize.srf"
 
 
+class _MicrosoftOnlineRedirectPage:
+    url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
+
+
 class _EmailFirstMicrosoftPage:
     url = "https://auth.openai.com/log-in"
 
@@ -396,6 +412,17 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(page.continue_button.clicked)
         self.assertEqual(page.keyboard.presses, [])
 
+    async def test_microsoft_form_submit_clicks_a_visible_primary_action(self):
+        page = _OpenAIPasswordPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth._wait_for_document_ready = AsyncMock()
+
+        await auth._submit_microsoft_form(page.password, stage="password")
+
+        self.assertTrue(page.continue_button.clicked)
+        self.assertEqual(page.keyboard.presses, [])
+
     async def test_auth_error_keeps_its_details_in_exception_text(self):
         error = Error("OpenAI login error", 1, "account has been deleted or deactivated")
 
@@ -431,6 +458,16 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await auth._click_chatgpt_login_entry())
         self.assertTrue(page.test_id.force_attempted)
+
+    async def test_chatgpt_drawer_placeholder_email_is_a_ready_login_surface(self):
+        page = _VisibleEmailOnlyPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        self.assertTrue(await auth.wait_for_login_surface(timeout=1000))
+        field = await auth._wait_for_openai_initial_email_input(timeout=1000)
+
+        self.assertIs(field, page.email)
 
     async def test_session_token_attempts_browser_login_once_without_token(self):
         page = _SessionTokenPage()
@@ -496,6 +533,14 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         await auth._wait_for_microsoft_identity_page()
 
         self.assertTrue(auth.is_microsoft_identity_url(page.url))
+
+    async def test_microsoft_provider_accepts_the_current_consumer_identity_host(self):
+        page = _MicrosoftOnlineRedirectPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None, mode="microsoft")
+        auth.login_page = page
+
+        self.assertTrue(auth.is_microsoft_identity_url(page.url))
+        self.assertEqual(await auth._wait_for_openai_login_state(timeout=100), "microsoft")
 
     async def test_email_first_state_detects_microsoft_redirect(self):
         page = _MicrosoftRedirectPage()

@@ -62,6 +62,18 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         auth.assert_awaited_once()
         self.assertTrue(auth.await_args.kwargs["force_fresh_login"])
 
+    async def test_keep_alive_does_not_compete_with_controlled_login(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._control_login_tasks = {"refresh@example.com": MagicMock(done=MagicMock(return_value=False))}
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        session = Session(email="refresh@example.com", status=Status.Update.value, force_fresh_login=True)
+
+        with patch("ChatGPTWeb.ChatGPTWeb.Auth", AsyncMock()) as auth:
+            await runtime.__keep_alive__(session)
+
+        auth.assert_not_awaited()
+
     async def test_refresh_bypasses_cached_session_document_and_rebuilds_bridge(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()

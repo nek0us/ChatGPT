@@ -107,7 +107,14 @@ class AsyncAuth0:
     @staticmethod
     def is_microsoft_identity_url(url: str) -> bool:
         host = urllib.parse.urlsplit(url).netloc.lower()
-        return host in {"login.live.com", "account.live.com"}
+        # Consumer Microsoft accounts may be handed off to either the legacy
+        # Live endpoints or the current Entra consumer endpoint.  OpenAI's
+        # email-first drawer chooses this host after the address is submitted.
+        return host in {
+            "login.live.com",
+            "account.live.com",
+            "login.microsoftonline.com",
+        }
 
     async def wait_for_login_surface(self, timeout: int = 10000) -> bool:
         """Wait for a usable login control, not merely an early auth URL.
@@ -123,6 +130,7 @@ class AsyncAuth0:
             "input[name='email']:visible",
             "input[autocomplete='username']:visible",
             "input[type='email']:visible",
+            "input[placeholder='Email address']:visible",
         )
         while asyncio.get_running_loop().time() < deadline:
             try:
@@ -361,25 +369,33 @@ class AsyncAuth0:
         if self.mode != "google":
             await self._dismiss_google_one_tap()
         candidates = (
-            self.login_page.locator("button[data-testid='login-button']"),
-            self.login_page.get_by_role("button", name="Log in"),
+            self.login_page.locator("button[data-testid='login-button']:visible"),
+            self.login_page.get_by_role("button", name="Log in", exact=True),
             self.login_page.get_by_text("Log in", exact=True),
         )
         for button in candidates:
-            if await button.count() == 0:
+            count = await button.count()
+            if count == 0:
                 continue
-            try:
-                await button.first.click(timeout=3000)
-                self.logger.debug(f"{self.email_address} entered auth flow from ChatGPT homepage")
-                return True
-            except Exception as error:
-                self.logger.debug(f"{self.email_address} ChatGPT login entry was not normally clickable: {error}")
+            for index in range(count):
+                nth = getattr(button, "nth", None)
+                candidate = nth(index) if callable(nth) else button.first
                 try:
-                    await button.first.click(timeout=5000, force=True)
-                    self.logger.debug(f"{self.email_address} forced ChatGPT homepage login entry click")
+                    await candidate.wait_for(state="visible", timeout=1000)
+                except Exception:
+                    continue
+                try:
+                    await candidate.click(timeout=3000)
+                    self.logger.debug(f"{self.email_address} entered auth flow from ChatGPT homepage")
                     return True
-                except Exception as force_error:
-                    self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {force_error}")
+                except Exception as error:
+                    self.logger.debug(f"{self.email_address} ChatGPT login entry was not normally clickable: {error}")
+                    try:
+                        await candidate.click(timeout=5000, force=True)
+                        self.logger.debug(f"{self.email_address} forced visible ChatGPT homepage login entry click")
+                        return True
+                    except Exception as force_error:
+                        self.logger.debug(f"{self.email_address} ChatGPT login entry was not clickable: {force_error}")
         return False
 
     async def _dismiss_google_one_tap(self) -> bool:
@@ -718,6 +734,8 @@ class AsyncAuth0:
             "input#email:visible",
             "input[name='email']:visible",
             "input[autocomplete='username']:visible",
+            "input[type='email']:visible",
+            "input[placeholder='Email address']:visible",
         )
         while asyncio.get_running_loop().time() < deadline:
             blocked_message = await self._openai_account_block_message()
@@ -737,6 +755,8 @@ class AsyncAuth0:
                     if not on_openai_auth and selector not in {
                         "input#email:visible",
                         "input[name='email']:visible",
+                        "input[type='email']:visible",
+                        "input[placeholder='Email address']:visible",
                     }:
                         continue
                     return field
@@ -832,6 +852,61 @@ class AsyncAuth0:
             1,
             f"OpenAI password Continue button did not become ready: {last_error}",
         )
+
+    async def _submit_microsoft_form(self, field, *, stage: str) -> None:
+        """Submit the current Microsoft form through its visible primary action.
+
+        Microsoft no longer keeps all consumer sign-ins on ``login.live.com``.
+        On the current ``login.microsoftonline.com`` pages, pressing Enter can
+        leave the password form focused without submitting it.  Prefer the
+        form-local button, then the page's semantic primary controls.
+        """
+        await field.wait_for(state="visible", timeout=10000)
+        candidates: list[tuple[str, object]] = []
+        field_locator = getattr(field, "locator", None)
+        if callable(field_locator):
+            form = field_locator("xpath=ancestor::form").first
+            candidates.extend((
+                ("form submit", form.locator("button[type='submit']:visible")),
+                ("form input submit", form.locator("input[type='submit']:visible")),
+            ))
+        candidates.extend((
+            ("primary button", self.login_page.locator("button[data-testid='primaryButton']:visible")),
+            ("named primary action", self.login_page.get_by_role(
+                "button", name=re.compile(r"^(next|sign in|yes|continue)$", re.I),
+            )),
+            ("page submit", self.login_page.locator("button[type='submit']:visible")),
+        ))
+        last_error = None
+        for source, button in candidates:
+            if await button.count() == 0:
+                continue
+            candidate = button.first
+            try:
+                await candidate.wait_for(state="visible", timeout=2000)
+                if not await candidate.is_enabled():
+                    continue
+                await candidate.click(timeout=5000)
+                self.logger.debug(
+                    f"{self.email_address} submitted Microsoft {stage} through {source}"
+                )
+                await self._wait_for_document_ready()
+                return
+            except Exception as error:
+                last_error = error
+                self.logger.debug(
+                    f"{self.email_address} Microsoft {stage} {source} was not clickable: {error}"
+                )
+        try:
+            await field.press(self.EnterKey)
+            self.logger.debug(f"{self.email_address} submitted Microsoft {stage} with Enter fallback")
+            await self._wait_for_document_ready()
+        except Exception as error:
+            raise Error(
+                "Microsoft login error",
+                1,
+                f"Microsoft {stage} form did not expose a usable submit action: {last_error or error}",
+            ) from error
 
     async def _wait_for_openai_login_state(
         self,
@@ -1120,6 +1195,19 @@ class AsyncAuth0:
                     # if "chatgpt.com" in current_url:
                     #     use_url = "chatgpt.com"
                     # self.logger.debug(f"{self.email_address} check current_url ")
+                # Older deployments use different entry layouts.  They are
+                # still supported above, but credentials must never be sent
+                # until one of those controls has actually produced a visible
+                # native email form.
+                login_surface_detected = await self.wait_for_login_surface(timeout=15000)
+                if not login_surface_detected and await self._click_chatgpt_login_entry():
+                    login_surface_detected = await self.wait_for_login_surface(timeout=15000)
+                if not login_surface_detected:
+                    raise Error(
+                        "OpenAI login error",
+                        1,
+                        "ChatGPT login entry did not expose a visible email form before timeout",
+                    )
             if await check_login.count() == 0:
                 await self.find_cf(self.login_page)
                 await asyncio.sleep(2)
@@ -1172,8 +1260,7 @@ class AsyncAuth0:
                         await mc_username.wait_for(state="visible")
                         await mc_username.fill(self.email_address)
                         await asyncio.sleep(1)
-                        await self.login_page.keyboard.press(self.EnterKey)
-                        await self._wait_for_document_ready()
+                        await self._submit_microsoft_form(mc_username, stage="email")
                     else:
                         self.logger.debug(f"{self.email_address} microsoft old login,will skip email")
                     await asyncio.sleep(1)
@@ -1185,7 +1272,7 @@ class AsyncAuth0:
                         await mc_password.wait_for(state="visible")
                         await mc_password.fill(self.password)
                         await asyncio.sleep(2)
-                        await self.login_page.keyboard.press(self.EnterKey)
+                        await self._submit_microsoft_form(mc_password, stage="password")
                         await asyncio.sleep(2)
                         blocked_message = await self._openai_account_block_message()
                         if blocked_message:
@@ -1200,38 +1287,37 @@ class AsyncAuth0:
                     await asyncio.sleep(3)
                     check_mc_next = self.login_page.locator('button[data-testid="primaryButton"]')
                     if await check_mc_next.count() > 0:
-                        self.logger.debug(f"{self.email_address} microsoft old login,will try to point Next Button")
                         try:
-                            await check_mc_next.click(timeout=3000)
-                        except Exception as e:
-                            self.logger.debug(f"{self.email_address} microsoft try to point Next Button exception:{e}")
-                        await asyncio.sleep(1)
-                        await self._wait_for_document_ready()
-                        await asyncio.sleep(2)
-                        await self._wait_for_document_ready()
-
-
-
-                    try:
-                        await self.login_page.wait_for_url("https://login.live.com/**")
-                        # await self.login_page.wait_for_url("https://account.live.com/identity/**")
-                        self.logger.debug(f"{self.email_address} microsoft login,will check help_email verify")
-                        await self.mc_help_email_verify()
-                    except Exception as e:
-                        if "Timeout" not in e.args[0]:
-                            raise e
-                    # stay
+                            primary_label = (await check_mc_next.first.inner_text()).strip().lower()
+                        except Exception:
+                            primary_label = ""
+                        if primary_label == "yes":
+                            # The consent page is handled below with its
+                            # semantic label.  Clicking it here as a generic
+                            # primary button can race its navigation and emit a
+                            # misleading timeout even though the click worked.
+                            self.logger.debug(f"{self.email_address} microsoft stay-signed-in prompt is ready")
+                        else:
+                            self.logger.debug(f"{self.email_address} microsoft old login,will try to point Next Button")
+                            try:
+                                await check_mc_next.click(timeout=3000)
+                            except Exception as e:
+                                self.logger.debug(f"{self.email_address} microsoft try to point Next Button exception:{e}")
+                            await asyncio.sleep(1)
+                            await self._wait_for_document_ready()
+                            await asyncio.sleep(2)
+                            await self._wait_for_document_ready()
                     self.logger.debug(f"{self.email_address} microsoft login,will point enter Yes")
-                    # await self.login_page.wait_for_timeout(1000)
-                    try:
-                        await self.login_page.wait_for_url("https://login.live.com/**",timeout=500)
-                        await asyncio.sleep(1)
-                        await self._wait_for_document_ready()
-                        stay_button = self.login_page.get_by_text("Yes")
+                    if self.is_microsoft_identity_url(self.login_page.url):
+                        await self.mc_help_email_verify()
+                        stay_button = self.login_page.get_by_role("button", name="Yes", exact=True)
                         if await stay_button.count() > 0:
-                            await stay_button.click()
-                    except:
-                        pass
+                            try:
+                                await stay_button.first.wait_for(state="visible", timeout=3000)
+                                await stay_button.first.click(timeout=5000)
+                                self.logger.debug(f"{self.email_address} confirmed Microsoft stay signed in")
+                            except Exception as error:
+                                self.logger.debug(f"{self.email_address} Microsoft stay-signed-in click skipped: {error}")
                     await self._wait_for_document_ready()
 
 
@@ -1285,20 +1371,15 @@ class AsyncAuth0:
         if blocked_message:
             raise Error("OpenAI login error", 1, blocked_message)
                 
-        async with self.login_page.expect_response(url_check, timeout=20000) as a:
-            res = await self.login_page.goto(url_check, timeout=20000)
-        res = await a.value
-        if (res.status == 200 or res.status == 307 or res.status == 304)and res.url == url_check:
-            await asyncio.sleep(3)
-            await self.login_page.wait_for_load_state('networkidle')
-            json_data = await self.login_page.evaluate(
-                '() => JSON.parse(document.querySelector("body").innerText)')
-            if 'accessToken' in json_data:
-                access_token = json_data['accessToken']
-            else:
-                self.logger.warning(f"{self.email_address} login may not success,accessToken not in json_data, json_data: {json_data}")
+        # Direct navigation to this endpoint is no longer a supported way to
+        # read the session: ChatGPT may render a security-warning document
+        # instead of the JSON response.  The same-origin browser fetch used by
+        # the application remains valid and keeps the user on the chat page.
+        access_token = await self._existing_session_access_token()
+        if access_token:
+            self.logger.debug(f"{self.email_address} read access token through the in-page session fetch")
             return access_token
-        self.logger.warning(f"{self.email_address} login failed, status code: {res.status}, url: {res.url}, response text: {await res.text()}")
+        self.logger.warning(f"{self.email_address} login completed without a usable browser session token")
         return None
 
     async def _openai_account_block_message(self) -> str:
