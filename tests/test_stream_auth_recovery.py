@@ -21,6 +21,55 @@ class _Logger:
 
 
 class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sentinel_health_probe_schedules_relogin_on_401(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime.session_health_check_interval = 300
+        runtime._session_health_checked_at = {}
+        runtime._record_activity = MagicMock()
+        runtime._schedule_stream_reauthentication = MagicMock()
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.evaluate = AsyncMock(return_value={"status": 401})
+        session = Session(
+            email="refresh@example.com",
+            access_token="expired-token",
+            status=Status.Ready.value,
+            login_state=True,
+            page=page,
+        )
+
+        healthy = await runtime._probe_stream_authorization(session, force=True)
+
+        self.assertFalse(healthy)
+        self.assertEqual(session.status, Status.Update.value)
+        self.assertFalse(session.login_state)
+        runtime._schedule_stream_reauthentication.assert_called_once_with(session)
+
+    async def test_sentinel_health_probe_keeps_session_for_transient_failure(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime.session_health_check_interval = 300
+        runtime._session_health_checked_at = {}
+        runtime._schedule_stream_reauthentication = MagicMock()
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.evaluate = AsyncMock(return_value={"status": 0, "error": "NetworkError"})
+        session = Session(
+            email="refresh@example.com",
+            access_token="current-token",
+            status=Status.Ready.value,
+            login_state=True,
+            page=page,
+        )
+
+        healthy = await runtime._probe_stream_authorization(session, force=True)
+
+        self.assertTrue(healthy)
+        self.assertEqual(session.status, Status.Ready.value)
+        self.assertTrue(session.login_state)
+        runtime._schedule_stream_reauthentication.assert_not_called()
+
     async def test_repeated_expired_token_marks_session_for_relogin(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()

@@ -85,6 +85,7 @@ class chatgpt:
                  save_screen: bool = False,
                  ready_timeout: int = 180,
                  startup_timeout: int = 60,
+                 session_health_check_interval: int = 300,
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
@@ -138,6 +139,9 @@ class chatgpt:
         self.save_screen = save_screen
         self.ready_timeout = ready_timeout
         self.startup_timeout = startup_timeout
+        if session_health_check_interval < 0:
+            raise ValueError("session_health_check_interval must not be negative")
+        self.session_health_check_interval = session_health_check_interval
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -158,6 +162,8 @@ class chatgpt:
         self._conversation_locks: Dict[str, asyncio.Lock] = {}
         self._conversation_locks_guard = asyncio.Lock()
         self._control_login_tasks: Dict[str, asyncio.Task] = {}
+        self._session_health_checked_at: Dict[str, float] = {}
+        self._session_health_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._activity: List[Dict[str, str]] = []
         self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
@@ -581,6 +587,9 @@ class chatgpt:
             await self.load_page(session, immediate=True)
             return
         session = await retry_keep_alive(session, url, self.storage, self.js, self.js_used, self.save_screen, self.logger)
+        if session.status == Status.Ready.value and session.login_state:
+            if not await self._probe_stream_authorization(session):
+                return
         # check session_token need update
         if session.status == Status.Update.value and not session.is_login_disabled():
             # yes,we should update it
@@ -977,6 +986,7 @@ class chatgpt:
                     session.status = Status.Ready.value
                     self.logger.debug(f"context {session.email} start!")
                     await self._save_auth_state(session)
+                    self._schedule_session_health_probe(session)
                 else:
                     self.logger.debug(f"context {session.email} need relogin!")
             else:
@@ -1069,6 +1079,14 @@ class chatgpt:
         if control_login_tasks:
             await asyncio.gather(*control_login_tasks, return_exceptions=True)
         getattr(self, "_control_login_tasks", {}).clear()
+
+        health_tasks = list(getattr(self, "_session_health_tasks", {}).values())
+        for task in health_tasks:
+            if not task.done():
+                task.cancel()
+        if health_tasks:
+            await asyncio.gather(*health_tasks, return_exceptions=True)
+        getattr(self, "_session_health_tasks", {}).clear()
 
         for task in (self._alive_task,):
             if task and not task.done():
@@ -1177,6 +1195,116 @@ class chatgpt:
             self.logger.warning(f"{session.email} stream bridge warm-up failed: {error}")
             return False
         return True
+
+    async def _probe_stream_authorization(self, session: Session, *, force: bool = False) -> bool:
+        """Check the same Sentinel gate used by streams without sending a chat request.
+
+        ``/api/auth/session`` can briefly report a usable token after Sentinel has
+        already rejected it.  A successful probe is intentionally lightweight;
+        only an authoritative 401 changes the account state, while transient
+        network and upstream errors are left to the normal retry path.
+        """
+        if (
+            session.status != Status.Ready.value
+            or not session.login_state
+            or session.is_login_disabled()
+        ):
+            return False
+        page = session.page
+        if not page or page.is_closed():
+            return False
+
+        interval = getattr(self, "session_health_check_interval", 300)
+        now = asyncio.get_running_loop().time()
+        checked = getattr(self, "_session_health_checked_at", None)
+        if checked is None:
+            checked = self._session_health_checked_at = {}
+        checked_at = checked.get(session.email, 0.0)
+        if not force and interval > 0 and now - checked_at < interval:
+            return True
+
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(
+                    """
+                    async (options) => {
+                        const headers = {
+                            "accept": "application/json, text/plain, */*",
+                            "content-type": "application/json",
+                        };
+                        if (options.accessToken) headers.authorization = `Bearer ${options.accessToken}`;
+                        if (options.deviceId) headers["oai-device-id"] = options.deviceId;
+                        try {
+                            const response = await fetch("/backend-api/sentinel/chat-requirements", {
+                                method: "POST",
+                                credentials: "include",
+                                headers,
+                                body: JSON.stringify({ conversation_mode_kind: "primary_assistant" }),
+                            });
+                            return { status: response.status };
+                        } catch (error) {
+                            return { status: 0, error: String(error) };
+                        }
+                    }
+                    """,
+                    {
+                        "accessToken": session.access_token,
+                        "deviceId": session.device_id,
+                    },
+                ),
+                timeout=15,
+            )
+        except Exception as error:
+            self.logger.debug(f"{session.email} Sentinel health probe unavailable: {error}")
+            return True
+
+        checked[session.email] = now
+        try:
+            status = int((result or {}).get("status", 0))
+        except (TypeError, ValueError, AttributeError):
+            status = 0
+        if status == 401:
+            self.logger.warning(
+                f"{session.email} Sentinel health probe rejected the current authorization; scheduling relogin"
+            )
+            self._mark_stream_authorization_unavailable(session, "Sentinel health probe returned 401")
+            self._schedule_stream_reauthentication(session)
+            return False
+        if status == 0:
+            self.logger.debug(f"{session.email} Sentinel health probe had no definitive response")
+        elif status >= 400:
+            self.logger.debug(f"{session.email} Sentinel health probe returned HTTP {status}")
+        return True
+
+    def _schedule_session_health_probe(self, session: Session) -> None:
+        """Warm-check a newly ready account before a caller needs it."""
+        if (
+            getattr(self, "session_health_check_interval", 300) <= 0
+            or not session.email
+            or getattr(self, "_closing", False)
+        ):
+            return
+        tasks = getattr(self, "_session_health_tasks", None)
+        if tasks is None:
+            tasks = self._session_health_tasks = {}
+        task = tasks.get(session.email)
+        if task and not task.done():
+            return
+
+        async def check_when_settled() -> None:
+            try:
+                # Let the login task finish bookkeeping before a rejected probe
+                # schedules a fresh controlled login for the same account.
+                await asyncio.sleep(3)
+                await self._probe_stream_authorization(session, force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self.logger.debug(f"{session.email} background Sentinel health probe failed: {error}")
+            finally:
+                getattr(self, "_session_health_tasks", {}).pop(session.email, None)
+
+        tasks[session.email] = asyncio.create_task(check_when_settled())
 
     async def _recover_expired_stream_session(self, session: Session) -> bool:
         """Refresh an expired browser session once before failing a fresh stream request."""
@@ -2894,9 +3022,19 @@ class chatgpt:
 
                 await asyncio.sleep(0.5)
                 wait_ready_seconds += 0.5
+                if session.status == Status.Ready.value:
+                    break
                 if wait_ready_seconds >= self.ready_timeout:
+                    recovering = any(
+                        item.status in (Status.Login.value, Status.Update.value)
+                        or (
+                            (task := getattr(self, "_control_login_tasks", {}).get(item.email))
+                            and not task.done()
+                        )
+                        for item in pending_sessions
+                    )
                     msg_data.add_error(
-                        kind="no_ready_session",
+                        kind="session_recovery_timeout" if recovering else "no_ready_session",
                         message=f"no ready session found within {self.ready_timeout} seconds",
                     )
                     self.logger.error(msg_data.error_info)
@@ -2922,9 +3060,19 @@ class chatgpt:
             while session.status != Status.Ready.value:
                 await asyncio.sleep(0.5)
                 wait_ready_seconds += 0.5
+                if session.status == Status.Ready.value:
+                    break
                 if wait_ready_seconds >= self.ready_timeout:
+                    task = getattr(self, "_control_login_tasks", {}).get(session.email)
+                    recovering = (
+                        session.status in (Status.Login.value, Status.Update.value)
+                        or (task and not task.done())
+                    )
                     msg_data.add_error(
-                        kind="conversation_session_not_ready",
+                        kind=(
+                            "conversation_session_recovery_timeout"
+                            if recovering else "conversation_session_not_ready"
+                        ),
                         message=f"conversation account is not ready within {self.ready_timeout} seconds",
                         session_email=session.email,
                     )
