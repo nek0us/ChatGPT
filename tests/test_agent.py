@@ -355,3 +355,28 @@ class OpenAICompatibleAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("created note.txt", second_body)
         self.assertIn('"finish_reason": "stop"', second_body)
         self.assertIn("data: [DONE]", second_body)
+
+    async def test_openai_agent_ignores_oversized_host_system_prompt(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        response = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [
+                {"role": "system", "content": "host instructions " * 1000},
+                {"role": "user", "content": "create note.txt"},
+            ],
+            "tools": tools,
+        })
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["choices"][0]["finish_reason"], "tool_calls")
+        protocol_request = self.backend.requests[-1].msg_send
+        self.assertIn("create note.txt", protocol_request)
+        self.assertNotIn("host instructions", protocol_request)

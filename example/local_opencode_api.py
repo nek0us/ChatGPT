@@ -1,5 +1,6 @@
 """Run ChatGPTWeb as a local OpenAI-compatible endpoint for OpenCode."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,8 @@ def main() -> None:
     if not API_KEY:
         raise ValueError("Set CHATGPTWEB_HTTP_API_KEY to a local secret before starting the API")
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     runtime = chatgpt(
         sessions=load_sessions(),
         storage_dir=STORAGE_DIR,
@@ -43,16 +46,26 @@ def main() -> None:
         headless=_enabled("CHATGPTWEB_HEADLESS", False),
         logger_level=os.getenv("CHATGPTWEB_LOG_LEVEL", "INFO"),
         stdout_flush=True,
-        local_js=_enabled("CHATGPTWEB_LOCAL_JS", True),
+        local_js=_enabled("CHATGPTWEB_LOCAL_JS", False),
     )
     app = create_http_app(ChatService(runtime), api_key=API_KEY)
+
+    async def start_runtime(_: web.Application) -> None:
+        # chatgpt(plugin=False) schedules its browser startup on the current
+        # event loop. Pass that same loop to aiohttp below; otherwise aiohttp
+        # creates a second loop and the startup future never gets CPU time.
+        if runtime._start_task is not None:
+            print("Starting ChatGPTWeb browser runtime before accepting API requests...")
+            await asyncio.wrap_future(runtime._start_task)
+        if not runtime.manage.get("start"):
+            raise RuntimeError("ChatGPTWeb browser runtime did not finish starting")
 
     async def close_runtime(_: web.Application) -> None:
         await runtime.close()
 
+    app.on_startup.append(start_runtime)
     app.on_cleanup.append(close_runtime)
-    print(f"ChatGPTWeb OpenAI-compatible API: http://{HOST}:{PORT}/v1")
-    web.run_app(app, host=HOST, port=PORT)
+    web.run_app(app, host=HOST, port=PORT, loop=loop)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,23 @@ def _prompt_from_payload(payload: Dict[str, Any]) -> str:
     return "\n\n".join(rendered)
 
 
+def _agent_task_from_payload(payload: Dict[str, Any]) -> str:
+    """Extract the user's actual task without forwarding host agent scaffolding."""
+    prompt = payload.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            text = _text_content(message.get("content"))
+            if text:
+                return text
+    return _prompt_from_payload(payload)
+
+
 def _attachment_files(payload: Dict[str, Any], max_attachment_bytes: int) -> List[IOFile]:
     attachments = payload.get("attachments", [])
     if attachments is None:
@@ -509,7 +526,7 @@ def create_http_app(
                         safety_policy=agent_safety_policy,
                         anchor_policy=agent_anchor_policy,
                     ).turn(
-                        _prompt_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
+                        _agent_task_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
                     )
                 else:
                     # Keep the stored tool set instead of trusting a continuation to broaden it.
