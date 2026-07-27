@@ -239,25 +239,13 @@ class chatgpt:
     async def is_firefox_installed(self):
         '''chekc firefox install | 检测Firefox是否已经安装 '''
         playwright_manager = None
-        browser = None
         try:
             playwright_manager = async_playwright()
             playwright = await self._startup_wait_for(
                 "startup_firefox_check_playwright_start",
                 playwright_manager.start(),
             )
-            browser = await self._startup_wait_for(
-                "startup_firefox_check_browser_launch",
-                playwright.firefox.launch(
-                    headless=self.headless,
-                    slow_mo=50,
-                    proxy=self.proxy,
-                    firefox_user_prefs=self._firefox_user_prefs(),
-                ),
-            )
-            await browser.close()
-            browser = None
-            return True
+            return Path(playwright.firefox.executable_path).is_file()
         except TimeoutError as e:
             self.logger.warning(f"check firefox timeout, skip install check:{e}")
             return True
@@ -265,11 +253,6 @@ class chatgpt:
             self.logger.warning(f"check firefox:{e}")
             return False
         finally:
-            if browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
             if playwright_manager:
                 try:
                     await playwright_manager.__aexit__()
@@ -3002,7 +2985,12 @@ class chatgpt:
                     )
                 ]
                 if filtered_sessions:
-                    session = random.choice(filtered_sessions)
+                    # A new logical conversation may use any ready account.
+                    # Prefer the least recently reserved one so independent
+                    # callers (including host subagents) naturally spread
+                    # over the available account pool. Continuations remain
+                    # pinned to their conversation owner below.
+                    session = min(filtered_sessions, key=lambda item: item.last_active)
                 else:
                     pending_sessions = [
                         s for s in session_list
@@ -3116,6 +3104,7 @@ class chatgpt:
             self.logger.error(msg_data.error_info)
             return None
 
+        session.last_active = datetime.now()
         session.status = Status.Working.value
         self.logger.debug(f"session {session.email} begin work")
         return session

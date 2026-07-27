@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
+from datetime import datetime, timedelta
 import json
 import tempfile
 
@@ -106,6 +107,23 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
                 "dom.storageManager.prompt.testing.allow": True,
             },
         )
+
+    async def test_firefox_install_check_uses_executable_path_without_launching(self):
+        runtime = self._runtime()
+        playwright = type("Playwright", (), {
+            "firefox": type("Firefox", (), {"executable_path": __file__})(),
+        })()
+        manager = type("Manager", (), {
+            "start": AsyncMock(return_value=playwright),
+            "__aexit__": AsyncMock(),
+        })()
+
+        with patch("ChatGPTWeb.ChatGPTWeb.async_playwright", return_value=manager):
+            installed = await runtime.is_firefox_installed()
+
+        self.assertTrue(installed)
+        manager.start.assert_awaited_once()
+        manager.__aexit__.assert_awaited_once()
 
     async def test_startup_page_creation_failure_is_transient_not_stop(self):
         runtime = self._runtime()
@@ -341,6 +359,29 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             selected = await runtime._prepare_chat_session(MsgData(msg_send="hello", gpt_model="gpt-4"))
 
         self.assertIs(selected, go)
+
+    async def test_new_conversation_prefers_least_recently_reserved_account(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        older = Session(
+            email="older@example.com", status=Status.Ready.value,
+            login_state=True, last_active=datetime.now() - timedelta(minutes=10),
+        )
+        newer = Session(
+            email="newer@example.com", status=Status.Ready.value,
+            login_state=True, last_active=datetime.now() - timedelta(minutes=1),
+        )
+        runtime.Sessions = [newer, older]
+        before = datetime.now()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            selected = await runtime._prepare_chat_session(MsgData(msg_send="hello"))
+
+        self.assertIs(selected, older)
+        self.assertEqual(older.status, Status.Working.value)
+        self.assertGreaterEqual(older.last_active, before)
 
     async def test_manual_disable_excludes_a_ready_session_from_new_requests(self):
         runtime = self._runtime()

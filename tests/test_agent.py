@@ -86,6 +86,28 @@ class AgentDecisionTests(unittest.TestCase):
         self.assertEqual(decision.kind, "tool_call")
         self.assertEqual(decision.arguments["path"], "note.txt")
 
+    def test_action_style_tool_request_is_normalized_then_validated(self):
+        shell = AgentTool(
+            "bash",
+            "Run a shell command.",
+            {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        )
+
+        decision = parse_agent_decision(
+            '{"action":"request_tool","tool":"bash","command":"Get-ChildItem","reason":"inspect files"}',
+            [shell],
+        )
+
+        self.assertEqual(decision.kind, "tool_call")
+        self.assertEqual(decision.tool, "bash")
+        self.assertEqual(decision.arguments, {"command": "Get-ChildItem"})
+        self.assertEqual(decision.summary, "inspect files")
+
     def test_unknown_tool_and_bad_arguments_fail_closed(self):
         unknown = parse_agent_decision('{"type":"tool_call","tool":"shell","arguments":{}}', _tools())
         malformed = parse_agent_decision(
@@ -115,12 +137,24 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.ok)
         self.assertEqual(first.decision.kind, "tool_call")
-        self.assertIn("【ChatGPTWeb Agent Protocol】", backend.requests[3].msg_send)
+        self.assertIn("[Agent decision schema]", backend.requests[3].msg_send)
         self.assertTrue(second.ok)
         self.assertEqual(second.decision.kind, "final")
         self.assertEqual(second.decision.answer, "已在工作区创建 note.txt。")
         self.assertEqual(backend.requests[3].conversation_id, "agent-conversation")
         self.assertIn("created note.txt", backend.requests[4].msg_send)
+        self.assertIn("创建一个 hello 文件", backend.requests[4].msg_send)
+
+    def test_agent_state_round_trips_the_original_task(self):
+        state = AgentState.from_dict({
+            "conversation_id": "conversation",
+            "parent_message_id": "message",
+            "model": "auto",
+            "task": "create and verify a project",
+        })
+
+        self.assertEqual(state.task, "create and verify a project")
+        self.assertEqual(state.to_dict()["task"], "create and verify a project")
 
     async def test_malformed_decision_is_repaired_once_before_failing(self):
         backend = _Backend([
@@ -136,6 +170,20 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("previous response was not a valid agent decision", backend.requests[-1].msg_send)
         self.assertEqual(backend.requests[-1].conversation_id, "agent-conversation")
         self.assertEqual(backend.requests[-1].p_msg_id, "message-4")
+
+    async def test_final_that_denies_registered_tools_is_repaired_once(self):
+        backend = _Backend([
+            '{"type":"final","answer":"\u6211\u8fd9\u91cc\u6ca1\u6709\u53ef\u7528\u7684\u6587\u4ef6\u5de5\u5177\u3002"}',
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn("create a note", _tools())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        repair_prompt = backend.requests[-1].msg_send
+        self.assertIn("wrongly claimed", repair_prompt)
+        self.assertIn("registered host tools", repair_prompt)
 
     async def test_invalid_enum_is_repaired_with_the_allowed_values(self):
         backend = _Backend([
@@ -315,6 +363,44 @@ class OpenAICompatibleAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_payload["choices"][0]["finish_reason"], "stop")
         self.assertEqual(second_payload["choices"][0]["message"]["content"], "created note.txt")
 
+    async def test_openai_agent_new_tasks_do_not_share_a_protocol_anchor(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        first = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [{"role": "user", "content": "create first.txt"}],
+            "tools": tools,
+        })
+        second = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [{"role": "user", "content": "create second.txt"}],
+            "tools": tools,
+        })
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        task_indexes = [
+            index for index, request in enumerate(self.backend.requests)
+            if "Agent task data follows." in request.msg_send
+        ]
+        self.assertEqual(len(task_indexes), 2)
+        # The backend mutates MsgData with the newly-created conversation ID,
+        # so assert the IDs it received before that mutation instead.
+        self.assertTrue(all(
+            not self.backend.received_conversation_ids[index]
+            for index in task_indexes
+        ))
+        self.assertTrue(all(
+            not self.backend.requests[index].account_hint
+            for index in task_indexes
+        ))
+
     async def test_streaming_openai_tool_round_trip_uses_standard_sse_chunks(self):
         tools = [{
             "type": "function",
@@ -380,3 +466,52 @@ class OpenAICompatibleAgentTests(unittest.IsolatedAsyncioTestCase):
         protocol_request = self.backend.requests[-1].msg_send
         self.assertIn("create note.txt", protocol_request)
         self.assertNotIn("host instructions", protocol_request)
+
+    async def test_openai_agent_preserves_recent_user_and_assistant_context(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        response = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [
+                {"role": "system", "content": "host-only instructions " * 1000},
+                {"role": "user", "content": "create a web project"},
+                {"role": "assistant", "content": "I need a project theme."},
+                {"role": "user", "content": "choose a small game."},
+            ],
+            "tools": tools,
+        })
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["choices"][0]["finish_reason"], "tool_calls")
+        protocol_request = self.backend.requests[-1].msg_send
+        self.assertIn("create a web project", protocol_request)
+        self.assertIn("I need a project theme.", protocol_request)
+        self.assertIn("choose a small game.", protocol_request)
+        self.assertNotIn("host-only instructions", protocol_request)
+
+    async def test_openai_agent_prompt_marks_host_tools_as_real(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        response = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "messages": [{"role": "user", "content": "create note.txt"}],
+            "tools": tools,
+        })
+
+        self.assertEqual(response.status, 200)
+        protocol_request = self.backend.requests[-1].msg_send
+        self.assertIn("real and callable in this turn", protocol_request)
+        self.assertIn("never ask the user to provide such an interface", protocol_request)

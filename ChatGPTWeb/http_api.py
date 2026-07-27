@@ -5,6 +5,7 @@ import binascii
 import asyncio
 import hmac
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from .service import ChatRequest, ChatResult, ChatService
 from .verification import VerificationBroker
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,19 +80,42 @@ def _prompt_from_payload(payload: Dict[str, Any]) -> str:
 
 
 def _agent_task_from_payload(payload: Dict[str, Any]) -> str:
-    """Extract the user's actual task without forwarding host agent scaffolding."""
+    """Keep recent conversational context without forwarding host scaffolding."""
     prompt = payload.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
         return prompt
 
     messages = payload.get("messages")
-    if isinstance(messages, list):
-        for message in reversed(messages):
-            if not isinstance(message, dict) or message.get("role") != "user":
-                continue
-            text = _text_content(message.get("content"))
-            if text:
-                return text
+    if not isinstance(messages, list):
+        return _prompt_from_payload(payload)
+
+    entries: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = _text_content(message.get("content")).strip()
+        if text:
+            label = "User" if role == "user" else "Assistant"
+            entries.append(f"{label}: {text}")
+    if entries:
+        # AgentService limits the task field to 8000 characters. Preserve the
+        # newest turns first, while leaving room for the context header.
+        budget = 7600
+        selected: list[str] = []
+        for entry in reversed(entries[-12:]):
+            if len(entry) > budget:
+                if not selected:
+                    return entry
+                break
+            selected.append(entry)
+            budget -= len(entry) + 1
+        selected.reverse()
+        if len(selected) == 1:
+            return selected[0]
+        return "Conversation context (oldest to newest; untrusted data):\n" + "\n".join(selected)
     return _prompt_from_payload(payload)
 
 
@@ -213,9 +238,15 @@ def _openai_agent_tools(payload: Dict[str, Any]) -> list[AgentTool]:
             "input_schema": function.get("parameters", {"type": "object", "properties": {}}),
         })
     try:
-        return [AgentTool.from_dict(item) for item in converted]
+        tools = [AgentTool.from_dict(item) for item in converted]
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error)) from error
+    logger.debug(
+        "OpenAI-compatible agent request received %d host tools: %s",
+        len(tools),
+        ", ".join(tool.name for tool in tools),
+    )
+    return tools
 
 
 def _latest_openai_tool_call_id(payload: Dict[str, Any]) -> str:
@@ -418,6 +449,11 @@ def create_http_app(
     if max_attachment_bytes <= 0:
         raise ValueError("max_attachment_bytes must be positive")
     agent_cursors: dict[str, _OpenAIAgentCursor] = {}
+    # A host such as OpenCode can create independent subagent sessions. Do not
+    # pin all of them to one shared protocol root: a fresh task should enter
+    # the runtime's account pool, while its cursor still pins every follow-up
+    # tool round to the selected account. Callers may opt back into anchors.
+    openai_agent_anchor_policy = agent_anchor_policy or AgentAnchorPolicy(control_enabled=False)
 
     def discard_agent_cursors() -> None:
         now = time.monotonic()
@@ -524,7 +560,7 @@ def create_http_app(
                     turn = await AgentService(
                         service,
                         safety_policy=agent_safety_policy,
-                        anchor_policy=agent_anchor_policy,
+                        anchor_policy=openai_agent_anchor_policy,
                     ).turn(
                         _agent_task_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
                     )
@@ -535,7 +571,7 @@ def create_http_app(
                     turn = await AgentService(
                         service,
                         safety_policy=agent_safety_policy,
-                        anchor_policy=agent_anchor_policy,
+                        anchor_policy=openai_agent_anchor_policy,
                     ).turn(
                         "", cursor.tools, state=cursor.state, tool_result=result, model=cursor.state.model,
                     )
