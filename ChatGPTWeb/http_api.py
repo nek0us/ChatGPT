@@ -293,6 +293,82 @@ def _agent_completion_payload(turn, request_id: str, model: str, tool_call_id: s
     }
 
 
+def _agent_chunk_payload(
+    request_id: str,
+    model: str,
+    delta: Dict[str, Any],
+    finish_reason: str | None = None,
+) -> Dict[str, Any]:
+    """Build one OpenAI-compatible SSE chunk for a buffered agent decision."""
+    return {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": delta,
+            "finish_reason": finish_reason,
+        }],
+    }
+
+
+async def _stream_agent_completion(
+    request: web.Request,
+    turn,
+    request_id: str,
+    model: str,
+    tool_call_id: str,
+) -> web.StreamResponse:
+    """Expose one buffered agent turn through OpenAI's streamed tool-call shape.
+
+    The model-decision request remains deliberately buffered: a tool call must
+    be schema-validated before any bytes can invite a host to execute it.  The
+    OpenAI-compatible client nevertheless receives normal SSE chunks, which is
+    required by coding agents such as OpenCode.
+    """
+    response = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    })
+    await response.prepare(request)
+    decision = turn.decision
+    try:
+        if decision.kind == "tool_call":
+            arguments = json.dumps(decision.arguments, ensure_ascii=False, separators=(",", ":"))
+            await response.write(_sse(None, _agent_chunk_payload(request_id, model, {
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": decision.tool, "arguments": ""},
+                }],
+            })))
+            await response.write(_sse(None, _agent_chunk_payload(request_id, model, {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {"arguments": arguments},
+                }],
+            })))
+            finish_reason = "tool_calls"
+        else:
+            answer = decision.answer if decision.kind == "final" else decision.error
+            await response.write(_sse(None, _agent_chunk_payload(
+                request_id,
+                model,
+                {"role": "assistant", "content": answer},
+            )))
+            finish_reason = "stop"
+        await response.write(_sse(None, _agent_chunk_payload(request_id, model, {}, finish_reason)))
+        await response.write(_sse(None, "[DONE]"))
+        await response.write_eof()
+    except ConnectionResetError:
+        return response
+    return response
+
+
 def _sse(event: str | None, payload: Any) -> bytes:
     prefix = f"event: {event}\n" if event else ""
     data = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
@@ -422,8 +498,6 @@ def create_http_app(
         if tool_call_id and cursor is None and payload.get("tools") is None:
             raise web.HTTPBadRequest(text="tool-call cursor is unknown or expired; restart the agent request")
         if payload.get("tools") is not None or cursor is not None:
-            if payload.get("stream", False):
-                raise web.HTTPBadRequest(text="streaming tool calls are not supported; use non-streaming tool rounds")
             if cursor is None:
                 tools = _openai_agent_tools(payload)
             else:
@@ -458,6 +532,14 @@ def create_http_app(
                     tools=tools if cursor is None else cursor.tools,
                     tool_name=turn.decision.tool,
                     expires_at=time.monotonic() + 600,
+                )
+            if payload.get("stream", False):
+                return await _stream_agent_completion(
+                    request,
+                    turn,
+                    request_id,
+                    str(payload.get("model") or "auto"),
+                    call_id,
                 )
             return web.json_response(_agent_completion_payload(turn, request_id, str(payload.get("model") or "auto"), call_id))
 

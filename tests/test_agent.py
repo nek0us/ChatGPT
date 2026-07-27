@@ -1,3 +1,4 @@
+import re
 import unittest
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -313,3 +314,44 @@ class OpenAICompatibleAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.status, 200)
         self.assertEqual(second_payload["choices"][0]["finish_reason"], "stop")
         self.assertEqual(second_payload["choices"][0]["message"]["content"], "created note.txt")
+
+    async def test_streaming_openai_tool_round_trip_uses_standard_sse_chunks(self):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "workspace.write_text",
+                "description": "Write a workspace file.",
+                "parameters": _tools()[0].input_schema,
+            },
+        }]
+        first = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "create note.txt"}],
+            "tools": tools,
+        })
+        first_body = await first.text()
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(first.headers["Content-Type"].split(";", 1)[0], "text/event-stream")
+        self.assertIn('"tool_calls"', first_body)
+        self.assertIn('"finish_reason": "tool_calls"', first_body)
+        self.assertIn("data: [DONE]", first_body)
+        tool_call_id = re.search(r'"id": "(call_[^"]+)"', first_body)
+        self.assertIsNotNone(tool_call_id)
+
+        second = await self.client.post("/v1/chat/completions", json={
+            "model": "auto",
+            "stream": True,
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": tool_call_id.group(1),
+                "content": "created note.txt",
+            }],
+        })
+        second_body = await second.text()
+
+        self.assertEqual(second.status, 200)
+        self.assertIn("created note.txt", second_body)
+        self.assertIn('"finish_reason": "stop"', second_body)
+        self.assertIn("data: [DONE]", second_body)
