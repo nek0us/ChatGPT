@@ -299,6 +299,7 @@ class _SessionTokenPage:
 class _HomepagePage:
     def __init__(self):
         self.goto = AsyncMock()
+        self.wait_for_load_state = AsyncMock()
 
 
 class _OtpFallbackPage(_HomepagePage):
@@ -492,6 +493,15 @@ class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
         page.goto.assert_awaited_once_with(
             "https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000,
         )
+
+    async def test_openai_login_redirect_waits_for_dom_content_not_network_idle(self):
+        page = _HomepagePage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        await auth._wait_for_document_ready()
+
+        page.wait_for_load_state.assert_awaited_once_with("domcontentloaded", timeout=5000)
 
     async def test_password_failure_restarts_once_without_clearing_cookies_and_prefers_otp(self):
         page = _OtpFallbackPage()

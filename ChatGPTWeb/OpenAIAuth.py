@@ -1332,7 +1332,11 @@ class AsyncAuth0:
                     await self.openai_code_password_login(
                         prefer_password=not self.prefer_openai_otp,
                     )
-                    await self.login_page.wait_for_load_state('networkidle')
+                    # ChatGPT keeps long-lived network activity after the auth
+                    # redirect.  Waiting for ``networkidle`` here can turn a
+                    # completed login into a false timeout before we probe the
+                    # browser session below.
+                    await self._wait_for_document_ready()
                     await asyncio.sleep(5)
 
                 # Third-party OAuth can land on ChatGPT's terminal account page.
