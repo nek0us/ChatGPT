@@ -4,8 +4,8 @@ import unittest
 from aiohttp.test_utils import TestClient, TestServer
 
 from ChatGPTWeb.agent import AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult, parse_agent_decision
-from ChatGPTWeb.http_api import agent_turn_from_payload, create_http_app
-from ChatGPTWeb.service import ChatService
+from ChatGPTWeb.http_api import _agent_completion_payload, agent_turn_from_payload, create_http_app
+from ChatGPTWeb.service import ChatResult, ChatService
 
 
 class _Backend:
@@ -120,6 +120,32 @@ class AgentDecisionTests(unittest.TestCase):
 
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_message_limit_preserves_a_retry_later_agent_error(self):
+        class Service:
+            async def send(self, request):
+                return ChatResult(
+                    ok=False,
+                    text="",
+                    conversation_id=request.conversation_id,
+                    message_id=request.parent_message_id,
+                    errors=[{"kind": "conversation_rate_limited", "message": "hidden detail"}],
+                )
+
+        result = await AgentService(
+            Service(), safety_policy=AgentSafetyPolicy(enabled=False),
+        ).turn(
+            "inspect the project",
+            _tools(),
+            state=AgentState(conversation_id="existing", parent_message_id="message"),
+            continue_existing=True,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("message limit", result.decision.error)
+        self.assertEqual(result.errors[0]["kind"], "conversation_rate_limited")
+        payload = _agent_completion_payload(result, "chatcmpl-test", "auto")
+        self.assertIn("message limit", payload["choices"][0]["message"]["content"])
+
     async def test_tool_result_continues_same_conversation_to_a_final_answer(self):
         backend = _Backend([
             '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"create note"}',

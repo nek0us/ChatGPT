@@ -17,6 +17,16 @@ function renderChallenges(data){challenges.replaceChildren();const list=data.cha
 function renderAll(){if(state.status)renderAccounts(state.status);if(state.verification)renderChallenges(state.verification);if(state.activity)renderActivity(state.activity)}async function refresh(force=false){if(!force&&(submitting.size||challenges.contains(document.activeElement)))return;setNotice();sessionStorage.setItem('chatgptweb-control-key',key.value.trim());try{const [status,verification,events]=await Promise.all([call('/v1/account/status'),call('/v1/verification'),call('/v1/activity')]);state.status=status;state.verification=verification;state.activity=events;renderAll()}catch(error){setNotice(error.message)}}document.querySelector('#refresh').addEventListener('click',()=>refresh(true));document.querySelectorAll('[data-language]').forEach(node=>node.addEventListener('click',()=>{language=node.dataset.language;localStorage.setItem('chatgptweb-control-language',language);localize()}));localize();refresh();setInterval(refresh,5000);
 </script></body></html>"""
 
+CONTROL_HTML = CONTROL_HTML.replace(
+    "</body></html>",
+    """<script>
+const baseLabel=label,baseDetails=details;
+label=function(item){return item.chat_rate_limited?t('unavailable'):baseLabel(item)};
+details=function(item){const value=baseDetails(item);return item.chat_rate_limited?value+'\\n'+t('failure')+': '+t('rateLimited'):value};
+renderAccounts=function(data){accounts.replaceChildren();const list=data.accounts||[];document.querySelector('#total').textContent=list.length;document.querySelector('#ready').textContent=list.filter(item=>item.login_state&&!item.manual_disabled&&!item.chat_rate_limited).length;document.querySelector('#attention').textContent=list.filter(item=>!item.login_state||item.manual_disabled||item.chat_rate_limited).length;if(!list.length){const row=document.createElement('tr'),empty=cell(row,t('noAccounts'),'empty');empty.colSpan=6;accounts.append(row);return}for(const item of list){const row=document.createElement('tr');cell(row,item.email,'account');const status=document.createElement('td');status.className='status';const pill=document.createElement('span');const usable=item.login_state&&!item.manual_disabled&&!item.chat_rate_limited;pill.className='pill '+(usable?'ready':item.manual_disabled||item.login_failure_kind||item.chat_rate_limited?'attention':'');pill.textContent=label(item);status.append(pill);row.append(status);cell(row,String(item.conversation_count||0));cell(row,formatUsage(item.usage));cell(row,details(item),'details');const control=document.createElement('td');control.className='controls';if(item.manual_disabled)button(control,item,t('enable'),'enable');else{button(control,item,t('disable'),'disable',true);if(!item.login_state&&item.can_retry_login&&!item.login_retry_pending)button(control,item,retry(item),'retry_login')}button(control,item,t('refreshPlan'),'refresh_capabilities');row.append(control);accounts.append(row)}}
+</script></body></html>""",
+)
+
 # The document is intentionally compact to keep the packaged control surface small.
 # A verified live session must take precedence over any stale failure metadata
 # restored from an earlier browser run.

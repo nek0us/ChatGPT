@@ -325,7 +325,7 @@ def _agent_completion_payload(turn, request_id: str, model: str, tool_call_id: s
         message = {"role": "assistant", "content": decision.answer}
         finish_reason = "stop"
     else:
-        message = {"role": "assistant", "content": ""}
+        message = {"role": "assistant", "content": decision.error}
         finish_reason = "error"
     return {
         "id": request_id,

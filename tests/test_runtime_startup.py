@@ -383,6 +383,51 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(older.status, Status.Working.value)
         self.assertGreaterEqual(older.last_active, before)
 
+    async def test_new_conversation_skips_a_chat_rate_limited_account(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        limited = Session(
+            email="limited@example.com", status=Status.Ready.value,
+            login_state=True, last_active=datetime.now() - timedelta(minutes=10),
+        )
+        limited.mark_chat_rate_limited("hourly message limit")
+        available = Session(
+            email="available@example.com", status=Status.Ready.value,
+            login_state=True, last_active=datetime.now() - timedelta(minutes=1),
+        )
+        runtime.Sessions = [limited, available]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            selected = await runtime._prepare_chat_session(MsgData(msg_send="hello"))
+
+        self.assertIs(selected, available)
+
+    async def test_all_chat_rate_limited_accounts_report_a_retryable_error(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        limited = Session(email="limited@example.com", status=Status.Ready.value, login_state=True)
+        limited.mark_chat_rate_limited("hourly message limit")
+        runtime.Sessions = [limited]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            data = MsgData(msg_send="hello")
+            selected = await runtime._prepare_chat_session(data)
+
+        self.assertIsNone(selected)
+        self.assertEqual(data.error_list[0]["kind"], "rate_limited")
+        self.assertTrue(data.error_list[0]["retryable"])
+
+    def test_upstream_message_limit_is_not_retried_as_a_transport_failure(self):
+        runtime = self._runtime()
+        session = Session(email="limited@example.com")
+        error = RuntimeError("You've reached our limit of messages per hour. Please try again later.")
+
+        self.assertTrue(runtime._is_upstream_rate_limit_error(error))
+        self.assertFalse(runtime._is_retryable_send_error(error, session))
+
     async def test_manual_disable_excludes_a_ready_session_from_new_requests(self):
         runtime = self._runtime()
         runtime.manage["start"] = True

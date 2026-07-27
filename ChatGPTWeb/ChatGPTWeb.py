@@ -1128,6 +1128,8 @@ class chatgpt:
 
     def _is_retryable_send_error(self, error: Exception, session: Session) -> bool:
         text = str(error).lower()
+        if self._is_upstream_rate_limit_error(text):
+            return False
         if session.status in (Status.Update.value, Status.Stop.value):
             return False
         retryable_marks = (
@@ -1140,6 +1142,26 @@ class chatgpt:
             "download is starting",
         )
         return any(mark in text for mark in retryable_marks)
+
+    @staticmethod
+    def _is_upstream_rate_limit_error(error: Exception | str) -> bool:
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            "reached our limit of messages",
+            "limit of messages per hour",
+            "rate limit",
+            "rate_limited",
+            "too many requests",
+            "too many messages",
+            "status: 429",
+        ))
+
+    def _mark_chat_rate_limited(self, session: Session, error: Exception | str):
+        session.mark_chat_rate_limited(str(error), cooldown_seconds=3600)
+        self.logger.warning(
+            f"{session.email} upstream chat rate limit reached; "
+            "temporarily excluding this account from new conversations"
+        )
 
     @staticmethod
     def _is_expired_stream_auth_error(error: Exception | str) -> bool:
@@ -2485,6 +2507,7 @@ class chatgpt:
                 self.logger.debug(f"{session.email} will send msg by browser fetch bridge")
                 msg_data = await self._send_msg_by_browser_fetch(msg_data, session, attempt=attempt)
                 if msg_data.status:
+                    session.clear_chat_rate_limit()
                     msg_data.from_email = session.email
                     if session.login_state is False:
                         session.login_state = True
@@ -2493,6 +2516,16 @@ class chatgpt:
                 return msg_data
             except Exception as e:
                 error_text = str(e)
+                if self._is_upstream_rate_limit_error(error_text):
+                    self._mark_chat_rate_limited(session, error_text)
+                    msg_data.add_error(
+                        kind="rate_limited",
+                        message="upstream chat message rate limit reached",
+                        retryable=True,
+                        attempt=attempt,
+                        session_email=session.email,
+                    )
+                    return msg_data
                 if "Unusual activity" in error_text or "unusual activity" in error_text:
                     session.mark_login_failure(
                         kind="risk_blocked",
@@ -2756,8 +2789,19 @@ class chatgpt:
                         msg_data = await recive_handle(session,data,msg_data,self.logger) 
                     except Exception as e:
                         a, b, exc_traceback = sys.exc_info()
-                        self.logger.warning(f"download msg may json_wss,and error: {e} {await res.text()},line number {exc_traceback.tb_lineno}") # type: ignore
-                        if "token_expired" in await res.text():
+                        response_text = await res.text()
+                        self.logger.warning(f"download msg may json_wss,and error: {e} {response_text},line number {exc_traceback.tb_lineno}") # type: ignore
+                        if self._is_upstream_rate_limit_error(response_text):
+                            self._mark_chat_rate_limited(session, response_text)
+                            msg_data.add_error(
+                                kind="rate_limited",
+                                message="upstream chat message rate limit reached",
+                                retryable=True,
+                                attempt=attempt,
+                                session_email=session.email,
+                            )
+                            raise RuntimeError(f"upstream chat rate limit: {response_text[:500]}") from e
+                        if "token_expired" in response_text:
                             session.status = Status.Update.value
                             self.logger.warning(f"{session.email} maybe token expired,set session.status Update,please try again later")
                             msg_data.add_error(
@@ -2770,7 +2814,7 @@ class chatgpt:
                             raise e
                         msg_data.add_error(
                             kind="json_wss",
-                            message=f"{e} {await res.text()}",
+                            message=f"{e} {response_text}",
                             retryable=True,
                             attempt=attempt,
                             session_email=session.email,
@@ -2872,6 +2916,7 @@ class chatgpt:
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:
+            session.clear_chat_rate_limit()
             if session.login_state is False:
                 session.login_state = True
             if msg_data.persist_history:
@@ -2926,7 +2971,12 @@ class chatgpt:
         while not self.manage["start"]:
             self.sleep(0.5)
         sessions = filter(
-            lambda s: s.type != "script" and s.login_state is True and not s.is_login_disabled(),
+            lambda s: (
+                s.type != "script"
+                and s.login_state is True
+                and not s.is_login_disabled()
+                and not s.is_chat_rate_limited()
+            ),
             sorted(self.Sessions, key=lambda s: s.last_active)
         )
         session: Session = next(sessions, None) # type: ignore
@@ -2982,6 +3032,7 @@ class chatgpt:
                         and s.login_state is True
                         and s.status == Status.Ready.value
                         and not s.is_login_disabled()
+                        and not s.is_chat_rate_limited()
                     )
                 ]
                 if filtered_sessions:
@@ -3000,6 +3051,23 @@ class chatgpt:
                             and not s.is_login_disabled()
                         )
                     ]
+                    rate_limited_sessions = [
+                        s for s in session_list
+                        if s.type != "script" and s.is_chat_rate_limited()
+                    ]
+                    if rate_limited_sessions and len(rate_limited_sessions) == len(session_list):
+                        retry_after = min(
+                            max(0, int((s.chat_rate_limited_until - datetime.now()).total_seconds()))
+                            for s in rate_limited_sessions
+                            if s.chat_rate_limited_until
+                        )
+                        msg_data.add_error(
+                            kind="rate_limited",
+                            message=f"all eligible accounts are rate limited; retry after about {retry_after} seconds",
+                            retryable=True,
+                        )
+                        self.logger.warning(msg_data.error_info)
+                        return None
                     if not pending_sessions:
                         msg_data.add_error(
                             kind="no_available_session",
@@ -3041,6 +3109,18 @@ class chatgpt:
                 msg_data.add_error(
                     kind="conversation_session_stopped",
                     message="the account associated with this conversation is not available",
+                    session_email=session.email,
+                )
+                return None
+            if session.is_chat_rate_limited():
+                retry_after = max(
+                    0,
+                    int((session.chat_rate_limited_until - datetime.now()).total_seconds()),
+                ) if session.chat_rate_limited_until else 0
+                msg_data.add_error(
+                    kind="conversation_rate_limited",
+                    message=f"the account associated with this conversation is rate limited; retry after about {retry_after} seconds",
+                    retryable=True,
                     session_email=session.email,
                 )
                 return None
@@ -3228,6 +3308,7 @@ class chatgpt:
                     raise
 
             if msg_data.status:
+                session.clear_chat_rate_limit()
                 if session.login_state is False:
                     session.login_state = True
                 if msg_data.persist_history:
@@ -3250,7 +3331,9 @@ class chatgpt:
                 metadata={
                     **msg_data.response_metadata,
                     **(
-                        {"error_kind": "session_reauthentication_pending", "retryable": True}
+                        {"error_kind": "rate_limited", "retryable": True}
+                        if any(item.get("kind") in {"rate_limited", "conversation_rate_limited"} for item in msg_data.error_list)
+                        else {"error_kind": "session_reauthentication_pending", "retryable": True}
                         if any(item.get("kind") == "session_reauthentication_pending" for item in msg_data.error_list)
                         else {}
                     ),
@@ -3528,19 +3611,30 @@ class chatgpt:
             page = session.page
             page_ready = bool(page and not page.is_closed())
             disabled = session.is_login_disabled()
+            chat_rate_limited = session.is_chat_rate_limited()
             retry_task = getattr(self, "_control_login_tasks", {}).get(session.email)
             retry_pending = bool(retry_task and not retry_task.done())
             retry_after_seconds = 0
             if session.disabled_until:
                 retry_after_seconds = max(0, int((session.disabled_until - datetime.now()).total_seconds()))
+            if session.chat_rate_limited_until:
+                retry_after_seconds = max(
+                    retry_after_seconds,
+                    int((session.chat_rate_limited_until - datetime.now()).total_seconds()),
+                )
             login_guidance, retry_mode = self._login_guidance(session, retry_pending, retry_after_seconds)
             accounts.append({
                 "email": session.email,
                 "mode": session.mode,
                 "status": session.status,
                 "login_state": session.login_state,
-                "available": bool(session.login_state and session.status == Status.Ready.value and not disabled),
+                "available": bool(session.login_state and session.status == Status.Ready.value and not disabled and not chat_rate_limited),
                 "disabled": disabled,
+                "chat_rate_limited": chat_rate_limited,
+                "chat_rate_limited_until": (
+                    session.chat_rate_limited_until.isoformat()
+                    if session.chat_rate_limited_until else ""
+                ),
                 "manual_disabled": session.manual_disabled,
                 "login_retry_pending": retry_pending,
                 "can_retry_login": bool(session.email and session.password),

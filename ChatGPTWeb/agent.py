@@ -721,10 +721,20 @@ class AgentService:
         if not result.ok and used_control_anchor and control_anchor_key:
             self._anchors.discard(control_anchor_key)
         if not result.ok:
+            error_kinds = {
+                str(error.get("kind", ""))
+                for error in result.errors
+                if isinstance(error, dict)
+            }
+            error_message = (
+                "The upstream chat account has reached its message limit. Please retry later."
+                if error_kinds & {"rate_limited", "conversation_rate_limited"}
+                else "智能体模型请求失败，未执行任何工具。"
+            )
             return AgentTurn(
                 False,
                 next_state,
-                AgentDecision("error", error="智能体模型请求失败，未执行任何工具。"),
+                AgentDecision("error", error=error_message),
                 requested_model=result.requested_model,
                 used_model=result.used_model,
                 usage=result.usage,
