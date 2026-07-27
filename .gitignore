@@ -7,6 +7,7 @@ test.py
 local_sessions.json
 *_google_cookie.txt
 example/local_sessions.json
+opencode.json
 setup.py
 ChatGPTWeb/ChatGPTWebTest.py
 ChatGPTWeb/configTest.py

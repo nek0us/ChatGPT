@@ -436,7 +436,7 @@ def create_http_app(
         return await handler(request)
 
     async def health(_: web.Request) -> web.Response:
-        return web.json_response({"status": "ok"})
+        return web.json_response(await service.get_runtime_health())
 
     async def models(_: web.Request) -> web.Response:
         return web.json_response(await service.get_model_catalog(fetch_remote=False))

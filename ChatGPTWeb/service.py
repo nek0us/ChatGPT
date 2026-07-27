@@ -317,6 +317,43 @@ class ChatService:
         """Return sanitized account diagnostics; it never includes credentials."""
         return await self._backend.token_status()
 
+    async def get_runtime_health(self) -> Dict[str, Any]:
+        """Return coarse readiness data suitable for an unauthenticated health probe."""
+        status = await self.get_account_status()
+        raw_accounts = status.get("accounts")
+        accounts = raw_accounts if isinstance(raw_accounts, list) else []
+        configured = len(accounts)
+        if not accounts:
+            configured = len(status.get("account", [])) if isinstance(status.get("account"), list) else 0
+
+        available = sum(1 for account in accounts if isinstance(account, dict) and account.get("available"))
+        login_in_progress = sum(
+            1 for account in accounts if isinstance(account, dict) and account.get("login_retry_pending")
+        )
+        backend_manage = getattr(self._backend, "manage", None)
+        start_task = getattr(self._backend, "_start_task", None)
+        if isinstance(backend_manage, dict) and backend_manage.get("start"):
+            runtime_state = "ready"
+        elif start_task is not None and not start_task.done():
+            runtime_state = "starting"
+        elif start_task is not None and start_task.done():
+            runtime_state = "not_ready"
+        else:
+            runtime_state = "unknown"
+
+        ready = available > 0
+        return {
+            "status": "ok" if ready else "degraded",
+            "liveness": "ok",
+            "readiness": "ready" if ready else "not_ready",
+            "runtime": {"state": runtime_state},
+            "accounts": {
+                "configured": configured,
+                "available": available,
+                "login_in_progress": login_in_progress,
+            },
+        }
+
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, Any]:
         return await self._backend.get_model_catalog(fetch_remote=fetch_remote)
 

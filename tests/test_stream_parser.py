@@ -545,9 +545,13 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_auth_and_health_routes(self):
         unauthorized = await self.client.get("/v1/models")
         health = await self.client.get("/health")
+        health_payload = await health.json()
 
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(health.status, 200)
+        self.assertEqual(health_payload["liveness"], "ok")
+        self.assertEqual(health_payload["readiness"], "not_ready")
+        self.assertEqual(health_payload["accounts"]["configured"], 1)
 
     async def test_activity_route_is_authenticated_and_bounded(self):
         headers = {"Authorization": "Bearer test-key"}
