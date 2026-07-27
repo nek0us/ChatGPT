@@ -54,6 +54,21 @@ def _tools():
     )]
 
 
+def _enum_tools():
+    return [AgentTool(
+        "filesystem.scan",
+        "Scan a configured directory.",
+        {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "enum": ["机器人目录", "系统根目录"]},
+            },
+            "required": ["root"],
+            "additionalProperties": False,
+        },
+    )]
+
+
 class AgentDecisionTests(unittest.TestCase):
     def test_visual_task_protocol_forbids_product_native_tools(self):
         prompt = AgentService._initial_task_prompt("create a visual card", _tools())
@@ -120,6 +135,22 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("previous response was not a valid agent decision", backend.requests[-1].msg_send)
         self.assertEqual(backend.requests[-1].conversation_id, "agent-conversation")
         self.assertEqual(backend.requests[-1].p_msg_id, "message-4")
+
+    async def test_invalid_enum_is_repaired_with_the_allowed_values(self):
+        backend = _Backend([
+            '{"type":"tool_call","tool":"filesystem.scan","arguments":{"root":"运行日志"}}',
+            '{"type":"tool_call","tool":"filesystem.scan","arguments":{"root":"机器人目录"}}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn("find the largest log", _enum_tools())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        self.assertEqual(result.decision.arguments["root"], "机器人目录")
+        repair_prompt = backend.requests[-1].msg_send
+        self.assertIn("allowed values", repair_prompt)
+        self.assertIn("机器人目录", repair_prompt)
+        self.assertIn("运行日志", repair_prompt)
 
     async def test_continuation_without_result_is_rejected_before_model_call(self):
         backend = _Backend([])
