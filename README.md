@@ -236,13 +236,16 @@ chat = chatgpt(
     sessions=sessions,
     # Use OpenAI's explicit retry hint when present; otherwise estimate a Free-tier window.
     chat_rate_limit_cooldown_seconds=5 * 60 * 60,
+    # Keep the default LRU behavior, or balance new conversations across a rolling window.
+    account_selection_strategy="usage_balanced",
+    account_selection_window_seconds=5 * 60 * 60,
     control_host="127.0.0.1",
     control_port=8765,
     control_api_key="local-only-secret",
 )
 ```
 
-The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, model usage observed during the current process, and a distinct chat-quota cooldown state. It projects safe operational states such as verification pending, rejected credentials, provider security checks, login cooldowns, browser bridge failures, runtime recovery, and session reauthentication. The dashboard deliberately does not display upstream page text, cookies, or raw browser errors. When an upstream response includes a retry delay, that delay is used; otherwise `chat_rate_limit_cooldown_seconds` is an estimate. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
+The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, model usage observed during the current process, and a distinct chat-quota cooldown state. It projects safe operational states such as verification pending, rejected credentials, provider security checks, login cooldowns, browser bridge failures, runtime recovery, and session reauthentication. The dashboard deliberately does not display upstream page text, cookies, or raw browser errors. When an upstream response includes a retry delay, that delay is used; otherwise `chat_rate_limit_cooldown_seconds` is an estimate. Observed usage is not a remaining ChatGPT quota value. `least_recently_used` is the default new-conversation policy. Set `account_selection_strategy="usage_balanced"` to first choose the account with fewer new-conversation reservations inside `account_selection_window_seconds`, then break equal counts by idle time and a random tie-breaker. This affects new conversations only: an existing `conversation_id` always stays with its owner account. The rolling reservation counters are process-local scheduling signals, not upstream quota measurements. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
 ### Local Console
 

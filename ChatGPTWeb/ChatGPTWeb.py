@@ -9,6 +9,7 @@ import re
 import asyncio
 import threading
 import secrets
+from collections import deque
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -88,6 +89,8 @@ class chatgpt:
                  startup_timeout: int = 60,
                  session_health_check_interval: int = 300,
                  chat_rate_limit_cooldown_seconds: int = 5 * 60 * 60,
+                 account_selection_strategy: Literal["least_recently_used", "usage_balanced"] = "least_recently_used",
+                 account_selection_window_seconds: int = 5 * 60 * 60,
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
@@ -149,6 +152,16 @@ class chatgpt:
                 "chat_rate_limit_cooldown_seconds must be between 60 and 86400"
             )
         self.chat_rate_limit_cooldown_seconds = chat_rate_limit_cooldown_seconds
+        if account_selection_strategy not in {"least_recently_used", "usage_balanced"}:
+            raise ValueError(
+                "account_selection_strategy must be 'least_recently_used' or 'usage_balanced'"
+            )
+        if not 60 <= account_selection_window_seconds <= 24 * 60 * 60:
+            raise ValueError(
+                "account_selection_window_seconds must be between 60 and 86400"
+            )
+        self.account_selection_strategy = account_selection_strategy
+        self.account_selection_window_seconds = account_selection_window_seconds
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -172,6 +185,7 @@ class chatgpt:
         self._session_health_checked_at: Dict[str, float] = {}
         self._session_health_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
+        self._account_selection_history: Dict[str, deque[datetime]] = {}
         self._activity: List[Dict[str, str]] = []
         self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
         self.logger = logging.getLogger("logger")
@@ -832,6 +846,47 @@ class chatgpt:
             "models": {model: values.copy() for model, values in models.items()},
             "quota": None,
         }
+
+    def _recent_account_assignment_count(self, account: str, now: Optional[datetime] = None) -> int:
+        """Return new-conversation assignments inside the configured rolling window."""
+        now = now or datetime.now()
+        history_by_account = getattr(self, "_account_selection_history", None)
+        if history_by_account is None:
+            history_by_account = self._account_selection_history = {}
+        history = history_by_account.setdefault(account, deque())
+        window_seconds = getattr(self, "account_selection_window_seconds", 5 * 60 * 60)
+        cutoff = now.timestamp() - window_seconds
+        while history and history[0].timestamp() < cutoff:
+            history.popleft()
+        return len(history)
+
+    def _select_new_conversation_session(self, sessions: List[Session]) -> Session:
+        """Choose a ready account for a new logical conversation only."""
+        strategy = getattr(self, "account_selection_strategy", "least_recently_used")
+        if strategy != "usage_balanced":
+            return min(sessions, key=lambda item: item.last_active)
+
+        now = datetime.now()
+        counts = {
+            session.email: self._recent_account_assignment_count(session.email, now)
+            for session in sessions
+        }
+        minimum_count = min(counts.values())
+        least_assigned = [
+            session for session in sessions
+            if counts[session.email] == minimum_count
+        ]
+        oldest_active = min(session.last_active for session in least_assigned)
+        least_recently_reserved = [
+            session for session in least_assigned
+            if session.last_active == oldest_active
+        ]
+        return random.choice(least_recently_reserved)
+
+    def _record_new_conversation_assignment(self, session: Session) -> None:
+        """Record a reservation after its browser runtime is ready for work."""
+        self._recent_account_assignment_count(session.email)
+        self._account_selection_history[session.email].append(datetime.now())
 
     async def control_account(self, account: str, action: str) -> Dict[str, object]:
         """Apply an explicit local operator action to one account."""
@@ -3092,11 +3147,10 @@ class chatgpt:
                 ]
                 if filtered_sessions:
                     # A new logical conversation may use any ready account.
-                    # Prefer the least recently reserved one so independent
-                    # callers (including host subagents) naturally spread
-                    # over the available account pool. Continuations remain
-                    # pinned to their conversation owner below.
-                    session = min(filtered_sessions, key=lambda item: item.last_active)
+                    # Continuations remain pinned to their conversation owner
+                    # below. New requests may use either the default LRU policy
+                    # or a rolling-window balanced policy.
+                    session = self._select_new_conversation_session(filtered_sessions)
                 else:
                     pending_sessions = [
                         s for s in session_list
@@ -3230,7 +3284,15 @@ class chatgpt:
         if msg_data.conversation_id != "" and msg_data.msg_type == "new_session":
             msg_data.msg_type = "old_session"
 
+        is_new_conversation = not msg_data.conversation_id
+        if is_new_conversation:
+            # Reserve before an awaited runtime check so concurrent new
+            # requests cannot briefly select the same ready account.
+            session.status = Status.Working.value
+
         if not await self._ensure_session_runtime(session):
+            if is_new_conversation and session.status == Status.Working.value:
+                session.status = Status.Ready.value
             msg_data.add_error(
                 kind="session_runtime_unavailable",
                 message=f"session runtime is not available: {session.email}",
@@ -3239,6 +3301,8 @@ class chatgpt:
             self.logger.error(msg_data.error_info)
             return None
 
+        if is_new_conversation:
+            self._record_new_conversation_assignment(session)
         session.last_active = datetime.now()
         session.status = Status.Working.value
         self.logger.debug(f"session {session.email} begin work")
@@ -3723,6 +3787,7 @@ class chatgpt:
                 "auth_state_loaded": session.auth_state_loaded,
                 "conversation_count": self.storage.conversation_count(session.email),
                 "usage": self._usage_snapshot(session.email),
+                "recent_assignment_count": self._recent_account_assignment_count(session.email),
                 "login_fail_count": session.login_fail_count,
                 "max_login_failures": session.max_login_failures,
                 "login_failure_kind": session.login_failure_kind,
@@ -3748,6 +3813,10 @@ class chatgpt:
             "cid_num": [self.storage.conversation_count(session.email) for session in self.Sessions if session.type != "script"],
             "plus": [session.gptplus  for session in self.Sessions if session.type != "script"],
             "model_catalog": self._local_model_catalog(),
+            "account_selection": {
+                "strategy": getattr(self, "account_selection_strategy", "least_recently_used"),
+                "window_seconds": getattr(self, "account_selection_window_seconds", 5 * 60 * 60),
+            },
             "accounts": accounts,
             "verification": pending_verifications,
         }

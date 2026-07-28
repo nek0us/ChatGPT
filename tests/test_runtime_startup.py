@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 import tempfile
+from collections import deque
 
 from aiohttp import ClientSession
 
@@ -412,6 +413,79 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(selected, older)
         self.assertEqual(older.status, Status.Working.value)
         self.assertGreaterEqual(older.last_active, before)
+
+    async def test_balanced_new_conversation_prefers_lower_recent_assignment_count(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime.account_selection_strategy = "usage_balanced"
+        runtime.account_selection_window_seconds = 60 * 60
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        now = datetime.now()
+        busy_but_older = Session(
+            email="busy@example.com", status=Status.Ready.value,
+            login_state=True, last_active=now - timedelta(minutes=10),
+        )
+        less_used = Session(
+            email="less-used@example.com", status=Status.Ready.value,
+            login_state=True, last_active=now - timedelta(minutes=1),
+        )
+        runtime.Sessions = [busy_but_older, less_used]
+        runtime._account_selection_history = {
+            busy_but_older.email: deque([now - timedelta(minutes=2)] * 3),
+            less_used.email: deque([now - timedelta(minutes=2)]),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.cc_map = Path(directory) / "map.json"
+            runtime.cc_map.write_text("{}", "utf8")
+            selected = await runtime._prepare_chat_session(MsgData(msg_send="hello"))
+
+        self.assertIs(selected, less_used)
+        self.assertEqual(runtime._recent_account_assignment_count(less_used.email), 2)
+
+    def test_balanced_assignment_window_discards_stale_reservations(self):
+        runtime = self._runtime()
+        runtime.account_selection_window_seconds = 60
+        now = datetime.now()
+        runtime._account_selection_history = {
+            "stale@example.com": deque([now - timedelta(seconds=61)]),
+        }
+
+        self.assertEqual(runtime._recent_account_assignment_count("stale@example.com", now), 0)
+
+    async def test_existing_conversation_does_not_create_a_new_assignment_reservation(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=True)
+        owner = Session(
+            email="owner@example.com", status=Status.Ready.value,
+            login_state=True,
+        )
+        runtime.Sessions = [owner]
+        runtime._account_selection_history = {}
+
+        selected = await runtime._prepare_chat_session(MsgData(
+            msg_send="continue", conversation_id="conversation-1",
+            p_msg_id="parent-1", account_hint=owner.email,
+        ))
+
+        self.assertIs(selected, owner)
+        self.assertNotIn(owner.email, runtime._account_selection_history)
+
+    async def test_new_conversation_releases_its_reservation_when_runtime_is_unavailable(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime._ensure_session_runtime = AsyncMock(return_value=False)
+        session = Session(
+            email="unavailable@example.com", status=Status.Ready.value,
+            login_state=True,
+        )
+        runtime.Sessions = [session]
+
+        selected = await runtime._prepare_chat_session(MsgData(msg_send="hello"))
+
+        self.assertIsNone(selected)
+        self.assertEqual(session.status, Status.Ready.value)
+        self.assertNotIn(session.email, getattr(runtime, "_account_selection_history", {}))
 
     async def test_new_conversation_skips_a_chat_rate_limited_account(self):
         runtime = self._runtime()
