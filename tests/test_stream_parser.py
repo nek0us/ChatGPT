@@ -1,15 +1,19 @@
 import asyncio
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
+from ChatGPTWeb.api_keys import ApiKeyStore
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
 from ChatGPTWeb.http_api import chat_request_from_payload, create_control_app, create_http_app
 from ChatGPTWeb.service import ChatRequest, ChatService, ConversationOperation
+from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
@@ -498,15 +502,19 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend = _FakeBackend()
         self.verification_broker = VerificationBroker()
+        self._storage_directory = tempfile.TemporaryDirectory()
+        self.api_key_store = ApiKeyStore(RuntimeStorage(Path(self._storage_directory.name)))
         self.client = TestClient(TestServer(create_http_app(
             ChatService(self.backend),
             api_key="test-key",
+            api_key_store=self.api_key_store,
             verification_broker=self.verification_broker,
         )))
         await self.client.start_server()
 
     async def asyncTearDown(self):
         await self.client.close()
+        self._storage_directory.cleanup()
 
     async def test_completion_and_stream_routes(self):
         headers = {"Authorization": "Bearer test-key"}
@@ -552,6 +560,42 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health_payload["liveness"], "ok")
         self.assertEqual(health_payload["readiness"], "not_ready")
         self.assertEqual(health_payload["accounts"]["configured"], 1)
+
+    async def test_dynamic_client_key_is_scoped_rotatable_and_revocable(self):
+        admin_headers = {"Authorization": "Bearer test-key"}
+        created = await self.client.post(
+            "/v1/keys",
+            json={"label": "OpenCode laptop", "scopes": ["chat"], "max_concurrency": 1},
+            headers=admin_headers,
+        )
+        payload = await created.json()
+        key_id = payload["key"]["id"]
+        client_headers = {"Authorization": f"Bearer {payload['secret']}"}
+
+        allowed = await self.client.get("/v1/models", headers=client_headers)
+        forbidden = await self.client.get("/v1/account/status", headers=client_headers)
+        listed = await self.client.get("/v1/keys", headers=admin_headers)
+        rotated = await self.client.post(f"/v1/keys/{key_id}/rotate", headers=admin_headers)
+        rotated_payload = await rotated.json()
+        old_key = await self.client.get("/v1/models", headers=client_headers)
+        new_key = await self.client.get(
+            "/v1/models", headers={"Authorization": f"Bearer {rotated_payload['secret']}"},
+        )
+        revoked = await self.client.delete(f"/v1/keys/{key_id}", headers=admin_headers)
+        revoked_key = await self.client.get(
+            "/v1/models", headers={"Authorization": f"Bearer {rotated_payload['secret']}"},
+        )
+
+        self.assertEqual(created.status, 201)
+        self.assertTrue(payload["secret"].startswith("cwk_"))
+        self.assertEqual(allowed.status, 200)
+        self.assertEqual(forbidden.status, 403)
+        self.assertNotIn("digest", (await listed.json())["keys"][0])
+        self.assertEqual(rotated.status, 200)
+        self.assertEqual(old_key.status, 401)
+        self.assertEqual(new_key.status, 200)
+        self.assertEqual(revoked.status, 200)
+        self.assertEqual(revoked_key.status, 401)
 
     async def test_activity_route_is_authenticated_and_bounded(self):
         headers = {"Authorization": "Bearer test-key"}

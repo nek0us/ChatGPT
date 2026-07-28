@@ -26,6 +26,7 @@ class RuntimeStorage:
         self.conversations_dir = self.root / "conversations"
         self.index_path = self.conversations_dir / "index.json"
         self.personas_path = self.root / "personas.json"
+        self.api_keys_path = self.root / "api_keys.json"
         self.ensure()
 
     def ensure(self) -> None:
@@ -36,6 +37,8 @@ class RuntimeStorage:
             self.write_json_atomic(self.index_path, {"version": _SCHEMA_VERSION, "conversations": {}})
         if not self.personas_path.exists():
             self.write_json_atomic(self.personas_path, {"version": _SCHEMA_VERSION, "personas": []})
+        if not self.api_keys_path.exists():
+            self.write_json_atomic(self.api_keys_path, {"version": 1, "keys": []})
 
     @staticmethod
     def write_json_atomic(path: Path, data: Dict[str, Any]) -> None:

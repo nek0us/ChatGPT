@@ -35,7 +35,9 @@ def load_sessions() -> list[dict]:
 
 def main() -> None:
     if not API_KEY:
-        raise ValueError("Set CHATGPTWEB_HTTP_API_KEY to a local secret before starting the API")
+        raise ValueError(
+            "Set CHATGPTWEB_HTTP_API_KEY to a local administrator secret before starting the API"
+        )
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -48,7 +50,11 @@ def main() -> None:
         stdout_flush=True,
         local_js=_enabled("CHATGPTWEB_LOCAL_JS", False),
     )
-    app = create_http_app(ChatService(runtime), api_key=API_KEY)
+    app = create_http_app(
+        ChatService(runtime),
+        api_key=API_KEY,
+        api_key_store=runtime.api_key_store,
+    )
 
     async def start_runtime(_: web.Application) -> None:
         # chatgpt(plugin=False) schedules its browser startup on the current

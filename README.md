@@ -247,6 +247,8 @@ chat = chatgpt(
 
 The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, model usage observed during the current process, and a distinct chat-quota cooldown state. It projects safe operational states such as verification pending, rejected credentials, provider security checks, login cooldowns, browser bridge failures, runtime recovery, and session reauthentication. The dashboard deliberately does not display upstream page text, cookies, or raw browser errors. When an upstream response includes a retry delay, that delay is used; otherwise `chat_rate_limit_cooldown_seconds` is an estimate. Observed usage is not a remaining ChatGPT quota value. `least_recently_used` is the default new-conversation policy. Set `account_selection_strategy="usage_balanced"` to first choose the account with fewer new-conversation reservations inside `account_selection_window_seconds`, then break equal counts by idle time and a random tie-breaker. This affects new conversations only: an existing `conversation_id` always stays with its owner account. The rolling reservation counters are process-local scheduling signals, not upstream quota measurements. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
+The same loopback listener also exposes the OpenAI-compatible `/v1` endpoints. The control key is an administrator key. In the **API Client Keys** section, create a revocable client key for OpenCode or another local consumer without restarting the runtime. The raw `cwk_...` value is shown only when created or rotated; only its digest is persisted in `storage_dir/api_keys.json`. A default client key has `chat` scope, which permits only `/v1/models` and `/v1/chat/completions`; it cannot inspect accounts, submit verification, control login, or manage other keys. Client keys have an independent in-process concurrency limit. Keep `control_host` on loopback unless you place the service behind an authenticated local proxy.
+
 ### Local Console
 
 `example/local_console.py` is the interactive manual test client. It uses `ChatService.stream()` and starts the dashboard in the same process. Configure `example/local_sessions.json`, then run `uv run python example/local_console.py`; open `http://127.0.0.1:8765` and use the configured `CHATGPTWEB_CONTROL_API_KEY` when one is set. Use `:new`, `:status`, and `:quit` in the terminal. Set `CHATGPTWEB_STORAGE_DIR` to isolate a test run from another local runtime.
@@ -311,17 +313,22 @@ The MCP server is intentionally an adapter over an already initialized runtime; 
 ### Optional HTTP API
 ```python
 from aiohttp import web
-from ChatGPTWeb import create_http_app
+from ChatGPTWeb import ChatService, chatgpt, create_http_app
 
+runtime = chatgpt(sessions=sessions)
+service = ChatService(runtime)
 app = create_http_app(
     service,
     api_key="replace-with-a-local-secret",
+    # Enables persisted, revocable client keys. The administrator key above
+    # is still required for account control and key management.
+    api_key_store=runtime.api_key_store,
     max_attachment_bytes=20 * 1024 * 1024,
 )
 web.run_app(app, host="127.0.0.1", port=8000)
 ```
 
-The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, `/v1/accounts/{account}/control`, `/v1/agent/turn`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`.
+The app factory does not start a listener itself. It exposes `POST /v1/chat/completions` with `stream: true` SSE support, plus `/v1/models`, `/v1/account/status`, `/v1/usage`, `/v1/accounts/{account}/control`, `/v1/agent/turn`, `/v1/keys`, and `/health`. Keep an API key when binding beyond localhost. JSON requests may include `attachments` entries with `name` and `content_base64`; decoded attachment bytes are capped by `max_attachment_bytes`. `POST /v1/keys` creates a client key, `POST /v1/keys/{id}/rotate` replaces it, and `DELETE /v1/keys/{id}` revokes it. Those management routes require the administrator key and are available only when `api_key_store` is supplied.
 
 `/v1/chat/completions` also accepts the standard OpenAI `tools: [{"type":"function","function":...}]` shape. A tool round is deliberately non-streaming: the response returns ordinary `choices[0].message.tool_calls`, the host executes that one approved function, then sends a `role: "tool"` message with the same `tool_call_id`. The server recognizes the standard identifier directly, retains the narrow conversation cursor for ten minutes, and never executes the advertised function itself. Do not add or replace tools during a continuation; the initially accepted tool list remains authoritative.
 

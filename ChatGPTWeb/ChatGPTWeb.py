@@ -68,6 +68,7 @@ from .api import (
     ChatStreamDecoder,
     ChatStreamEvent,
 )
+from .api_keys import ApiKeyStore
 
 class chatgpt:
     def __init__(self,
@@ -130,6 +131,7 @@ class chatgpt:
         self.proxy: typing.Optional[ProxySettings] = self.parse_proxy(proxy)
         self.httpx_proxy = proxy
         self.storage = RuntimeStorage(storage_dir)
+        self.api_key_store = ApiKeyStore(self.storage)
         self.personality = Personality([{"name": "cat", "value": "you are a cat now."}]) if personality is None else personality
         self.personality.replace_data(self.storage.load_personas() + self.personality.init_list)
         self.log_status = log_status
@@ -746,10 +748,13 @@ class chatgpt:
     async def _start_control_server(self) -> None:
         if self.control_port is None or self._control_runner:
             return
+        if not hasattr(self, "api_key_store"):
+            self.api_key_store = ApiKeyStore(self.storage)
         runner = web.AppRunner(create_control_app(
             ChatService(self),
             self.verification_broker,
             api_key=self.control_api_key,
+            api_key_store=self.api_key_store,
         ))
         try:
             await runner.setup()

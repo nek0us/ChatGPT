@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from aiohttp import web
 
 from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
+from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_HTML
@@ -21,6 +22,8 @@ from .service import ChatRequest, ChatResult, ChatService
 from .verification import VerificationBroker
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
+API_KEY_STORE: web.AppKey[ApiKeyStore] = web.AppKey("chatgptweb_api_key_store", ApiKeyStore)
+API_PRINCIPAL: web.RequestKey[Any] = web.RequestKey("chatgptweb_api_principal", object)
 logger = logging.getLogger(__name__)
 
 
@@ -440,6 +443,7 @@ def _chunk_payload(event: ChatStreamEvent, request_id: str, model: str, finish_r
 def create_http_app(
     service: ChatService,
     api_key: str | None = None,
+    api_key_store: ApiKeyStore | None = None,
     max_attachment_bytes: int = 20 * 1024 * 1024,
     verification_broker: VerificationBroker | None = None,
     agent_safety_policy: AgentSafetyPolicy | None = None,
@@ -461,15 +465,46 @@ def create_http_app(
             if cursor.expires_at <= now:
                 agent_cursors.pop(token, None)
 
+    def supplied_bearer(request: web.Request) -> str:
+        return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+    def require_admin(request: web.Request) -> None:
+        if request.get(API_PRINCIPAL) != "admin":
+            raise web.HTTPForbidden(text="administrator API key required")
+
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
-        if request.path in ("/", "/health") or not api_key:
+        if request.path in ("/", "/health"):
             return await handler(request)
-        authorization = request.headers.get("Authorization", "")
-        supplied = authorization.removeprefix("Bearer ").strip()
-        if not hmac.compare_digest(supplied, api_key):
+        # Keep the original no-auth local application behavior for callers
+        # that intentionally create an app without either key mechanism.
+        if not api_key and not api_key_store:
+            request[API_PRINCIPAL] = "admin"
+            return await handler(request)
+        supplied = supplied_bearer(request)
+        if api_key and hmac.compare_digest(supplied, api_key):
+            request[API_PRINCIPAL] = "admin"
+            return await handler(request)
+        record = api_key_store.authenticate(supplied) if api_key_store else None
+        if record is None:
             raise web.HTTPUnauthorized(text="invalid API key")
-        return await handler(request)
+        if request.path == "/v1/models":
+            permitted = "chat" in record["scopes"]
+        elif request.path == "/v1/chat/completions":
+            permitted = "chat" in record["scopes"]
+        elif request.path == "/v1/agent/turn":
+            permitted = "agent" in record["scopes"]
+        else:
+            permitted = False
+        if not permitted:
+            raise web.HTTPForbidden(text="API key is not permitted for this endpoint")
+        if not api_key_store.acquire(record):
+            raise web.HTTPTooManyRequests(text="API key concurrency limit reached")
+        request[API_PRINCIPAL] = record
+        try:
+            return await handler(request)
+        finally:
+            api_key_store.release(record)
 
     async def health(_: web.Request) -> web.Response:
         return web.json_response(await service.get_runtime_health())
@@ -491,6 +526,7 @@ def create_http_app(
         return web.json_response(await service.get_activity(limit=limit))
 
     async def control_account(request: web.Request) -> web.Response:
+        require_admin(request)
         try:
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -512,9 +548,11 @@ def create_http_app(
         return verification_broker
 
     async def verification_status(_: web.Request) -> web.Response:
+        require_admin(_)
         return web.json_response({"challenges": await require_verification_broker().snapshot()})
 
     async def submit_verification(request: web.Request) -> web.Response:
+        require_admin(request)
         try:
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -531,6 +569,7 @@ def create_http_app(
         return web.json_response({"accepted": True})
 
     async def cancel_verification(request: web.Request) -> web.Response:
+        require_admin(request)
         cancelled = await require_verification_broker().cancel(request.match_info["challenge_id"])
         if not cancelled:
             raise web.HTTPNotFound(text="verification challenge is no longer pending")
@@ -659,12 +698,57 @@ def create_http_app(
             agent_anchor_policy=agent_anchor_policy,
         ))
 
+    def require_api_key_store() -> ApiKeyStore:
+        if not api_key_store:
+            raise web.HTTPNotImplemented(text="dynamic API key management is not enabled")
+        return api_key_store
+
+    async def list_api_keys(request: web.Request) -> web.Response:
+        require_admin(request)
+        include_revoked = request.query.get("include_revoked", "false").lower() == "true"
+        return web.json_response({"keys": require_api_key_store().list(include_revoked=include_revoked)})
+
+    async def create_api_key(request: web.Request) -> web.Response:
+        require_admin(request)
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="request body must be a JSON object")
+        try:
+            metadata, secret = require_api_key_store().create(
+                label=payload.get("label"),
+                scopes=payload.get("scopes"),
+                max_concurrency=payload.get("max_concurrency"),
+            )
+        except ValueError as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        return web.json_response({"key": metadata, "secret": secret}, status=201)
+
+    async def revoke_api_key(request: web.Request) -> web.Response:
+        require_admin(request)
+        value = require_api_key_store().revoke(request.match_info["key_id"])
+        if value is None:
+            raise web.HTTPNotFound(text="API key was not found")
+        return web.json_response({"key": value})
+
+    async def rotate_api_key(request: web.Request) -> web.Response:
+        require_admin(request)
+        value = require_api_key_store().rotate(request.match_info["key_id"])
+        if value is None:
+            raise web.HTTPNotFound(text="API key was not found or is revoked")
+        metadata, secret = value
+        return web.json_response({"key": metadata, "secret": secret})
+
     # JSON base64 is larger than decoded attachment bytes.
     app = web.Application(
         middlewares=[auth_middleware],
         client_max_size=(max_attachment_bytes * 4 // 3) + 1024 * 1024,
     )
     app[SERVICE_KEY] = service
+    if api_key_store:
+        app[API_KEY_STORE] = api_key_store
     app.router.add_get("/health", health)
     app.router.add_get("/v1/models", models)
     app.router.add_get("/v1/account/status", account_status)
@@ -676,6 +760,10 @@ def create_http_app(
     app.router.add_delete("/v1/verification/{challenge_id}", cancel_verification)
     app.router.add_post("/v1/chat/completions", chat_completions)
     app.router.add_post("/v1/agent/turn", agent_turn)
+    app.router.add_get("/v1/keys", list_api_keys)
+    app.router.add_post("/v1/keys", create_api_key)
+    app.router.add_post("/v1/keys/{key_id}/rotate", rotate_api_key)
+    app.router.add_delete("/v1/keys/{key_id}", revoke_api_key)
     return app
 
 
@@ -683,9 +771,15 @@ def create_control_app(
     service: ChatService,
     verification_broker: VerificationBroker,
     api_key: str | None = None,
+    api_key_store: ApiKeyStore | None = None,
 ) -> web.Application:
     """Create the opt-in local operations console over the existing API."""
-    app = create_http_app(service, api_key=api_key, verification_broker=verification_broker)
+    app = create_http_app(
+        service,
+        api_key=api_key,
+        api_key_store=api_key_store,
+        verification_broker=verification_broker,
+    )
 
     async def dashboard(_: web.Request) -> web.Response:
         return web.Response(text=CONTROL_HTML, content_type="text/html")
