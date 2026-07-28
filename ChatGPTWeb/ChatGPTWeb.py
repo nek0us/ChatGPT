@@ -69,6 +69,7 @@ from .api import (
     ChatStreamEvent,
 )
 from .api_keys import ApiKeyStore
+from .request_scheduler import RequestLease, RequestScheduler
 
 class chatgpt:
     def __init__(self,
@@ -92,6 +93,7 @@ class chatgpt:
                  chat_rate_limit_cooldown_seconds: int = 5 * 60 * 60,
                  account_selection_strategy: Literal["least_recently_used", "usage_balanced"] = "least_recently_used",
                  account_selection_window_seconds: int = 5 * 60 * 60,
+                 request_queue_timeout_seconds: int = 120,
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
@@ -164,6 +166,9 @@ class chatgpt:
             )
         self.account_selection_strategy = account_selection_strategy
         self.account_selection_window_seconds = account_selection_window_seconds
+        if not 1 <= request_queue_timeout_seconds <= 3600:
+            raise ValueError("request_queue_timeout_seconds must be between 1 and 3600")
+        self.request_queue_timeout_seconds = request_queue_timeout_seconds
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -188,6 +193,7 @@ class chatgpt:
         self._session_health_tasks: Dict[str, asyncio.Task] = {}
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._account_selection_history: Dict[str, deque[datetime]] = {}
+        self._request_scheduler = RequestScheduler(self._request_scheduler_capacity)
         self._activity: List[Dict[str, str]] = []
         self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
         self.logger = logging.getLogger("logger")
@@ -3067,6 +3073,7 @@ class chatgpt:
                 history["created_at"],
                 now,
                 len(history["messages"]),
+                client_id=msg_data.client_id,
             )
 
     async def load_chat(self, msg_data: MsgData):
@@ -3114,6 +3121,23 @@ class chatgpt:
                     message=f"chatgpt startup did not finish within {self.ready_timeout} seconds",
                 )
                 self.logger.error(msg_data.error_info)
+                return None
+
+        if msg_data.conversation_id and msg_data.client_id and msg_data.enforce_client_ownership:
+            owner = self.storage.conversation_client_id(msg_data.conversation_id)
+            if owner and owner != msg_data.client_id:
+                msg_data.add_error(
+                    kind="conversation_client_mismatch",
+                    message="this conversation belongs to another API client",
+                )
+                self.logger.warning(msg_data.error_info)
+                return None
+            if not owner and self.storage.conversation_exists(msg_data.conversation_id):
+                msg_data.add_error(
+                    kind="conversation_client_unbound",
+                    message="this legacy conversation is not assigned to an API client",
+                )
+                self.logger.warning(msg_data.error_info)
                 return None
 
         session: Session = Session(status=Status.Working.value)
@@ -3313,7 +3337,49 @@ class chatgpt:
         self.logger.debug(f"session {session.email} begin work")
         return session
 
+    def _request_scheduler_capacity(self) -> int:
+        """Use the configured account pool as the shared admission capacity."""
+        sessions = getattr(self, "Sessions", [])
+        return max(1, sum(1 for session in sessions if session.type != "script"))
+
+    def _scheduler(self) -> RequestScheduler:
+        scheduler = getattr(self, "_request_scheduler", None)
+        if scheduler is None:
+            scheduler = RequestScheduler(self._request_scheduler_capacity)
+            self._request_scheduler = scheduler
+        return scheduler
+
+    async def request_scheduler_status(self) -> Dict[str, int]:
+        """Expose coarse queue state without any prompt or client identifiers."""
+        return await self._scheduler().snapshot()
+
+    async def _acquire_request_lease(self, msg_data: MsgData) -> RequestLease | None:
+        try:
+            return await self._scheduler().acquire(
+                priority=msg_data.request_priority,
+                client_id=msg_data.client_id or "local",
+                timeout_seconds=getattr(self, "request_queue_timeout_seconds", 120),
+            )
+        except TimeoutError:
+            msg_data.add_error(
+                kind="request_queue_timeout",
+                message="the shared request queue did not admit this request before its timeout",
+                retryable=True,
+            )
+            self.logger.warning(msg_data.error_info)
+            return None
+
     async def continue_chat(self, msg_data: MsgData) -> MsgData:
+        """Queue a buffered request before entering the browser/account runtime."""
+        lease = await self._acquire_request_lease(msg_data)
+        if not lease:
+            return msg_data
+        try:
+            return await self._continue_chat_direct(msg_data)
+        finally:
+            await lease.release()
+
+    async def _continue_chat_direct(self, msg_data: MsgData) -> MsgData:
         """
         Message processing entry, please use this
         """
@@ -3323,6 +3389,8 @@ class chatgpt:
 
         try:
             msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
+            if msg_data.status:
+                self._bind_conversation_client(msg_data, session)
             session.status = Status.Ready.value
             self._record_usage(session, msg_data)
         except TimeoutError:
@@ -3355,6 +3423,22 @@ class chatgpt:
         return msg_data
 
     async def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
+        """Queue a streaming request and retain its lease until the stream closes."""
+        lease = await self._acquire_request_lease(msg_data)
+        if not lease:
+            yield ChatStreamEvent(
+                type="error",
+                text=msg_data.error_info or "request queue timeout",
+                metadata={"error_kind": "request_queue_timeout", "retryable": True},
+            )
+            return
+        try:
+            async for event in self._continue_chat_stream_direct(msg_data):
+                yield event
+        finally:
+            await lease.release()
+
+    async def _continue_chat_stream_direct(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
         """Stream chat events from the browser fetch transport."""
         session = await self._prepare_chat_session(msg_data)
         if not session:
@@ -3435,6 +3519,7 @@ class chatgpt:
                 self._clear_chat_rate_limit(session)
                 if session.login_state is False:
                     session.login_state = True
+                self._bind_conversation_client(msg_data, session)
                 if msg_data.persist_history:
                     await self.save_chat(msg_data, context_num)
                 self._record_usage(session, msg_data)
@@ -3467,6 +3552,14 @@ class chatgpt:
             if session.status not in (Status.Update.value, Status.Stop.value):
                 session.status = Status.Ready.value
             self.logger.debug(f"session {session.email} finish stream work")
+
+    def _bind_conversation_client(self, msg_data: MsgData, session: Session) -> None:
+        if msg_data.client_id and msg_data.conversation_id:
+            self.storage.bind_conversation_client(
+                msg_data.conversation_id,
+                msg_data.client_id,
+                session.email,
+            )
 
     async def show_chat_history(self, msg_data: MsgData) -> List[Dict[str, Any]]:
         """show chat history

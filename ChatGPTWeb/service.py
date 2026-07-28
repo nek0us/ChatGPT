@@ -39,6 +39,11 @@ class ChatRequest:
     persist_history: bool = True
     stream_idle_timeout_seconds: int = 0
     stream_status_interval_seconds: int = 15
+    # Trusted adapters set these values. Public HTTP payloads deliberately do
+    # not expose them, so a client cannot jump the shared runtime queue.
+    client_id: str = ""
+    request_priority: int = 50
+    enforce_client_ownership: bool = False
     operation: ConversationOperation = ConversationOperation.SEND
     reference: str = ""
 
@@ -56,6 +61,9 @@ class ChatRequest:
             persist_history=self.persist_history,
             stream_idle_timeout_seconds=max(0, self.stream_idle_timeout_seconds),
             stream_status_interval_seconds=max(0, self.stream_status_interval_seconds),
+            client_id=self.client_id,
+            request_priority=max(0, self.request_priority),
+            enforce_client_ownership=self.enforce_client_ownership,
         )
         if self.operation is ConversationOperation.REWIND:
             msg_data.msg_send = self.reference
@@ -342,6 +350,8 @@ class ChatService:
             runtime_state = "unknown"
 
         ready = available > 0
+        scheduler_status = getattr(self._backend, "request_scheduler_status", None)
+        scheduler = await scheduler_status() if scheduler_status else None
         return {
             "status": "ok" if ready else "degraded",
             "liveness": "ok",
@@ -352,6 +362,7 @@ class ChatService:
                 "available": available,
                 "login_in_progress": login_in_progress,
             },
+            **({"request_queue": scheduler} if isinstance(scheduler, dict) else {}),
         }
 
     async def get_model_catalog(self, fetch_remote: bool = True) -> Dict[str, Any]:

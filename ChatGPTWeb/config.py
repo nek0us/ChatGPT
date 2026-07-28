@@ -422,6 +422,9 @@ class MsgData(BaseModel):
     from_email: str = Field("", description="from email")
     account_hint: str = Field("", description="internal conversation owner hint")
     persist_history: bool = Field(True, description="whether this request is written to local conversation history")
+    client_id: str = Field("", description="trusted caller identity for local request ownership")
+    request_priority: int = Field(50, description="trusted caller priority for runtime request scheduling")
+    enforce_client_ownership: bool = Field(False, description="reject foreign or legacy conversations for this caller")
     # 请求数据
     post_data: str = Field("", description="POST请求数据")
     # Arkose 验证相关

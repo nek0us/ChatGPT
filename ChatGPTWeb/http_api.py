@@ -33,6 +33,7 @@ class _OpenAIAgentCursor:
     tools: list[AgentTool]
     tool_name: str
     expires_at: float
+    client_id: str
 
 
 def _text_content(value: Any) -> str:
@@ -156,7 +157,14 @@ def _attachment_files(payload: Dict[str, Any], max_attachment_bytes: int) -> Lis
     return files
 
 
-def chat_request_from_payload(payload: Dict[str, Any], max_attachment_bytes: int = 20 * 1024 * 1024) -> ChatRequest:
+def chat_request_from_payload(
+    payload: Dict[str, Any],
+    max_attachment_bytes: int = 20 * 1024 * 1024,
+    *,
+    client_id: str = "",
+    request_priority: int = 100,
+    enforce_client_ownership: bool = False,
+) -> ChatRequest:
     if not isinstance(payload, dict):
         raise web.HTTPBadRequest(text="request body must be a JSON object")
     model = payload.get("model", "auto")
@@ -172,6 +180,9 @@ def chat_request_from_payload(payload: Dict[str, Any], max_attachment_bytes: int
         deep_research=bool(payload.get("deep_research", False)),
         stream_idle_timeout_seconds=max(0, int(payload.get("stream_idle_timeout_seconds", 0) or 0)),
         stream_status_interval_seconds=max(0, int(payload.get("stream_status_interval_seconds", 15) or 0)),
+        client_id=client_id,
+        request_priority=request_priority,
+        enforce_client_ownership=enforce_client_ownership,
     )
 
 
@@ -195,6 +206,8 @@ async def agent_turn_from_payload(
     *,
     agent_safety_policy: AgentSafetyPolicy | None = None,
     agent_anchor_policy: AgentAnchorPolicy | None = None,
+    client_id: str = "",
+    request_priority: int = 120,
 ) -> Dict[str, Any]:
     """Translate an external host's agent turn without executing host tools."""
     if not isinstance(payload, dict):
@@ -214,6 +227,9 @@ async def agent_turn_from_payload(
         service,
         safety_policy=agent_safety_policy,
         anchor_policy=agent_anchor_policy,
+        client_id=client_id,
+        request_priority=request_priority,
+        enforce_client_ownership=bool(client_id),
     ).turn(
         task,
         _agent_tools_from_payload(payload),
@@ -468,6 +484,14 @@ def create_http_app(
     def supplied_bearer(request: web.Request) -> str:
         return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
 
+    def client_identity(request: web.Request) -> str:
+        principal = request.get(API_PRINCIPAL)
+        if isinstance(principal, dict):
+            key_id = principal.get("id")
+            if isinstance(key_id, str) and key_id:
+                return f"api:{key_id}"
+        return "api:admin"
+
     def require_admin(request: web.Request) -> None:
         if request.get(API_PRINCIPAL) != "admin":
             raise web.HTTPForbidden(text="administrator API key required")
@@ -581,12 +605,15 @@ def create_http_app(
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
+        client_id = client_identity(request)
         supplied_call_id = payload.get("chatgptweb_tool_call_id")
         if supplied_call_id is not None and not isinstance(supplied_call_id, str):
             raise web.HTTPBadRequest(text="chatgptweb_tool_call_id must be a string")
         discard_agent_cursors()
         tool_call_id = supplied_call_id or _latest_openai_tool_call_id(payload)
         cursor = agent_cursors.get(tool_call_id) if tool_call_id else None
+        if cursor is not None and cursor.client_id != client_id:
+            raise web.HTTPForbidden(text="tool-call cursor belongs to another API client")
         if tool_call_id and cursor is None and payload.get("tools") is None:
             raise web.HTTPBadRequest(text="tool-call cursor is unknown or expired; restart the agent request")
         if payload.get("tools") is not None or cursor is not None:
@@ -600,6 +627,9 @@ def create_http_app(
                         service,
                         safety_policy=agent_safety_policy,
                         anchor_policy=openai_agent_anchor_policy,
+                        client_id=client_id,
+                        request_priority=120,
+                        enforce_client_ownership=True,
                     ).turn(
                         _agent_task_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
                     )
@@ -611,6 +641,9 @@ def create_http_app(
                         service,
                         safety_policy=agent_safety_policy,
                         anchor_policy=openai_agent_anchor_policy,
+                        client_id=client_id,
+                        request_priority=120,
+                        enforce_client_ownership=True,
                     ).turn(
                         "", cursor.tools, state=cursor.state, tool_result=result, model=cursor.state.model,
                     )
@@ -624,6 +657,7 @@ def create_http_app(
                     tools=tools if cursor is None else cursor.tools,
                     tool_name=turn.decision.tool,
                     expires_at=time.monotonic() + 600,
+                    client_id=client_id,
                 )
             if payload.get("stream", False):
                 return await _stream_agent_completion(
@@ -635,7 +669,13 @@ def create_http_app(
                 )
             return web.json_response(_agent_completion_payload(turn, request_id, str(payload.get("model") or "auto"), call_id))
 
-        chat_request = chat_request_from_payload(payload, max_attachment_bytes=max_attachment_bytes)
+        chat_request = chat_request_from_payload(
+            payload,
+            max_attachment_bytes=max_attachment_bytes,
+            client_id=client_id,
+            request_priority=100,
+            enforce_client_ownership=True,
+        )
         if not payload.get("stream", False):
             result = await service.send(chat_request)
             return web.json_response(_result_payload(result, request_id))
@@ -696,6 +736,8 @@ def create_http_app(
             payload,
             agent_safety_policy=agent_safety_policy,
             agent_anchor_policy=agent_anchor_policy,
+            client_id=client_identity(request),
+            request_priority=120,
         ))
 
     def require_api_key_store() -> ApiKeyStore:

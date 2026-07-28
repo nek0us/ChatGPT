@@ -117,20 +117,53 @@ class RuntimeStorage:
         created_at: str,
         updated_at: str,
         message_count: int,
+        *,
+        client_id: str = "",
     ) -> None:
         conversation_id = self.validate_conversation_id(conversation_id)
         index = self._index()
+        previous = index["conversations"].get(conversation_id, {})
+        previous_client_id = previous.get("client_id", "") if isinstance(previous, dict) else ""
         index["conversations"][conversation_id] = {
             "account": account,
             "created_at": created_at,
             "updated_at": updated_at,
             "message_count": message_count,
+            "client_id": client_id or previous_client_id,
         }
         self.write_json_atomic(self.index_path, index)
 
     def conversation_owner(self, conversation_id: str) -> str:
         entry = self._index()["conversations"].get(conversation_id, {})
         return str(entry.get("account", "")) if isinstance(entry, dict) else ""
+
+    def conversation_client_id(self, conversation_id: str) -> str:
+        entry = self._index()["conversations"].get(conversation_id, {})
+        return str(entry.get("client_id", "")) if isinstance(entry, dict) else ""
+
+    def conversation_exists(self, conversation_id: str) -> bool:
+        return conversation_id in self._index()["conversations"]
+
+    def bind_conversation_client(self, conversation_id: str, client_id: str, account: str) -> bool:
+        """Persist client ownership even for hidden agent-protocol turns."""
+        if not client_id:
+            return False
+        conversation_id = self.validate_conversation_id(conversation_id)
+        index = self._index()
+        existing = index["conversations"].get(conversation_id, {})
+        now = datetime.now().isoformat()
+        entry = dict(existing) if isinstance(existing, dict) else {}
+        existing_client_id = str(entry.get("client_id", ""))
+        if existing_client_id and existing_client_id != client_id:
+            return False
+        entry.setdefault("account", account)
+        entry.setdefault("created_at", now)
+        entry["updated_at"] = now
+        entry.setdefault("message_count", 0)
+        entry["client_id"] = client_id
+        index["conversations"][conversation_id] = entry
+        self.write_json_atomic(self.index_path, index)
+        return True
 
     def conversation_count(self, account: str) -> int:
         return sum(

@@ -90,6 +90,24 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.control_url, "")
         self.assertEqual(runtime.manage["control_url"], "")
 
+    async def test_client_cannot_continue_another_clients_conversation(self):
+        runtime = self._runtime()
+        runtime.manage["start"] = True
+        runtime.storage.update_conversation_index(
+            "conversation-owned", "account@example.com", "created", "updated", 1,
+            client_id="api:key-one",
+        )
+        msg_data = MsgData(
+            conversation_id="conversation-owned",
+            client_id="api:key-two",
+            enforce_client_ownership=True,
+        )
+
+        session = await runtime._prepare_chat_session(msg_data)
+
+        self.assertIsNone(session)
+        self.assertEqual(msg_data.error_list[0]["kind"], "conversation_client_mismatch")
+
     async def test_context_creation_passes_storage_state_to_browser(self):
         runtime = self._runtime()
         runtime.headless = True

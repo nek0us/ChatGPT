@@ -573,6 +573,9 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         client_headers = {"Authorization": f"Bearer {payload['secret']}"}
 
         allowed = await self.client.get("/v1/models", headers=client_headers)
+        completion = await self.client.post(
+            "/v1/chat/completions", json={"prompt": "client-isolated"}, headers=client_headers,
+        )
         forbidden = await self.client.get("/v1/account/status", headers=client_headers)
         listed = await self.client.get("/v1/keys", headers=admin_headers)
         rotated = await self.client.post(f"/v1/keys/{key_id}/rotate", headers=admin_headers)
@@ -589,6 +592,9 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.status, 201)
         self.assertTrue(payload["secret"].startswith("cwk_"))
         self.assertEqual(allowed.status, 200)
+        self.assertEqual(completion.status, 200)
+        self.assertEqual(self.backend.sent[-1].client_id, f"api:{key_id}")
+        self.assertEqual(self.backend.sent[-1].request_priority, 100)
         self.assertEqual(forbidden.status, 403)
         self.assertNotIn("digest", (await listed.json())["keys"][0])
         self.assertEqual(rotated.status, 200)

@@ -433,10 +433,16 @@ class AgentService:
         *,
         safety_policy: AgentSafetyPolicy | None = None,
         anchor_policy: AgentAnchorPolicy | None = None,
+        client_id: str = "",
+        request_priority: int = 100,
+        enforce_client_ownership: bool = False,
     ):
         self._service = service
         self._safety_policy = safety_policy or AgentSafetyPolicy()
         self._anchor_policy = anchor_policy or AgentAnchorPolicy()
+        self._client_id = client_id
+        self._request_priority = request_priority
+        self._enforce_client_ownership = enforce_client_ownership
         self._anchors = _anchor_registry_for(service)
 
     @staticmethod
@@ -539,9 +545,11 @@ class AgentService:
         """Standalone fallback used when a reusable review anchor is unavailable."""
         return "\n".join((cls._safety_review_anchor_prompt(), cls._safety_review_task_prompt(task)))
 
-    @staticmethod
-    def _anchor_key(kind: str, model: str) -> tuple[str, str]:
-        return (f"{kind}:{_AGENT_ANCHOR_PROTOCOL_VERSION}", model or "auto")
+    def _anchor_key(self, kind: str, model: str) -> tuple[str, str]:
+        # Protocol roots can retain task-independent model context. Keep them
+        # private to the API client that created them.
+        namespace = self._client_id or "local"
+        return (f"{namespace}:{kind}:{_AGENT_ANCHOR_PROTOCOL_VERSION}", model or "auto")
 
     async def _get_anchor(
         self,
@@ -558,6 +566,9 @@ class AgentService:
                 prompt=prompt,
                 model=model or "auto",
                 persist_history=False,
+                client_id=self._client_id,
+                request_priority=self._request_priority,
+                enforce_client_ownership=self._enforce_client_ownership,
             ))
             if not result.ok or not result.conversation_id or not result.message_id:
                 return None
@@ -586,6 +597,9 @@ class AgentService:
             model=model or "auto",
             account_hint=self._anchors.owner_for(anchor.state.conversation_id) if anchor else "",
             persist_history=False,
+            client_id=self._client_id,
+            request_priority=self._request_priority,
+            enforce_client_ownership=self._enforce_client_ownership,
         )
         result = await self._service.send(request)
         self._anchors.remember_owner(result.conversation_id, result.account)
@@ -687,6 +701,9 @@ class AgentService:
             model=selected_model or "auto",
             account_hint=self._anchors.owner_for(state.conversation_id),
             persist_history=False,
+            client_id=self._client_id,
+            request_priority=self._request_priority,
+            enforce_client_ownership=self._enforce_client_ownership,
         ))
         self._anchors.remember_owner(result.conversation_id, result.account)
         decision = parse_agent_decision(result.text, registered) if result.ok else None
@@ -707,6 +724,9 @@ class AgentService:
                 model=selected_model or "auto",
                 account_hint=result.account or self._anchors.owner_for(state.conversation_id),
                 persist_history=False,
+                client_id=self._client_id,
+                request_priority=self._request_priority,
+                enforce_client_ownership=self._enforce_client_ownership,
             ))
             self._anchors.remember_owner(repair.conversation_id, repair.account)
             if repair.ok:
