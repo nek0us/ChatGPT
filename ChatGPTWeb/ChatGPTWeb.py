@@ -3678,6 +3678,11 @@ class chatgpt:
                     int((session.chat_rate_limited_until - datetime.now()).total_seconds()),
                 )
             login_guidance, retry_mode = self._login_guidance(session, retry_pending, retry_after_seconds)
+            operational = self._account_operational_diagnostics(
+                session,
+                retry_pending=retry_pending,
+                has_verification=session.email in verification_by_account,
+            )
             accounts.append({
                 "email": session.email,
                 "mode": session.mode,
@@ -3698,6 +3703,9 @@ class chatgpt:
                 "retry_after_seconds": retry_after_seconds,
                 "retry_mode": retry_mode,
                 "login_guidance": login_guidance,
+                "operational_state": operational["state"],
+                "operational_guidance": operational["guidance"],
+                "recommended_action": operational["action"],
                 "gptplus": session.gptplus,
                 "account_plan": getattr(session, "account_plan", "unknown"),
                 "account_plan_source": getattr(session, "account_plan_source", "unavailable"),
@@ -3775,6 +3783,136 @@ class chatgpt:
         ):
             return guidance, "manual"
         return guidance, "retry"
+
+    @staticmethod
+    def _account_operational_diagnostics(
+            session: Session,
+            *,
+            retry_pending: bool,
+            has_verification: bool,
+    ) -> Dict[str, str]:
+        """Project runtime state into stable, credential-free operator diagnostics."""
+        if session.manual_disabled:
+            return {
+                "state": "manually_disabled",
+                "guidance": "The operator disabled this account. Enable it before scheduling new work.",
+                "action": "enable_account",
+            }
+        if retry_pending:
+            return {
+                "state": "login_recovery_running",
+                "guidance": "A controlled browser login recovery is currently running.",
+                "action": "wait",
+            }
+        if has_verification:
+            return {
+                "state": "verification_pending",
+                "guidance": "A provider verification code is waiting for local submission.",
+                "action": "submit_verification",
+            }
+        if session.is_chat_rate_limited():
+            return {
+                "state": "chat_quota_cooldown",
+                "guidance": "New chats are paused until the estimated upstream quota reset.",
+                "action": "wait_for_quota",
+            }
+        if session.force_fresh_login:
+            return {
+                "state": "session_reauthentication_required",
+                "guidance": "The browser authorization was rejected and needs a fresh sign-in.",
+                "action": "retry_login",
+            }
+
+        failure_states = {
+            LoginFailureKind.AccountLocked.value: (
+                "account_unavailable",
+                "The upstream account is unavailable. Restore it upstream before retrying.",
+                "restore_account",
+            ),
+            LoginFailureKind.BadCredentials.value: (
+                "credentials_rejected",
+                "Configured credentials were rejected. Update them before a manual retry.",
+                "update_credentials",
+            ),
+            LoginFailureKind.NeedVerification.value: (
+                "verification_required",
+                "The provider requires verification before this account can continue.",
+                "submit_verification",
+            ),
+            LoginFailureKind.RiskBlocked.value: (
+                "provider_security_check",
+                "The provider requested an additional security check. Wait for its cooldown, then retry manually.",
+                "wait_then_retry",
+            ),
+            LoginFailureKind.RateLimited.value: (
+                "provider_login_cooldown",
+                "Provider login attempts are cooling down. Retry only after the displayed wait.",
+                "wait_then_retry",
+            ),
+        }
+        failure = failure_states.get(session.login_failure_kind)
+        if failure:
+            return {"state": failure[0], "guidance": failure[1], "action": failure[2]}
+        if session.login_failure_kind == LoginFailureKind.Transient.value:
+            detail = session.last_login_error.lower()
+            if "bridge" in detail:
+                return {
+                    "state": "browser_bridge_unavailable",
+                    "guidance": "The browser request bridge did not initialize. The runtime will retry after cooldown.",
+                    "action": "wait_then_retry",
+                }
+            if "page create" in detail or "new page" in detail:
+                return {
+                    "state": "browser_page_startup_failed",
+                    "guidance": "A browser page could not be created. Check the local browser runtime, then retry after cooldown.",
+                    "action": "wait_then_retry",
+                }
+            return {
+                "state": "login_transport_failure",
+                "guidance": "A temporary browser or network failure interrupted login. Retry after cooldown.",
+                "action": "wait_then_retry",
+            }
+        if session.login_failure_kind == LoginFailureKind.Unknown.value:
+            return {
+                "state": "login_state_unrecognized",
+                "guidance": "The provider login page did not match a known state. Review local diagnostics before retrying.",
+                "action": "review_then_retry",
+            }
+        if session.status == Status.Working.value:
+            return {
+                "state": "chat_in_progress",
+                "guidance": "This account is currently serving a chat request.",
+                "action": "wait",
+            }
+        if session.login_state and session.status == Status.Ready.value:
+            return {
+                "state": "ready",
+                "guidance": "The account is ready for new work.",
+                "action": "none",
+            }
+        if session.status == Status.Login.value:
+            return {
+                "state": "login_starting",
+                "guidance": "The browser sign-in flow is starting.",
+                "action": "wait",
+            }
+        if session.status == Status.Update.value:
+            if session.runtime_last_closed_at:
+                return {
+                    "state": "browser_runtime_recovery_needed",
+                    "guidance": "A browser page or context closed unexpectedly. Runtime recovery is required before chat resumes.",
+                    "action": "wait_then_retry",
+                }
+            return {
+                "state": "login_recovery_pending",
+                "guidance": "The account is waiting for login recovery.",
+                "action": "wait_then_retry",
+            }
+        return {
+            "state": "not_initialized",
+            "guidance": "The account has not completed browser initialization yet.",
+            "action": "wait",
+        }
 
 
     async def md2img(self,md: str):

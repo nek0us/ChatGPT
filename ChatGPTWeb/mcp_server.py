@@ -102,7 +102,9 @@ class McpServiceAdapter:
             accounts = [{"email": email} for email in status.get("account", []) if isinstance(email, str)]
         allowed = {
             "email", "status", "login_state", "available", "disabled", "disabled_until",
-            "gptplus", "conversation_count", "login_failure_kind", "last_login_error", "runtime",
+            "chat_rate_limited", "chat_rate_limited_until", "chat_rate_limit_source",
+            "gptplus", "conversation_count", "login_failure_kind", "runtime",
+            "operational_state", "operational_guidance", "recommended_action",
         }
         return {
             "accounts": [

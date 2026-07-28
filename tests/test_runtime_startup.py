@@ -234,6 +234,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime = self._runtime()
         runtime.Sessions = [Session(email="runtime@example.com", status=Status.Update.value)]
         runtime.Sessions[0].runtime_last_closed_source = "context"
+        runtime.Sessions[0].runtime_last_closed_at = datetime.now()
         runtime.Sessions[0].runtime_recovery_count = 2
         runtime.storage.update_conversation_index(
             "conversation-1", "runtime@example.com", "2026-01-01T00:00:00", "2026-01-01T00:00:00", 1,
@@ -246,6 +247,8 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["conversation_count"], 1)
         self.assertEqual(account["runtime"]["last_closed_source"], "context")
         self.assertEqual(account["runtime"]["recovery_count"], 2)
+        self.assertEqual(account["operational_state"], "browser_runtime_recovery_needed")
+        self.assertEqual(account["recommended_action"], "wait_then_retry")
 
     async def test_token_status_explains_manual_retry_for_a_permanent_login_failure(self):
         runtime = self._runtime()
@@ -261,6 +264,32 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["retry_mode"], "manual")
         self.assertIn("permanently unavailable", account["login_guidance"])
         self.assertEqual(account["retry_after_seconds"], 0)
+        self.assertEqual(account["operational_state"], "account_unavailable")
+        self.assertEqual(account["recommended_action"], "restore_account")
+
+    async def test_token_status_distinguishes_bridge_and_reauthentication_failures(self):
+        runtime = self._runtime()
+        runtime.Sessions = [
+            Session(
+                email="bridge@example.com",
+                status=Status.Update.value,
+                login_failure_kind="transient",
+                last_login_error="browser bridge initialization failed",
+            ),
+            Session(
+                email="reauth@example.com",
+                status=Status.Update.value,
+                login_failure_kind="transient",
+                force_fresh_login=True,
+            ),
+        ]
+
+        accounts = (await runtime.token_status())["accounts"]
+
+        self.assertEqual(accounts[0]["operational_state"], "browser_bridge_unavailable")
+        self.assertEqual(accounts[0]["recommended_action"], "wait_then_retry")
+        self.assertEqual(accounts[1]["operational_state"], "session_reauthentication_required")
+        self.assertEqual(accounts[1]["recommended_action"], "retry_login")
 
     async def test_token_status_exposes_process_local_usage_by_model(self):
         runtime = self._runtime()
