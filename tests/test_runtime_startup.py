@@ -58,6 +58,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         runtime.js_used = 0
         runtime.startup_timeout = 1
         runtime.ready_timeout = 1
+        runtime.chat_rate_limit_cooldown_seconds = 5 * 60 * 60
         runtime.control_host = "127.0.0.1"
         runtime.control_port = None
         runtime.control_api_key = None
@@ -427,6 +428,62 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(runtime._is_upstream_rate_limit_error(error))
         self.assertFalse(runtime._is_retryable_send_error(error, session))
+
+    def test_chat_rate_limit_prefers_an_upstream_retry_hint(self):
+        runtime = self._runtime()
+        session = Session(email="limited@example.com")
+        before = datetime.now()
+
+        runtime._mark_chat_rate_limited(
+            session,
+            'Too many requests. Please try again in 12 minutes.',
+        )
+
+        self.assertEqual(session.chat_rate_limit_source, "upstream_retry_hint")
+        self.assertGreaterEqual(
+            (session.chat_rate_limited_until - before).total_seconds(),
+            719,
+        )
+        self.assertLessEqual(
+            (session.chat_rate_limited_until - before).total_seconds(),
+            721,
+        )
+
+    def test_chat_rate_limit_uses_the_configured_fallback_window(self):
+        runtime = self._runtime()
+        runtime.chat_rate_limit_cooldown_seconds = 321
+        session = Session(email="limited@example.com")
+        before = datetime.now()
+
+        runtime._mark_chat_rate_limited(session, "rate limit reached")
+
+        self.assertEqual(session.chat_rate_limit_source, "configured_cooldown")
+        self.assertGreaterEqual(
+            (session.chat_rate_limited_until - before).total_seconds(),
+            320,
+        )
+        self.assertLessEqual(
+            (session.chat_rate_limited_until - before).total_seconds(),
+            322,
+        )
+
+    async def test_token_status_identifies_chat_quota_cooldown(self):
+        runtime = self._runtime()
+        session = Session(email="limited@example.com", status=Status.Ready.value, login_state=True)
+        session.mark_chat_rate_limited(
+            "rate limit reached",
+            cooldown_seconds=300,
+            source="configured_cooldown",
+        )
+        runtime.Sessions = [session]
+
+        status = await runtime.token_status()
+        account = status["accounts"][0]
+
+        self.assertFalse(account["available"])
+        self.assertTrue(account["chat_rate_limited"])
+        self.assertEqual(account["chat_rate_limit_source"], "configured_cooldown")
+        self.assertEqual(account["retry_mode"], "quota_wait")
 
     async def test_manual_disable_excludes_a_ready_session_from_new_requests(self):
         runtime = self._runtime()

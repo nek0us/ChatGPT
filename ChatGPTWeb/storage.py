@@ -154,6 +154,8 @@ class RuntimeStorage:
             "login_failure_kind": session.login_failure_kind,
             "last_login_error": session.last_login_error,
             "disabled_until": timestamp(session.disabled_until),
+            "chat_rate_limited_until": timestamp(session.chat_rate_limited_until),
+            "chat_rate_limit_source": session.chat_rate_limit_source,
             "manual_disabled": session.manual_disabled,
             "runtime_last_closed_source": session.runtime_last_closed_source,
             "runtime_last_closed_at": timestamp(session.runtime_last_closed_at),

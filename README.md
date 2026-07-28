@@ -234,13 +234,15 @@ Enable the optional loopback dashboard in the same runtime process. It starts be
 ```python
 chat = chatgpt(
     sessions=sessions,
+    # Use OpenAI's explicit retry hint when present; otherwise estimate a Free-tier window.
+    chat_rate_limit_cooldown_seconds=5 * 60 * 60,
     control_host="127.0.0.1",
     control_port=8765,
     control_api_key="local-only-secret",
 )
 ```
 
-The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, and model usage observed during the current process. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
+The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, model usage observed during the current process, and a distinct chat-quota cooldown state. When an upstream response includes a retry delay, that delay is used; otherwise `chat_rate_limit_cooldown_seconds` is an estimate. Observed usage is not a remaining ChatGPT quota value. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
 ### Local Console
 

@@ -5,6 +5,7 @@ import json
 import typing
 import base64
 import random
+import re
 import asyncio
 import threading
 import secrets
@@ -86,6 +87,7 @@ class chatgpt:
                  ready_timeout: int = 180,
                  startup_timeout: int = 60,
                  session_health_check_interval: int = 300,
+                 chat_rate_limit_cooldown_seconds: int = 5 * 60 * 60,
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
@@ -142,6 +144,11 @@ class chatgpt:
         if session_health_check_interval < 0:
             raise ValueError("session_health_check_interval must not be negative")
         self.session_health_check_interval = session_health_check_interval
+        if not 60 <= chat_rate_limit_cooldown_seconds <= 24 * 60 * 60:
+            raise ValueError(
+                "chat_rate_limit_cooldown_seconds must be between 60 and 86400"
+            )
+        self.chat_rate_limit_cooldown_seconds = chat_rate_limit_cooldown_seconds
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -1156,12 +1163,60 @@ class chatgpt:
             "status: 429",
         ))
 
+    @staticmethod
+    def _upstream_rate_limit_cooldown_seconds(error: Exception | str) -> int | None:
+        """Extract an explicit upstream retry delay without trusting arbitrary text."""
+        text = str(error).lower()
+        numeric_patterns = (
+            r'"retry_after(?:_seconds)?"\s*[:=]\s*"?(\d+(?:\.\d+)?)"?',
+            r"retry_after(?:_seconds)?\s*[:=]\s*(\d+(?:\.\d+)?)",
+        )
+        for pattern in numeric_patterns:
+            match = re.search(pattern, text)
+            if match:
+                return max(60, min(int(float(match.group(1))), 24 * 60 * 60))
+
+        duration = re.search(
+            r"(?:try again|retry|reset(?:s)?|available)\s*(?:after|in)\s*"
+            r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)",
+            text,
+        )
+        if not duration:
+            return None
+        value = float(duration.group(1))
+        unit = duration.group(2)
+        multiplier = 3600 if unit.startswith(("hour", "hr")) else 60 if unit.startswith(("minute", "min")) else 1
+        return max(60, min(int(value * multiplier), 24 * 60 * 60))
+
     def _mark_chat_rate_limited(self, session: Session, error: Exception | str):
-        session.mark_chat_rate_limited(str(error), cooldown_seconds=3600)
+        upstream_cooldown = self._upstream_rate_limit_cooldown_seconds(error)
+        cooldown_seconds = upstream_cooldown or getattr(
+            self,
+            "chat_rate_limit_cooldown_seconds",
+            5 * 60 * 60,
+        )
+        source = "upstream_retry_hint" if upstream_cooldown else "configured_cooldown"
+        session.mark_chat_rate_limited(
+            str(error),
+            cooldown_seconds=cooldown_seconds,
+            source=source,
+        )
+        save_session_state(session, self.storage, self.logger)
+        self._record_activity(
+            session.email,
+            "chat_rate_limited",
+            f"new chats paused for about {cooldown_seconds}s ({source})",
+        )
         self.logger.warning(
             f"{session.email} upstream chat rate limit reached; "
-            "temporarily excluding this account from new conversations"
+            f"temporarily excluding this account from new conversations for about {cooldown_seconds}s"
         )
+
+    def _clear_chat_rate_limit(self, session: Session) -> None:
+        if not session.chat_rate_limited_until:
+            return
+        session.clear_chat_rate_limit()
+        save_session_state(session, self.storage, self.logger)
 
     @staticmethod
     def _is_expired_stream_auth_error(error: Exception | str) -> bool:
@@ -2507,7 +2562,7 @@ class chatgpt:
                 self.logger.debug(f"{session.email} will send msg by browser fetch bridge")
                 msg_data = await self._send_msg_by_browser_fetch(msg_data, session, attempt=attempt)
                 if msg_data.status:
-                    session.clear_chat_rate_limit()
+                    self._clear_chat_rate_limit(session)
                     msg_data.from_email = session.email
                     if session.login_state is False:
                         session.login_state = True
@@ -2916,7 +2971,7 @@ class chatgpt:
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:
-            session.clear_chat_rate_limit()
+            self._clear_chat_rate_limit(session)
             if session.login_state is False:
                 session.login_state = True
             if msg_data.persist_history:
@@ -3308,7 +3363,7 @@ class chatgpt:
                     raise
 
             if msg_data.status:
-                session.clear_chat_rate_limit()
+                self._clear_chat_rate_limit(session)
                 if session.login_state is False:
                     session.login_state = True
                 if msg_data.persist_history:
@@ -3635,6 +3690,7 @@ class chatgpt:
                     session.chat_rate_limited_until.isoformat()
                     if session.chat_rate_limited_until else ""
                 ),
+                "chat_rate_limit_source": session.chat_rate_limit_source,
                 "manual_disabled": session.manual_disabled,
                 "login_retry_pending": retry_pending,
                 "can_retry_login": bool(session.email and session.password),
@@ -3695,6 +3751,8 @@ class chatgpt:
             return "Disabled by operator.", "enable"
         if retry_pending:
             return "Manual login retry is running.", "wait"
+        if session.is_chat_rate_limited():
+            return "Chat message limit reached. New conversations wait until the estimated reset.", "quota_wait"
         if session.login_state and session.status == Status.Ready.value:
             return "Ready.", "none"
 

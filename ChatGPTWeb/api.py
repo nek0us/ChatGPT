@@ -1000,10 +1000,16 @@ def restore_session_state(session: Session, storage: RuntimeStorage, logger):
         session.max_login_failures = int(record.get("max_login_failures", session.max_login_failures))
         session.login_failure_kind = str(record.get("login_failure_kind", ""))
         session.last_login_error = str(record.get("last_login_error", ""))
+        session.chat_rate_limit_source = str(record.get("chat_rate_limit_source", ""))
         session.manual_disabled = bool(record.get("manual_disabled", False))
         session.runtime_last_closed_source = str(record.get("runtime_last_closed_source", ""))
         session.runtime_recovery_count = int(record.get("runtime_recovery_count", 0))
-        for field_name in ("disabled_until", "runtime_last_closed_at", "runtime_last_recovered_at"):
+        for field_name in (
+            "disabled_until",
+            "chat_rate_limited_until",
+            "runtime_last_closed_at",
+            "runtime_last_recovered_at",
+        ):
             value = record.get(field_name)
             if isinstance(value, str) and value:
                 try:

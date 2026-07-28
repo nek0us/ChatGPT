@@ -151,6 +151,7 @@ class Session:
     last_login_error: str = ""
     disabled_until: Optional[datetime.datetime] = None
     chat_rate_limited_until: Optional[datetime.datetime] = None
+    chat_rate_limit_source: str = ""
     chat_rate_limit_error: str = ""
     manual_disabled: bool = False
     runtime_last_closed_source: str = ""
@@ -188,14 +189,21 @@ class Session:
             and datetime.datetime.now() < self.chat_rate_limited_until
         )
 
-    def mark_chat_rate_limited(self, details: str = "", cooldown_seconds: int = 3600):
+    def mark_chat_rate_limited(
+            self,
+            details: str = "",
+            cooldown_seconds: int = 3600,
+            source: str = "",
+    ):
         self.chat_rate_limited_until = datetime.datetime.now() + datetime.timedelta(
             seconds=max(1, cooldown_seconds)
         )
+        self.chat_rate_limit_source = source
         self.chat_rate_limit_error = details[:1000]
 
     def clear_chat_rate_limit(self):
         self.chat_rate_limited_until = None
+        self.chat_rate_limit_source = ""
         self.chat_rate_limit_error = ""
 
     def mark_login_success(self):
