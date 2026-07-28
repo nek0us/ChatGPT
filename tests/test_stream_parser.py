@@ -603,6 +603,38 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked.status, 200)
         self.assertEqual(revoked_key.status, 401)
 
+    async def test_dynamic_client_key_enforces_its_concurrency_limit(self):
+        admin_headers = {"Authorization": "Bearer test-key"}
+        created = await self.client.post(
+            "/v1/keys",
+            json={"label": "One request at a time", "scopes": ["chat"], "max_concurrency": 1},
+            headers=admin_headers,
+        )
+        client_headers = {"Authorization": f"Bearer {(await created.json())['secret']}"}
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original_continue_chat = self.backend.continue_chat
+
+        async def blocked_continue_chat(msg_data):
+            entered.set()
+            await release.wait()
+            return await original_continue_chat(msg_data)
+
+        self.backend.continue_chat = blocked_continue_chat
+        first = asyncio.create_task(self.client.post(
+            "/v1/chat/completions", json={"prompt": "first"}, headers=client_headers,
+        ))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        saturated = await self.client.post(
+            "/v1/chat/completions", json={"prompt": "second"}, headers=client_headers,
+        )
+        release.set()
+        completed = await first
+
+        self.assertEqual(created.status, 201)
+        self.assertEqual(saturated.status, 429)
+        self.assertEqual(completed.status, 200)
+
     async def test_activity_route_is_authenticated_and_bounded(self):
         headers = {"Authorization": "Bearer test-key"}
         unauthorized = await self.client.get("/v1/activity")
