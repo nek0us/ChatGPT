@@ -222,6 +222,50 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         recovered_page.goto.assert_awaited_once_with("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
         self.assertEqual(session.status, "")
 
+    async def test_load_page_recreates_context_after_session_probe_exhaustion(self):
+        runtime = self._runtime()
+        runtime.begin_sleep_time = False
+        runtime.save_screen = False
+        runtime.httpx_status = False
+        original_page = _Page()
+        original_page.evaluate = AsyncMock(return_value="test-agent")
+        recovered_page = _Page()
+        session = Session(
+            email="refresh@example.com",
+            password="password",
+            access_token="stale-token",
+            page=original_page,
+            browser_contexts=object(),
+            status=Status.Update.value,
+            session_refresh_recovery_needed=True,
+        )
+
+        async def recover(_session):
+            session.page = recovered_page
+            return True
+
+        async def auth(*_args, **_kwargs):
+            session.access_token = "new-token"
+            session.mark_login_success()
+
+        runtime._recover_session_context_for_bridge = AsyncMock(side_effect=recover)
+        runtime._initialize_page_bridge_with_recovery = AsyncMock(return_value=True)
+        runtime._refresh_account_plan = AsyncMock()
+        runtime._save_auth_state = AsyncMock()
+        runtime._schedule_session_health_probe = lambda _session: None
+
+        with patch("ChatGPTWeb.ChatGPTWeb.retry_keep_alive", new=AsyncMock(return_value=session)), patch(
+            "ChatGPTWeb.ChatGPTWeb.Auth", new=AsyncMock(side_effect=auth)
+        ):
+            await runtime.load_page(session, immediate=True)
+
+        runtime._recover_session_context_for_bridge.assert_awaited_once_with(session)
+        self.assertFalse(session.session_refresh_recovery_needed)
+        self.assertEqual(session.status, Status.Ready.value)
+        recovered_page.goto.assert_awaited_once_with(
+            "https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded"
+        )
+
     async def test_context_recovery_suppresses_intentional_close_diagnostics(self):
         runtime = self._runtime()
         runtime._closing = False

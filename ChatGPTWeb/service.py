@@ -355,7 +355,7 @@ class ChatService:
         backend_manage = getattr(self._backend, "manage", None)
         start_task = getattr(self._backend, "_start_task", None)
         if isinstance(backend_manage, dict) and backend_manage.get("start"):
-            runtime_state = "ready"
+            runtime_state = "ready" if available else "degraded"
         elif start_task is not None and not start_task.done():
             runtime_state = "starting"
         elif start_task is not None and start_task.done():

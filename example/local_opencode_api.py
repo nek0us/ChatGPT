@@ -15,6 +15,9 @@ STORAGE_DIR = Path(os.getenv("CHATGPTWEB_STORAGE_DIR", "data/chatgptweb"))
 HOST = os.getenv("CHATGPTWEB_HTTP_HOST", "127.0.0.1")
 PORT = int(os.getenv("CHATGPTWEB_HTTP_PORT", "8000"))
 API_KEY = os.getenv("CHATGPTWEB_HTTP_API_KEY", "")
+CONTROL_HOST = os.getenv("CHATGPTWEB_CONTROL_HOST", "127.0.0.1")
+CONTROL_PORT = int(os.getenv("CHATGPTWEB_CONTROL_PORT", "8765"))
+CONTROL_API_KEY = os.getenv("CHATGPTWEB_CONTROL_API_KEY", API_KEY)
 
 
 def _enabled(name: str, default: bool) -> bool:
@@ -49,6 +52,9 @@ def main() -> None:
         logger_level=os.getenv("CHATGPTWEB_LOG_LEVEL", "INFO"),
         stdout_flush=True,
         local_js=_enabled("CHATGPTWEB_LOCAL_JS", False),
+        control_host=CONTROL_HOST,
+        control_port=CONTROL_PORT,
+        control_api_key=CONTROL_API_KEY,
     )
     app = create_http_app(
         ChatService(runtime),
@@ -65,6 +71,12 @@ def main() -> None:
             await asyncio.wrap_future(runtime._start_task)
         if not runtime.manage.get("start"):
             raise RuntimeError("ChatGPTWeb browser runtime did not finish starting")
+        health = await ChatService(runtime).get_runtime_health()
+        if health["readiness"] != "ready":
+            print(
+                "ChatGPTWeb runtime started in degraded mode: no account is ready yet. "
+                "The HTTP API stays online while login recovery continues."
+            )
 
     async def close_runtime(_: web.Application) -> None:
         await runtime.close()

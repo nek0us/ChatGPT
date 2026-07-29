@@ -702,6 +702,16 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
     if retry != 2:
         logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
+        if session.status != Status.Stop.value:
+            session.status = Status.Update.value
+            session.login_state = False
+            session.login_state_first = False
+            session.login_failure_kind = LoginFailureKind.Transient.value
+            session.last_login_error = "session refresh navigation did not complete after retries"
+            session.session_refresh_recovery_needed = True
+            logger.warning(
+                f"{session.email} session refresh exhausted; recreate browser context before relogin"
+            )
         logger.debug(f"{session.email} stop flush")
         return session
     retry -= 1
@@ -710,7 +720,10 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
         page = await session.browser_contexts.new_page() # type: ignore
         try:
             async with page.expect_response(url, timeout=40000) as a:
-                res = await page.goto(url, timeout=40000)
+                # This endpoint is a small JSON document. Waiting for the full
+                # load event can hang behind unrelated browser resources even
+                # after the response needed for auth refresh already arrived.
+                res = await page.goto(url, timeout=40000, wait_until="commit")
             res = await a.value
 
             if res.status == 403 and res.url == url:

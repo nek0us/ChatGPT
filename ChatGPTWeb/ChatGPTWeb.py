@@ -983,6 +983,21 @@ class chatgpt:
                     self.save_screen,
                     self.logger,
                 )
+            if session.session_refresh_recovery_needed:
+                self.logger.warning(
+                    f"context {session.email} recreating after exhausted session refresh"
+                )
+                if not await self._recover_session_context_for_bridge(session):
+                    session.mark_login_failure(
+                        kind=LoginFailureKind.Transient.value,
+                        details="could not recreate browser context after session refresh timeout",
+                        cooldown_seconds=60,
+                    )
+                    return
+                session.session_refresh_recovery_needed = False
+                page = session.page
+                if not page:
+                    return
             try:
                 await page.goto("https://chatgpt.com/", timeout=20000, wait_until="domcontentloaded")
             except Exception as e:

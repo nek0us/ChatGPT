@@ -163,6 +163,10 @@ class Session:
     # Only set after Sentinel has explicitly rejected the current access token.
     # It is runtime-only: persisted browser state remains available for normal starts.
     force_fresh_login: bool = False
+    # A failed /api/auth/session probe can leave the Firefox page responsive
+    # enough to exist while no longer usable for navigation. Keep this marker
+    # in memory so the runtime recreates that context before attempting Auth.
+    session_refresh_recovery_needed: bool = False
     input_session_token = session_token
     
     def __post_init__(self):
