@@ -1,0 +1,20 @@
+[Unit]
+Description=ChatGPTWeb shared core
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__WORKDIR__
+ExecStart=__PYTHON__ -m ChatGPTWeb.core_server --env-file __ENV_FILE__
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

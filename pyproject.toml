@@ -13,6 +13,9 @@ readme = "README.md"
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
 
+[project.scripts]
+chatgptweb-core = "ChatGPTWeb.core_server:main"
+
 [project.urls]
 Homepage = "https://github.com/nek0us/ChatGPT"
 Repository = "https://github.com/nek0us/ChatGPT"
