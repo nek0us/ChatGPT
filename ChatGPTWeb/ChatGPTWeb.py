@@ -395,7 +395,19 @@ class chatgpt:
         except Exception as error:
             self.logger.warning(f"{session.email} could not save local auth state: {error}")
 
-    async def _new_page_with_timeout(self, context, label: str):
+    async def _cleanup_pending_page_creation(self, context, page_task, known_pages: set[int]) -> None:
+        if not page_task.done():
+            page_task.cancel()
+            await asyncio.gather(page_task, return_exceptions=True)
+        for page in getattr(context, "pages", []):
+            if id(page) in known_pages or page.is_closed():
+                continue
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def _new_page_with_timeout(self, context, label: str, *, retry_after_initial_wait: bool = False):
         """Create a page without leaking a late Playwright task on startup stalls."""
         timeout = self.startup_timeout
         known_pages = {id(page) for page in getattr(context, "pages", [])}
@@ -408,19 +420,13 @@ class chatgpt:
                 f"{label}_page_create is still pending; "
                 "if Firefox is blank, bring its window to the foreground"
             )
+            if retry_after_initial_wait:
+                await self._cleanup_pending_page_creation(context, page_task, known_pages)
+                raise TimeoutError(f"{label}_page_create did not respond within {initial_wait}s")
         try:
             return await asyncio.wait_for(page_task, timeout=timeout - initial_wait)
         except TimeoutError as error:
-            if not page_task.done():
-                page_task.cancel()
-                await asyncio.gather(page_task, return_exceptions=True)
-            for page in getattr(context, "pages", []):
-                if id(page) in known_pages or page.is_closed():
-                    continue
-                try:
-                    await page.close()
-                except Exception:
-                    pass
+            await self._cleanup_pending_page_creation(context, page_task, known_pages)
             self.logger.warning(f"{label}_page_create timeout after {timeout}s")
             raise TimeoutError(f"{label}_page_create timeout after {timeout}s") from error
 
@@ -463,17 +469,55 @@ class chatgpt:
         self._record_activity(session.email, "runtime_closed", f"{source} closed unexpectedly")
         self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Update")
 
-    async def _recover_session_context_for_bridge(self, session: Session) -> bool:
-        """Replace one stuck startup context without treating it as a login failure."""
+    async def _recover_session_context_for_bridge(
+        self,
+        session: Session,
+        *,
+        quick_page_recovery: bool = False,
+    ) -> bool:
+        """Replace one unusable browser context without treating it as a login failure."""
         await self._discard_session_context(session)
         try:
-            recovered = await self._ensure_session_runtime(session)
+            recovered = await self._ensure_session_runtime(
+                session,
+                quick_page_recovery=quick_page_recovery,
+            )
         except Exception as error:
             self.logger.warning(f"{session.email} bridge context recovery failed: {error}")
             return False
         if recovered:
             self._record_activity(session.email, "bridge_context_recovery", "recreated context after bridge timeout")
         return recovered
+
+    async def _create_startup_page(self, session: Session) -> Page:
+        """Create the initial page, replacing a context once when Firefox stalls."""
+        context = session.browser_contexts
+        if not context:
+            raise RuntimeError("startup browser context is missing")
+        try:
+            page = await self._new_page_with_timeout(
+                context,
+                f"startup_{session.email}",
+                retry_after_initial_wait=True,
+            )
+        except TimeoutError as error:
+            # Firefox can occasionally leave a newly-created context unable to
+            # create its first page.  Reusing that context only preserves the
+            # stall, so give the account one clean context before cooling it down.
+            self.logger.warning(
+                f"{session.email} startup page creation timed out; recreating browser context once"
+            )
+            if not await self._recover_session_context_for_bridge(
+                session,
+                quick_page_recovery=True,
+            ):
+                raise RuntimeError("startup context recovery failed") from error
+            page = session.page
+            if not page:
+                raise RuntimeError("startup context recovery created no page") from error
+        session.page = page
+        self._watch_page_events(session, page)
+        return page
 
     def _watch_page_events(self, session: Session, page: Page, label: str = "page"):
         page_id = id(page)
@@ -497,7 +541,12 @@ class chatgpt:
             if page == session.page:
                 self._watch_page_events(session, page)
 
-    async def _ensure_session_runtime(self, session: Session) -> bool:
+    async def _ensure_session_runtime(
+        self,
+        session: Session,
+        *,
+        quick_page_recovery: bool = False,
+    ) -> bool:
         if self._closing or session.status == Status.Stop.value:
             return False
         browser = getattr(self, "browser", None)
@@ -523,7 +572,11 @@ class chatgpt:
         page = session.page
         if not page or page.is_closed():
             self.logger.warning(f"{session.email} runtime page missing or closed, recreate it")
-            session.page = await self._new_page_with_timeout(session.browser_contexts, f"runtime_{session.email}") # type: ignore
+            session.page = await self._new_page_with_timeout(
+                session.browser_contexts,
+                f"runtime_{session.email}",
+                retry_after_initial_wait=quick_page_recovery,
+            ) # type: ignore
             recovered = True
             self._watch_page_events(session, session.page)
 
@@ -656,19 +709,16 @@ class chatgpt:
                 self._watch_context_events(session)
             self.logger.debug(f"{session.email} begin login when it start")
             if session.auth_state_loaded and session.browser_contexts:
-                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
-                self._watch_page_events(session, session.page)
+                await self._create_startup_page(session)
                 session.status = Status.Login.value
             elif session.session_token and session.browser_contexts:
                 token = session.session_token
                 await session.browser_contexts.add_cookies([token]) # type: ignore
-                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
-                self._watch_page_events(session, session.page)
+                await self._create_startup_page(session)
                 session.status = Status.Login.value
 
             elif session.email and session.password and session.browser_contexts:
-                session.page = await self._new_page_with_timeout(session.browser_contexts, f"startup_{session.email}")
-                self._watch_page_events(session, session.page)
+                await self._create_startup_page(session)
                 await Auth(session, self.logger, self.verification_broker)
             else:
                 session.mark_login_failure(

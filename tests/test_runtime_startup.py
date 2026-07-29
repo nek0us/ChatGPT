@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
@@ -161,6 +161,34 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.is_login_disabled())
         self.assertIsNone(session.browser_contexts)
+
+    async def test_startup_page_creation_recreates_context_once_before_login(self):
+        runtime = self._runtime()
+        runtime.begin_sleep_time = False
+        session = Session(
+            email="startup@example.com",
+            password="password",
+            browser_contexts=object(),
+        )
+        recovered_page = _Page()
+
+        async def recover(_session, **_kwargs):
+            session.page = recovered_page
+            return True
+
+        runtime._new_page_with_timeout = AsyncMock(side_effect=TimeoutError("page create timeout"))
+        runtime._recover_session_context_for_bridge = AsyncMock(side_effect=recover)
+        runtime._watch_page_events = Mock()
+
+        with patch("ChatGPTWeb.ChatGPTWeb.Auth", new=AsyncMock()):
+            await runtime._chatgpt__login(session)
+
+        runtime._recover_session_context_for_bridge.assert_awaited_once_with(
+            session,
+            quick_page_recovery=True,
+        )
+        self.assertIs(session.page, recovered_page)
+        self.assertFalse(session.is_login_disabled())
 
     async def test_bridge_refuses_to_inject_into_a_blank_page(self):
         page = _BlankPage()
