@@ -519,6 +519,46 @@ class chatgpt:
         self._watch_page_events(session, page)
         return page
 
+    @staticmethod
+    def _needs_startup_browser_relaunch(session: Session) -> bool:
+        if (
+            session.status != Status.Update.value
+            or session.login_failure_kind != LoginFailureKind.Transient.value
+        ):
+            return False
+        details = session.last_login_error.lower()
+        return "page_create" in details or "startup context recovery" in details
+
+    async def _retry_startup_after_browser_stall(self) -> bool:
+        """Relaunch Firefox once when every initial login hit a page-creation stall."""
+        if any(session.status == Status.Ready.value for session in self.Sessions):
+            return False
+        candidates = [
+            session for session in self.Sessions
+            if self._needs_startup_browser_relaunch(session)
+        ]
+        if not candidates:
+            return False
+
+        self.logger.warning(
+            "all available startup accounts stalled while creating their first page; "
+            "relaunching Firefox once"
+        )
+        for session in self.Sessions:
+            await self._discard_session_context(session)
+        self._watched_contexts.clear()
+        self._watched_pages.clear()
+        await self._cleanup_browser_startup()
+        await self._launch_browser_with_retry(retries=1)
+        for session in candidates:
+            # This is an immediate recovery of the same transient startup
+            # failure, not an ordinary scheduled retry.  Keeping the first
+            # attempt's cooldown would make retry_keep_alive skip the fresh
+            # Firefox page we just created.
+            session.disabled_until = None
+        await asyncio.gather(*(self.__login(session) for session in candidates), return_exceptions=True)
+        return True
+
     def _watch_page_events(self, session: Session, page: Page, label: str = "page"):
         page_id = id(page)
         if page_id in self._watched_pages:
@@ -773,6 +813,7 @@ class chatgpt:
             self.logger.debug(f"{session.email} will auth_task")
             auth_timeout = max(300, self.verification_broker.default_timeout_seconds + 60)
             await asyncio.wait_for(asyncio.gather(*auth_tasks, return_exceptions=True), timeout=auth_timeout)
+            await self._retry_startup_after_browser_stall()
             # load page
             load_tasks = [
                 self.load_page(session)

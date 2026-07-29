@@ -190,6 +190,34 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(session.page, recovered_page)
         self.assertFalse(session.is_login_disabled())
 
+    async def test_startup_browser_relaunches_once_after_all_page_creation_stalls(self):
+        runtime = self._runtime()
+        session = Session(
+            email="startup@example.com",
+            status=Status.Update.value,
+            login_failure_kind="transient",
+            last_login_error="login task failed: startup context recovery failed",
+            disabled_until=datetime.now() + timedelta(minutes=5),
+        )
+        runtime.Sessions = [session]
+        runtime._watched_contexts = {1}
+        runtime._watched_pages = {2}
+        runtime._discard_session_context = AsyncMock()
+        runtime._cleanup_browser_startup = AsyncMock()
+        runtime._launch_browser_with_retry = AsyncMock()
+        runtime._chatgpt__login = AsyncMock()
+
+        retried = await runtime._retry_startup_after_browser_stall()
+
+        self.assertTrue(retried)
+        runtime._discard_session_context.assert_awaited_once_with(session)
+        runtime._cleanup_browser_startup.assert_awaited_once()
+        runtime._launch_browser_with_retry.assert_awaited_once_with(retries=1)
+        runtime._chatgpt__login.assert_awaited_once_with(session)
+        self.assertEqual(runtime._watched_contexts, set())
+        self.assertEqual(runtime._watched_pages, set())
+        self.assertIsNone(session.disabled_until)
+
     async def test_bridge_refuses_to_inject_into_a_blank_page(self):
         page = _BlankPage()
 
