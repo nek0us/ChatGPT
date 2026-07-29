@@ -12,7 +12,7 @@ from .storage import RuntimeStorage
 
 
 _VERSION = 1
-_SCOPES = frozenset({"chat", "agent"})
+_SCOPES = frozenset({"chat", "agent", "bot"})
 
 
 def _timestamp() -> str:
@@ -72,7 +72,7 @@ class ApiKeyStore:
             raise ValueError("key scopes must be a non-empty array of strings")
         scopes = sorted(set(value))
         if not set(scopes).issubset(_SCOPES):
-            raise ValueError("key scopes may contain only 'chat' and 'agent'")
+            raise ValueError("key scopes may contain only 'chat', 'agent', and 'bot'")
         return scopes
 
     @staticmethod

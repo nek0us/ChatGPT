@@ -3337,6 +3337,16 @@ class chatgpt:
         self.logger.debug(f"session {session.email} begin work")
         return session
 
+    async def assert_conversation_client_access(self, conversation_id: str, client_id: str) -> None:
+        """Reject remote reads of conversations owned by another client key."""
+        if not conversation_id or not client_id:
+            return
+        owner = self.storage.conversation_client_id(conversation_id)
+        if owner and owner != client_id:
+            raise PermissionError("this conversation belongs to another API client")
+        if not owner and self.storage.conversation_exists(conversation_id):
+            raise PermissionError("this legacy conversation is not assigned to an API client")
+
     def _request_scheduler_capacity(self) -> int:
         """Use the configured account pool as the shared admission capacity."""
         sessions = getattr(self, "Sessions", [])
@@ -3798,6 +3808,18 @@ class chatgpt:
         """
         self.personality.add_dict_to_list(personality) # type: ignore
         self.storage.save_personas(self.personality.init_list) # type: ignore
+
+    async def list_personas(self) -> List[Dict[str, str]]:
+        """Return stored personas without exposing runtime/session state."""
+        if not self.personality:
+            return []
+        return [
+            {"name": item["name"], "value": item["value"]}
+            for item in self.personality.init_list
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("value"), str)
+        ]
 
     async def show_personality_list(self):
         """show_personality_list

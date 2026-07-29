@@ -128,6 +128,7 @@ class ChatStreamParserTests(unittest.TestCase):
 class _FakeBackend:
     def __init__(self):
         self.sent = []
+        self.personas = {"assistant": "stay concise"}
 
     async def continue_chat(self, msg_data):
         self.sent.append(msg_data)
@@ -146,7 +147,17 @@ class _FakeBackend:
         return await self.continue_chat(msg_data)
 
     async def get_persona_prompt(self, name):
-        return {"assistant": "stay concise"}.get(name, "")
+        return self.personas.get(name, "")
+
+    async def add_personality(self, personality):
+        self.personas[personality["name"]] = personality["value"]
+
+    async def del_personality(self, name):
+        self.personas.pop(name, None)
+        return ""
+
+    async def list_personas(self):
+        return [{"name": name, "value": value} for name, value in self.personas.items()]
 
     async def back_chat_from_input(self, msg_data):
         msg_data.msg_send = f"rewind:{msg_data.msg_send}"
@@ -560,6 +571,8 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health_payload["liveness"], "ok")
         self.assertEqual(health_payload["readiness"], "not_ready")
         self.assertEqual(health_payload["accounts"]["configured"], 1)
+        self.assertIn("responses", health_payload["api"]["capabilities"])
+        self.assertIn("bot_bridge", health_payload["api"]["capabilities"])
 
     async def test_dynamic_client_key_is_scoped_rotatable_and_revocable(self):
         admin_headers = {"Authorization": "Bearer test-key"}
@@ -634,6 +647,128 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.status, 201)
         self.assertEqual(saturated.status, 429)
         self.assertEqual(completed.status, 200)
+
+    async def test_responses_api_continues_server_side_conversation(self):
+        headers = {"Authorization": "Bearer test-key"}
+        first = await self.client.post(
+            "/v1/responses",
+            json={"model": "auto", "input": "first turn"},
+            headers=headers,
+        )
+        first_payload = await first.json()
+        second = await self.client.post(
+            "/v1/responses",
+            json={"input": "second turn", "previous_response_id": first_payload["id"]},
+            headers=headers,
+        )
+        second_payload = await second.json()
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        self.assertEqual(first_payload["object"], "response")
+        self.assertEqual(second_payload["previous_response_id"], first_payload["id"])
+        self.assertEqual(second_payload["output_text"], "service response")
+        self.assertEqual(self.backend.sent[-1].msg_send, "second turn")
+        self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-service")
+
+    async def test_responses_api_rejects_another_dynamic_client_cursor(self):
+        admin_headers = {"Authorization": "Bearer test-key"}
+        created = []
+        for label in ("client one", "client two"):
+            response = await self.client.post(
+                "/v1/keys", json={"label": label, "scopes": ["chat"]}, headers=admin_headers,
+            )
+            created.append(await response.json())
+        first = await self.client.post(
+            "/v1/responses",
+            json={"input": "private turn"},
+            headers={"Authorization": f"Bearer {created[0]['secret']}"},
+        )
+        rejected = await self.client.post(
+            "/v1/responses",
+            json={"input": "intrude", "previous_response_id": (await first.json())["id"]},
+            headers={"Authorization": f"Bearer {created[1]['secret']}"},
+        )
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(rejected.status, 403)
+
+    async def test_responses_api_streams_response_events(self):
+        response = await self.client.post(
+            "/v1/responses",
+            json={"input": "stream this", "stream": True},
+            headers={"Authorization": "Bearer test-key"},
+        )
+        body = await response.text()
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("event: response.created", body)
+        self.assertIn("event: response.output_text.delta", body)
+        self.assertIn("event: response.completed", body)
+
+    async def test_bot_remote_protocol_uses_a_scoped_priority_lane(self):
+        admin_headers = {"Authorization": "Bearer test-key"}
+        created = await self.client.post(
+            "/v1/keys",
+            json={"label": "bot bridge", "scopes": ["bot"], "max_concurrency": 1},
+            headers=admin_headers,
+        )
+        key_headers = {"Authorization": f"Bearer {(await created.json())['secret']}"}
+        capabilities = await self.client.get("/v1/bot/capabilities", headers=key_headers)
+        chat = await self.client.post(
+            "/v1/bot/chat", json={"prompt": "bot turn"}, headers=key_headers,
+        )
+        history = await self.client.post(
+            "/v1/bot/history", json={"conversation_id": "conversation-service"}, headers=key_headers,
+        )
+        chat_key = await self.client.post(
+            "/v1/keys", json={"label": "chat only", "scopes": ["chat"]}, headers=admin_headers,
+        )
+        denied = await self.client.get(
+            "/v1/bot/capabilities",
+            headers={"Authorization": f"Bearer {(await chat_key.json())['secret']}"},
+        )
+
+        self.assertEqual(capabilities.status, 200)
+        self.assertIn("stream", (await capabilities.json())["capabilities"])
+        self.assertEqual(chat.status, 200)
+        self.assertTrue((await chat.json())["ok"])
+        self.assertEqual(self.backend.sent[-1].client_id.split(":", 1)[0], "api")
+        self.assertEqual(self.backend.sent[-1].request_priority, 10)
+        self.assertEqual(history.status, 200)
+        self.assertEqual(denied.status, 403)
+
+    async def test_bot_personas_are_isolated_by_dynamic_key(self):
+        admin_headers = {"Authorization": "Bearer test-key"}
+        created = []
+        for label in ("bot one", "bot two"):
+            response = await self.client.post(
+                "/v1/keys", json={"label": label, "scopes": ["bot"]}, headers=admin_headers,
+            )
+            created.append(await response.json())
+        first = {"Authorization": f"Bearer {created[0]['secret']}"}
+        second = {"Authorization": f"Bearer {created[1]['secret']}"}
+
+        stored = await self.client.put(
+            "/v1/bot/personas", json={"name": "role", "value": "one prompt"}, headers=first,
+        )
+        listed_first = await self.client.get("/v1/bot/personas", headers=first)
+        listed_second = await self.client.get("/v1/bot/personas", headers=second)
+        fetched_first = await self.client.post("/v1/bot/persona", json={"name": "role"}, headers=first)
+        fetched_second = await self.client.post("/v1/bot/persona", json={"name": "role"}, headers=second)
+        started = await self.client.post(
+            "/v1/bot/chat",
+            json={"prompt": "role", "operation": "start_persona"},
+            headers=first,
+        )
+
+        self.assertEqual(stored.status, 200)
+        self.assertEqual((await listed_first.json())["personas"], [{"name": "role", "value": "one prompt"}])
+        self.assertEqual((await listed_second.json())["personas"], [])
+        self.assertEqual((await fetched_first.json())["prompt"], "one prompt")
+        self.assertEqual((await fetched_second.json())["prompt"], "")
+        self.assertEqual(started.status, 200)
+        self.assertIn(f"api:{created[0]['key']['id']}:role", self.backend.sent[-1].msg_send)
 
     async def test_activity_route_is_authenticated_and_bounded(self):
         headers = {"Authorization": "Bearer test-key"}

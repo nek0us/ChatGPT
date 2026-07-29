@@ -127,6 +127,12 @@ class ChatBackend(Protocol):
 
     async def get_activity(self, limit: int = 50) -> Dict[str, Any]: ...
 
+    async def add_personality(self, personality: Dict[str, str]) -> None: ...
+
+    async def del_personality(self, name: str) -> str: ...
+
+    async def list_personas(self) -> List[Dict[str, str]]: ...
+
 
 StreamCallback = Callable[[ChatStreamEvent], Union[None, Awaitable[None]]]
 
@@ -258,6 +264,14 @@ class ChatService:
     async def get_history(self, conversation_id: str) -> List[Dict[str, Any]]:
         """Return the repository-backed history for a known conversation."""
         return await self._backend.show_chat_history(MsgData(conversation_id=conversation_id))
+
+    async def assert_conversation_access(self, conversation_id: str, client_id: str) -> None:
+        """Ask capable backends to enforce a remote client's conversation boundary."""
+        checker = getattr(self._backend, "assert_conversation_client_access", None)
+        if checker is not None:
+            result = checker(conversation_id, client_id)
+            if inspect.isawaitable(result):
+                await result
 
     async def get_persona_prompt(self, name: str) -> str:
         """Return a stored persona prompt without exposing backend storage objects."""
@@ -396,3 +410,15 @@ class ChatService:
             for account in account_statuses
         ]
         return {"source": "observed_upstream", "accounts": accounts}
+
+    async def upsert_persona(self, name: str, value: str) -> None:
+        """Store one persona for a trusted adapter namespace."""
+        await self._backend.add_personality({"name": name, "value": value})
+
+    async def delete_persona(self, name: str) -> None:
+        """Remove one persona belonging to a trusted adapter namespace."""
+        await self._backend.del_personality(name)
+
+    async def list_personas(self) -> List[Dict[str, str]]:
+        """Return stored persona definitions for a trusted adapter namespace."""
+        return await self._backend.list_personas()

@@ -18,7 +18,7 @@ from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_HTML
-from .service import ChatRequest, ChatResult, ChatService
+from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
@@ -34,6 +34,21 @@ class _OpenAIAgentCursor:
     tool_name: str
     expires_at: float
     client_id: str
+
+
+@dataclass
+class _ResponseCursor:
+    """Server-side state for one OpenAI Responses continuation."""
+
+    conversation_id: str
+    parent_message_id: str
+    model: str
+    expires_at: float
+    client_id: str
+    agent_state: AgentState | None = None
+    tools: list[AgentTool] | None = None
+    tool_name: str = ""
+    tool_call_id: str = ""
 
 
 def _text_content(value: Any) -> str:
@@ -186,6 +201,68 @@ def chat_request_from_payload(
     )
 
 
+def _bot_chat_request_from_payload(
+    payload: Dict[str, Any],
+    *,
+    max_attachment_bytes: int,
+    client_id: str,
+) -> ChatRequest:
+    request = chat_request_from_payload(
+        payload,
+        max_attachment_bytes=max_attachment_bytes,
+        client_id=client_id,
+        request_priority=10,
+        enforce_client_ownership=True,
+    )
+    request.prefer_paid_account = bool(payload.get("prefer_paid_account", False))
+    raw_operation = payload.get("operation", ConversationOperation.SEND.value)
+    try:
+        request.operation = ConversationOperation(raw_operation)
+    except (TypeError, ValueError) as error:
+        raise web.HTTPBadRequest(text="unsupported bot conversation operation") from error
+    reference = payload.get("reference", "")
+    if not isinstance(reference, str):
+        raise web.HTTPBadRequest(text="bot reference must be a string")
+    request.reference = reference
+    if request.operation is ConversationOperation.START_PERSONA:
+        persona_name = request.prompt.strip()
+        if not persona_name:
+            raise web.HTTPBadRequest(text="bot persona name must not be empty")
+        request.prompt = f"__bot_persona__:{client_id}:{persona_name}"
+    return request
+
+
+def _chat_result_payload(result: ChatResult) -> Dict[str, Any]:
+    return {
+        "ok": result.ok,
+        "text": result.text,
+        "conversation_id": result.conversation_id,
+        "message_id": result.message_id,
+        "requested_model": result.requested_model,
+        "used_model": result.used_model,
+        "image_urls": result.image_urls,
+        "usage": result.usage,
+        "metadata": result.metadata,
+        "errors": result.errors,
+        "account": result.account,
+        "content": result.content.to_dict(),
+    }
+
+
+def _stream_event_payload(event: ChatStreamEvent) -> Dict[str, Any]:
+    return {
+        "type": event.type,
+        "text": event.text,
+        "raw_text": event.raw_text,
+        "message_id": event.message_id,
+        "conversation_id": event.conversation_id,
+        "image_urls": event.image_urls,
+        "model": event.model,
+        "usage": event.usage,
+        "metadata": event.metadata,
+    }
+
+
 def _agent_tools_from_payload(payload: Dict[str, Any]) -> List[AgentTool]:
     tools = payload.get("tools")
     if not isinstance(tools, list) or not tools:
@@ -296,6 +373,124 @@ def _tool_result_from_openai_messages(
         content = _text_content(message.get("content"))
         return AgentToolResult(cursor.tool_name, content[:12000], ok=True)
     raise web.HTTPBadRequest(text="tool continuation requires the matching role=tool result")
+
+
+def _response_input_text(payload: Dict[str, Any]) -> str:
+    """Extract only this Responses turn; previous state stays server-side."""
+    value = payload.get("input")
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            return text
+    elif isinstance(value, list):
+        entries: list[str] = []
+        for item in value:
+            if not isinstance(item, dict) or item.get("type") == "function_call_output":
+                continue
+            role = item.get("role") if isinstance(item.get("role"), str) else "user"
+            text = _text_content(item.get("content")).strip()
+            if text:
+                entries.append(f"{role}: {text}" if role != "user" else text)
+        if entries:
+            return "\n\n".join(entries)
+    raise web.HTTPBadRequest(text="responses request requires non-empty text input")
+
+
+def _response_instructions(payload: Dict[str, Any]) -> str:
+    value = payload.get("instructions")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise web.HTTPBadRequest(text="responses instructions must be a string")
+    return value.strip()
+
+
+def _response_model(payload: Dict[str, Any], cursor: _ResponseCursor | None = None) -> str:
+    value = payload.get("model", cursor.model if cursor else "auto")
+    if not isinstance(value, str) or not value.strip():
+        raise web.HTTPBadRequest(text="responses model must be a non-empty string")
+    return value.strip()
+
+
+def _response_tool_result(payload: Dict[str, Any], cursor: _ResponseCursor) -> AgentToolResult:
+    if not cursor.tool_call_id or not cursor.tool_name:
+        raise web.HTTPBadRequest(text="previous response is not awaiting a function result")
+    value = payload.get("input")
+    if not isinstance(value, list):
+        raise web.HTTPBadRequest(text="function continuation requires input items")
+    for item in value:
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        if item.get("call_id") != cursor.tool_call_id:
+            continue
+        output = item.get("output")
+        if isinstance(output, str):
+            return AgentToolResult(cursor.tool_name, output[:12000], ok=True)
+        return AgentToolResult(cursor.tool_name, json.dumps(output, ensure_ascii=False)[:12000], ok=True)
+    raise web.HTTPBadRequest(text="function continuation requires matching function_call_output")
+
+
+def _response_payload(
+    response_id: str,
+    *,
+    model: str,
+    previous_response_id: str = "",
+    result: ChatResult | None = None,
+    turn: Any = None,
+    tool_call_id: str = "",
+) -> Dict[str, Any]:
+    output: list[dict[str, Any]]
+    output_text = ""
+    status = "completed"
+    usage: dict[str, Any] = {}
+    if turn is not None:
+        decision = turn.decision
+        if decision.kind == "tool_call":
+            output = [{
+                "type": "function_call",
+                "id": f"fc_{uuid.uuid4().hex}",
+                "call_id": tool_call_id,
+                "name": decision.tool,
+                "arguments": json.dumps(decision.arguments, ensure_ascii=False),
+                "status": "completed",
+            }]
+        elif decision.kind == "final":
+            output_text = decision.answer
+            output = [{
+                "type": "message",
+                "id": f"msg_{uuid.uuid4().hex}",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+            }]
+        else:
+            status = "failed"
+            output_text = decision.error
+            output = []
+    elif result is not None:
+        status = "completed" if result.ok else "failed"
+        output_text = result.text
+        usage = dict(result.usage)
+        output = [{
+            "type": "message",
+            "id": result.message_id or f"msg_{uuid.uuid4().hex}",
+            "role": "assistant",
+            "status": "completed" if result.ok else "incomplete",
+            "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+        }] if output_text else []
+    else:
+        raise ValueError("response requires a chat result or agent turn")
+    return {
+        "id": response_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": status,
+        "model": model,
+        "output": output,
+        "output_text": output_text,
+        "previous_response_id": previous_response_id or None,
+        "usage": usage,
+    }
 
 
 def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
@@ -469,6 +664,7 @@ def create_http_app(
     if max_attachment_bytes <= 0:
         raise ValueError("max_attachment_bytes must be positive")
     agent_cursors: dict[str, _OpenAIAgentCursor] = {}
+    response_cursors: dict[str, _ResponseCursor] = {}
     # A host such as OpenCode can create independent subagent sessions. Do not
     # pin all of them to one shared protocol root: a fresh task should enter
     # the runtime's account pool, while its cursor still pins every follow-up
@@ -481,6 +677,12 @@ def create_http_app(
             if cursor.expires_at <= now:
                 agent_cursors.pop(token, None)
 
+    def discard_response_cursors() -> None:
+        now = time.monotonic()
+        for token, cursor in tuple(response_cursors.items()):
+            if cursor.expires_at <= now:
+                response_cursors.pop(token, None)
+
     def supplied_bearer(request: web.Request) -> str:
         return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
 
@@ -491,6 +693,17 @@ def create_http_app(
             if isinstance(key_id, str) and key_id:
                 return f"api:{key_id}"
         return "api:admin"
+
+    def bot_persona_name(request: web.Request, name: Any) -> str:
+        if not isinstance(name, str) or not name.strip():
+            raise web.HTTPBadRequest(text="bot persona requires a non-empty name")
+        normalized = name.strip()
+        if len(normalized) > 128:
+            raise web.HTTPBadRequest(text="bot persona name is too long")
+        # Store each Bot client's prompts in a separate namespace.  This keeps
+        # a shared core from accidentally exposing or overwriting another
+        # plugin instance's persona definitions.
+        return f"__bot_persona__:{client_identity(request)}:{normalized}"
 
     def require_admin(request: web.Request) -> None:
         if request.get(API_PRINCIPAL) != "admin":
@@ -514,10 +727,12 @@ def create_http_app(
             raise web.HTTPUnauthorized(text="invalid API key")
         if request.path == "/v1/models":
             permitted = "chat" in record["scopes"]
-        elif request.path == "/v1/chat/completions":
+        elif request.path in {"/v1/chat/completions", "/v1/responses"}:
             permitted = "chat" in record["scopes"]
         elif request.path == "/v1/agent/turn":
             permitted = "agent" in record["scopes"]
+        elif request.path.startswith("/v1/bot/"):
+            permitted = "bot" in record["scopes"]
         else:
             permitted = False
         if not permitted:
@@ -531,7 +746,12 @@ def create_http_app(
             api_key_store.release(record)
 
     async def health(_: web.Request) -> web.Response:
-        return web.json_response(await service.get_runtime_health())
+        payload = await service.get_runtime_health()
+        payload["api"] = {
+            "version": "2026-07-29",
+            "capabilities": ["chat_completions", "responses", "agent_turn", "bot_bridge"],
+        }
+        return web.json_response(payload)
 
     async def models(_: web.Request) -> web.Response:
         return web.json_response(await service.get_model_catalog(fetch_remote=False))
@@ -598,6 +818,115 @@ def create_http_app(
         if not cancelled:
             raise web.HTTPNotFound(text="verification challenge is no longer pending")
         return web.json_response({"cancelled": True})
+
+    async def bot_capabilities(request: web.Request) -> web.Response:
+        return web.json_response({
+            "protocol_version": 1,
+            "client_id": client_identity(request),
+            "capabilities": [
+                "chat", "stream", "history", "persona", "persona_sync", "context_estimate",
+            ],
+            "runtime": await service.get_runtime_health(),
+        })
+
+    async def bot_payload(request: web.Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="request body must be a JSON object")
+        return payload
+
+    async def bot_chat(request: web.Request) -> web.Response:
+        chat_request = _bot_chat_request_from_payload(
+            await bot_payload(request),
+            max_attachment_bytes=max_attachment_bytes,
+            client_id=client_identity(request),
+        )
+        return web.json_response(_chat_result_payload(await service.send(chat_request)))
+
+    async def bot_chat_stream(request: web.Request) -> web.StreamResponse:
+        chat_request = _bot_chat_request_from_payload(
+            await bot_payload(request),
+            max_attachment_bytes=max_attachment_bytes,
+            client_id=client_identity(request),
+        )
+        if chat_request.operation is not ConversationOperation.SEND:
+            raise web.HTTPBadRequest(text="bot streaming supports only normal send operations")
+        response = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        })
+        await response.prepare(request)
+        stream = service.stream(chat_request)
+        try:
+            async for event in stream:
+                await response.write(_sse("chatgptweb.event", _stream_event_payload(event)))
+            await response.write(_sse("chatgptweb.done", {"ok": True}))
+            await response.write_eof()
+        except ConnectionResetError:
+            return response
+        finally:
+            await stream.aclose()
+        return response
+
+    async def bot_history(request: web.Request) -> web.Response:
+        payload = await bot_payload(request)
+        conversation_id = payload.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise web.HTTPBadRequest(text="bot history requires conversation_id")
+        try:
+            await service.assert_conversation_access(conversation_id, client_identity(request))
+        except PermissionError as error:
+            raise web.HTTPForbidden(text=str(error)) from error
+        return web.json_response({"history": await service.get_history(conversation_id)})
+
+    async def bot_persona(request: web.Request) -> web.Response:
+        payload = await bot_payload(request)
+        name = bot_persona_name(request, payload.get("name"))
+        return web.json_response({"prompt": await service.get_persona_prompt(name)})
+
+    async def bot_personas(request: web.Request) -> web.Response:
+        prefix = f"__bot_persona__:{client_identity(request)}:"
+        personas = await service.list_personas()
+        return web.json_response({"personas": [
+            {"name": item["name"][len(prefix):], "value": item["value"]}
+            for item in personas
+            if item.get("name", "").startswith(prefix)
+        ]})
+
+    async def bot_upsert_persona(request: web.Request) -> web.Response:
+        payload = await bot_payload(request)
+        value = payload.get("value")
+        if not isinstance(value, str):
+            raise web.HTTPBadRequest(text="bot persona value must be a string")
+        name = bot_persona_name(request, payload.get("name"))
+        await service.upsert_persona(name, value)
+        return web.json_response({"ok": True})
+
+    async def bot_delete_persona(request: web.Request) -> web.Response:
+        payload = await bot_payload(request)
+        name = bot_persona_name(request, payload.get("name"))
+        await service.delete_persona(name)
+        return web.json_response({"ok": True})
+
+    async def bot_context_estimate(request: web.Request) -> web.Response:
+        payload = await bot_payload(request)
+        conversation_id = payload.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise web.HTTPBadRequest(text="bot context estimate requires conversation_id")
+        try:
+            await service.assert_conversation_access(conversation_id, client_identity(request))
+        except PermissionError as error:
+            raise web.HTTPForbidden(text=str(error)) from error
+        model = payload.get("model", "")
+        account = payload.get("account", "")
+        if not isinstance(model, str) or not isinstance(account, str):
+            raise web.HTTPBadRequest(text="bot context model and account must be strings")
+        estimate = await service.estimate_context(conversation_id, model=model, account=account)
+        return web.json_response({"estimate": dict(estimate.__dict__)})
 
     async def chat_completions(request: web.Request) -> web.StreamResponse:
         try:
@@ -726,6 +1055,158 @@ def create_http_app(
             await stream.aclose()
         return response
 
+    async def stream_response_object(
+        request: web.Request,
+        response_object: Dict[str, Any],
+    ) -> web.StreamResponse:
+        """Emit the small Responses SSE subset needed for text and tool turns."""
+        response = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        })
+        await response.prepare(request)
+        try:
+            await response.write(_sse("response.created", {"type": "response.created", "response": response_object}))
+            for output_index, item in enumerate(response_object.get("output", [])):
+                if item.get("type") == "message":
+                    content = item.get("content") or []
+                    if content:
+                        text = str(content[0].get("text") or "")
+                        if text:
+                            await response.write(_sse("response.output_text.delta", {
+                                "type": "response.output_text.delta",
+                                "response_id": response_object["id"],
+                                "item_id": item["id"],
+                                "output_index": output_index,
+                                "content_index": 0,
+                                "delta": text,
+                            }))
+                        await response.write(_sse("response.output_text.done", {
+                            "type": "response.output_text.done",
+                            "response_id": response_object["id"],
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "content_index": 0,
+                            "text": text,
+                        }))
+                elif item.get("type") == "function_call":
+                    await response.write(_sse("response.function_call_arguments.done", {
+                        "type": "response.function_call_arguments.done",
+                        "response_id": response_object["id"],
+                        "item_id": item["id"],
+                        "output_index": output_index,
+                        "call_id": item["call_id"],
+                        "name": item["name"],
+                        "arguments": item["arguments"],
+                    }))
+            event_type = "response.completed" if response_object["status"] == "completed" else "response.failed"
+            await response.write(_sse(event_type, {"type": event_type, "response": response_object}))
+            await response.write_eof()
+        except ConnectionResetError:
+            return response
+        return response
+
+    async def responses(request: web.Request) -> web.StreamResponse:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise web.HTTPBadRequest(text="request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="request body must be a JSON object")
+        discard_response_cursors()
+        client_id = client_identity(request)
+        previous_response_id = payload.get("previous_response_id") or ""
+        if not isinstance(previous_response_id, str):
+            raise web.HTTPBadRequest(text="previous_response_id must be a string")
+        cursor = response_cursors.get(previous_response_id) if previous_response_id else None
+        if previous_response_id and cursor is None:
+            raise web.HTTPNotFound(text="previous response was not found or has expired")
+        if cursor is not None and cursor.client_id != client_id:
+            raise web.HTTPForbidden(text="previous response belongs to another API client")
+
+        model = _response_model(payload, cursor)
+        instructions = _response_instructions(payload)
+        tool_payload = payload.get("tools")
+        tools = cursor.tools if cursor and cursor.agent_state is not None else None
+        if isinstance(tool_payload, list) and tool_payload:
+            tools = _openai_agent_tools(payload)
+        response_id = f"resp_{uuid.uuid4().hex}"
+        tool_call_id = ""
+
+        if tools is not None:
+            tool_result = _response_tool_result(payload, cursor) if cursor and cursor.agent_state else None
+            task = _response_input_text(payload) if tool_result is None else ""
+            if instructions:
+                task = f"{instructions}\n\n{task}".strip()
+            turn = await AgentService(
+                service,
+                safety_policy=agent_safety_policy,
+                anchor_policy=openai_agent_anchor_policy,
+                client_id=client_id,
+                request_priority=120,
+                enforce_client_ownership=True,
+            ).turn(
+                task,
+                tools,
+                state=cursor.agent_state if cursor else None,
+                tool_result=tool_result,
+                model=model,
+                continue_existing=bool(cursor),
+            )
+            if turn.ok and turn.decision.kind == "tool_call":
+                tool_call_id = f"call_{uuid.uuid4().hex}"
+            response_object = _response_payload(
+                response_id,
+                model=turn.used_model or model,
+                previous_response_id=previous_response_id,
+                turn=turn,
+                tool_call_id=tool_call_id,
+            )
+            response_cursors[response_id] = _ResponseCursor(
+                conversation_id=turn.state.conversation_id,
+                parent_message_id=turn.state.parent_message_id,
+                model=turn.used_model or model,
+                expires_at=time.monotonic() + 600,
+                client_id=client_id,
+                agent_state=turn.state,
+                tools=tools,
+                tool_name=turn.decision.tool if turn.decision.kind == "tool_call" else "",
+                tool_call_id=tool_call_id,
+            )
+        else:
+            prompt = _response_input_text(payload)
+            if instructions:
+                prompt = f"{instructions}\n\n{prompt}"
+            chat_request = ChatRequest(
+                prompt=prompt,
+                conversation_id=cursor.conversation_id if cursor else "",
+                parent_message_id=cursor.parent_message_id if cursor else "",
+                model=model,
+                client_id=client_id,
+                request_priority=100,
+                enforce_client_ownership=True,
+            )
+            result = await service.send(chat_request)
+            response_object = _response_payload(
+                response_id,
+                model=result.used_model or model,
+                previous_response_id=previous_response_id,
+                result=result,
+            )
+            if result.ok and result.conversation_id and result.message_id:
+                response_cursors[response_id] = _ResponseCursor(
+                    conversation_id=result.conversation_id,
+                    parent_message_id=result.message_id,
+                    model=result.used_model or model,
+                    expires_at=time.monotonic() + 600,
+                    client_id=client_id,
+                )
+
+        if payload.get("stream", False):
+            return await stream_response_object(request, response_object)
+        return web.json_response(response_object)
+
     async def agent_turn(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -800,7 +1281,17 @@ def create_http_app(
     app.router.add_get("/v1/verification", verification_status)
     app.router.add_post("/v1/verification/{challenge_id}", submit_verification)
     app.router.add_delete("/v1/verification/{challenge_id}", cancel_verification)
+    app.router.add_get("/v1/bot/capabilities", bot_capabilities)
+    app.router.add_post("/v1/bot/chat", bot_chat)
+    app.router.add_post("/v1/bot/chat/stream", bot_chat_stream)
+    app.router.add_post("/v1/bot/history", bot_history)
+    app.router.add_post("/v1/bot/persona", bot_persona)
+    app.router.add_get("/v1/bot/personas", bot_personas)
+    app.router.add_put("/v1/bot/personas", bot_upsert_persona)
+    app.router.add_delete("/v1/bot/personas", bot_delete_persona)
+    app.router.add_post("/v1/bot/context-estimate", bot_context_estimate)
     app.router.add_post("/v1/chat/completions", chat_completions)
+    app.router.add_post("/v1/responses", responses)
     app.router.add_post("/v1/agent/turn", agent_turn)
     app.router.add_get("/v1/keys", list_api_keys)
     app.router.add_post("/v1/keys", create_api_key)
@@ -833,9 +1324,9 @@ def create_control_app(
 _CONTROL_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ChatGPTWeb Control</title><style>
-:root{color-scheme:light;font-family:Arial,sans-serif;color:#172033;background:#f4f6f8}.shell{max-width:1240px;margin:32px auto;padding:0 20px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #cbd2d9;padding-bottom:18px}.top h1{font-size:22px;margin:0}.key{display:flex;gap:8px}.key input{width:210px}.panel{margin-top:22px}.panel h2{font-size:15px;margin:0 0 10px}.table-wrap{overflow-x:auto}.table{width:100%;min-width:1030px;border-collapse:collapse;background:#fff}.table th,.table td{padding:11px 12px;border-bottom:1px solid #e2e6ea;text-align:left;font-size:13px;vertical-align:top}.table th{color:#53606e;font-weight:600}.details{max-width:210px;line-height:1.45}.challenge{display:grid;grid-template-columns:minmax(180px,1fr) 160px 112px 82px;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px;margin-bottom:8px}.muted{color:#66717d;font-size:13px}.error{color:#b42318;font-size:13px;min-height:18px}input{box-sizing:border-box;border:1px solid #aeb8c2;border-radius:4px;padding:8px 10px;font:inherit}button{border:1px solid #254d70;background:#fff;color:#173b58;border-radius:4px;padding:8px 11px;font:inherit;cursor:pointer;margin-right:6px}button.primary{background:#176b87;border-color:#176b87;color:#fff}button.danger{color:#9b1c1c;border-color:#d9aaaa}@media(max-width:700px){.top{align-items:flex-start;flex-direction:column}.challenge{grid-template-columns:1fr}.key input{width:min(260px,65vw)}}
-</style></head><body><main class="shell"><header class="top"><h1>ChatGPTWeb Control</h1><div class="key"><input id="key" type="password" autocomplete="off" placeholder="API key"><button id="refresh">Refresh</button></div></header><p id="error" class="error"></p><section class="panel"><h2>Accounts</h2><div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>State</th><th>Sessions</th><th>Usage</th><th>Details</th><th>Control</th></tr></thead><tbody id="accounts"></tbody></table></div></section><section class="panel"><h2>Verification</h2><div id="challenges" class="muted">No pending verification.</div></section><section class="panel"><h2>Recent Activity</h2><div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Detail</th></tr></thead><tbody id="activity"></tbody></table></div></section></main><script>
-const key=document.querySelector('#key'),error=document.querySelector('#error'),accounts=document.querySelector('#accounts'),challenges=document.querySelector('#challenges'),activity=document.querySelector('#activity'),drafts=new Map(),submitting=new Set();key.value=sessionStorage.getItem('chatgptweb-control-key')||'';
+:root{color-scheme:light;font-family:Arial,sans-serif;color:#172033;background:#f4f6f8}.shell{max-width:1240px;margin:32px auto;padding:0 20px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #cbd2d9;padding-bottom:18px}.top h1{font-size:22px;margin:0}.key{display:flex;gap:8px}.key input{width:210px}.panel{margin-top:22px}.panel h2{font-size:15px;margin:0 0 10px}.table-wrap{overflow-x:auto}.table{width:100%;min-width:1030px;border-collapse:collapse;background:#fff}.table th,.table td{padding:11px 12px;border-bottom:1px solid #e2e6ea;text-align:left;font-size:13px;vertical-align:top}.table th{color:#53606e;font-weight:600}.details{max-width:210px;line-height:1.45}.challenge{display:grid;grid-template-columns:minmax(180px,1fr) 160px 112px 82px;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px;margin-bottom:8px}.key-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px}.key-form label{font-size:13px}.key-form input[type=checkbox]{margin-right:4px}.key-list{background:#fff;border:1px solid #d7dde3;border-top:0}.key-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,1fr) 100px 150px;gap:8px;align-items:center;padding:10px 12px;border-top:1px solid #e2e6ea;font-size:13px}.secret{display:block;overflow-wrap:anywhere;background:#fff8db;border:1px solid #f0d88a;padding:10px;margin:8px 0;font-family:ui-monospace,monospace;font-size:12px}.muted{color:#66717d;font-size:13px}.error{color:#b42318;font-size:13px;min-height:18px}input{box-sizing:border-box;border:1px solid #aeb8c2;border-radius:4px;padding:8px 10px;font:inherit}button{border:1px solid #254d70;background:#fff;color:#173b58;border-radius:4px;padding:8px 11px;font:inherit;cursor:pointer;margin-right:6px}button.primary{background:#176b87;border-color:#176b87;color:#fff}button.danger{color:#9b1c1c;border-color:#d9aaaa}@media(max-width:700px){.top{align-items:flex-start;flex-direction:column}.challenge{grid-template-columns:1fr}.key-row{grid-template-columns:1fr}.key input{width:min(260px,65vw)}}
+</style></head><body><main class="shell"><header class="top"><h1>ChatGPTWeb Control</h1><div class="key"><input id="key" type="password" autocomplete="off" placeholder="API key"><button id="refresh">Refresh</button></div></header><p id="error" class="error"></p><section class="panel"><h2>Accounts</h2><div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>State</th><th>Sessions</th><th>Usage</th><th>Details</th><th>Control</th></tr></thead><tbody id="accounts"></tbody></table></div></section><section class="panel"><h2>Verification</h2><div id="challenges" class="muted">No pending verification.</div></section><section class="panel"><h2>Client API Keys</h2><form id="key-form" class="key-form"><input id="key-label" placeholder="Key label" required><label><input type="checkbox" name="key-scope" value="chat" checked>Chat / Responses</label><label><input type="checkbox" name="key-scope" value="agent">Agent protocol</label><label><input type="checkbox" name="key-scope" value="bot">Bot bridge</label><input id="key-concurrency" type="number" min="1" max="16" value="2" title="Maximum concurrent requests"><button class="primary">Create key</button></form><code id="key-secret" class="secret" hidden></code><div id="client-keys" class="key-list muted">No client keys loaded.</div></section><section class="panel"><h2>Recent Activity</h2><div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Detail</th></tr></thead><tbody id="activity"></tbody></table></div></section></main><script>
+const key=document.querySelector('#key'),error=document.querySelector('#error'),accounts=document.querySelector('#accounts'),challenges=document.querySelector('#challenges'),activity=document.querySelector('#activity'),keyForm=document.querySelector('#key-form'),keyLabel=document.querySelector('#key-label'),keyConcurrency=document.querySelector('#key-concurrency'),keySecret=document.querySelector('#key-secret'),clientKeys=document.querySelector('#client-keys'),drafts=new Map(),submitting=new Set();key.value=sessionStorage.getItem('chatgptweb-control-key')||'';
 function headers(){const value=key.value.trim();return value?{Authorization:'Bearer '+value,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
 async function call(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(!response.ok)throw new Error(response.status===401?'Enter a valid API key':await response.text());return response.status===204?null:response.json()}
 function cell(row,value){const td=document.createElement('td');td.textContent=value||'--';row.append(td)}
@@ -848,6 +1339,9 @@ function retryLabel(item){return item.retry_mode==='manual'?'Retry manually':ite
 function renderAccounts(data){accounts.replaceChildren();for(const item of data.accounts||[]){const row=document.createElement('tr');cell(row,item.email);cell(row,item.login_retry_pending?'login in progress':item.manual_disabled?'manually disabled':item.status);cell(row,String(item.conversation_count||0));cell(row,formatUsage(item.usage));const diagnostic=document.createElement('td');diagnostic.className='details';diagnostic.textContent=details(item);row.append(diagnostic);const control=document.createElement('td');if(item.manual_disabled)accountButton(control,item,'Enable','enable');else{accountButton(control,item,'Disable','disable',true);if(!item.login_state&&item.can_retry_login&&!item.login_retry_pending)accountButton(control,item,retryLabel(item),'retry_login')}accountButton(control,item,'Refresh plan','refresh_capabilities');row.append(control);accounts.append(row)}}
 function renderActivity(data){activity.replaceChildren();const events=data.events||[];if(!events.length){const row=document.createElement('tr');const empty=document.createElement('td');empty.colSpan=4;empty.className='muted';empty.textContent='No local activity yet.';row.append(empty);activity.append(row);return}for(const item of events){const row=document.createElement('tr');cell(row,item.at);cell(row,item.account);cell(row,item.event);cell(row,item.message);activity.append(row)}}
 function renderChallenges(data){challenges.replaceChildren();const list=data.challenges||[];if(!list.length){challenges.textContent='No pending verification.';return}for(const item of list){const card=document.createElement('form');card.className='challenge';const label=document.createElement('div');label.textContent=item.account+' · '+item.provider;const input=document.createElement('input');input.inputMode='numeric';input.autocomplete='one-time-code';input.maxLength=12;input.placeholder='Verification code';input.value=drafts.get(item.id)||'';input.addEventListener('input',()=>drafts.set(item.id,input.value));const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit';const cancel=document.createElement('button');cancel.type='button';cancel.className='danger';cancel.textContent='Cancel';const busy=submitting.has(item.id);submit.disabled=busy;cancel.disabled=busy;card.append(label,input,submit,cancel);card.addEventListener('submit',async event=>{event.preventDefault();const code=input.value.trim();if(!code){error.textContent='Enter the verification code.';return}submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'POST',body:JSON.stringify({code})});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});cancel.addEventListener('click',async()=>{submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'DELETE'});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});challenges.append(card)}}
-async function refresh(force=false){if(!force&&(submitting.size||challenges.contains(document.activeElement)))return;error.textContent='';sessionStorage.setItem('chatgptweb-control-key',key.value.trim());try{const [status,verification,events]=await Promise.all([call('/v1/account/status'),call('/v1/verification'),call('/v1/activity')]);renderAccounts(status);renderChallenges(verification);renderActivity(events)}catch(e){error.textContent=e.message}}
+function showSecret(secret){keySecret.hidden=!secret;keySecret.textContent=secret?'Copy this secret now. It is shown only once: '+secret:''}
+function renderKeys(data){clientKeys.replaceChildren();const list=data.keys||[];if(!list.length){clientKeys.textContent='No active client keys.';return}for(const item of list){const row=document.createElement('div');row.className='key-row';const label=document.createElement('strong');label.textContent=item.label;const scope=document.createElement('span');scope.textContent=(item.scopes||[]).join(', ');const limit=document.createElement('span');limit.textContent='active '+(item.active_requests||0)+' / '+item.max_concurrency;const controls=document.createElement('span');const rotate=document.createElement('button');rotate.textContent='Rotate';rotate.addEventListener('click',async()=>{try{const data=await call('/v1/keys/'+encodeURIComponent(item.id)+'/rotate',{method:'POST'});showSecret(data.secret);await refresh(true)}catch(e){error.textContent=e.message}});const revoke=document.createElement('button');revoke.className='danger';revoke.textContent='Revoke';revoke.addEventListener('click',async()=>{if(!confirm('Revoke '+item.label+'?'))return;try{await call('/v1/keys/'+encodeURIComponent(item.id),{method:'DELETE'});await refresh(true)}catch(e){error.textContent=e.message}});controls.append(rotate,revoke);row.append(label,scope,limit,controls);clientKeys.append(row)}}
+keyForm.addEventListener('submit',async event=>{event.preventDefault();const scopes=[...document.querySelectorAll('input[name=key-scope]:checked')].map(item=>item.value);if(!scopes.length){error.textContent='Choose at least one scope.';return}try{const data=await call('/v1/keys',{method:'POST',body:JSON.stringify({label:keyLabel.value,scopes,max_concurrency:Number(keyConcurrency.value)})});showSecret(data.secret);keyLabel.value='';await refresh(true)}catch(e){error.textContent=e.message}})
+async function refresh(force=false){if(!force&&(submitting.size||challenges.contains(document.activeElement)))return;error.textContent='';sessionStorage.setItem('chatgptweb-control-key',key.value.trim());try{const [status,verification,events,keys]=await Promise.all([call('/v1/account/status'),call('/v1/verification'),call('/v1/activity'),call('/v1/keys')]);renderAccounts(status);renderChallenges(verification);renderActivity(events);renderKeys(keys)}catch(e){error.textContent=e.message}}
 document.querySelector('#refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
 </script></body></html>"""
