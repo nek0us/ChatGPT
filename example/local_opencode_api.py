@@ -18,6 +18,7 @@ API_KEY = os.getenv("CHATGPTWEB_HTTP_API_KEY", "")
 CONTROL_HOST = os.getenv("CHATGPTWEB_CONTROL_HOST", "127.0.0.1")
 CONTROL_PORT = int(os.getenv("CHATGPTWEB_CONTROL_PORT", "8765"))
 CONTROL_API_KEY = os.getenv("CHATGPTWEB_CONTROL_API_KEY", API_KEY)
+RUNTIME_LOG_PATH = os.getenv("CHATGPTWEB_RUNTIME_LOG_PATH", "")
 
 
 def _enabled(name: str, default: bool) -> bool:
@@ -55,11 +56,13 @@ def main() -> None:
         control_host=CONTROL_HOST,
         control_port=CONTROL_PORT,
         control_api_key=CONTROL_API_KEY,
+        control_log_path=RUNTIME_LOG_PATH or None,
     )
     app = create_http_app(
         ChatService(runtime),
         api_key=API_KEY,
         api_key_store=runtime.api_key_store,
+        runtime_log_path=RUNTIME_LOG_PATH or None,
     )
 
     async def start_runtime(_: web.Application) -> None:

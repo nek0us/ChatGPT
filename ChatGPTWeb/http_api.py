@@ -9,6 +9,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List
 
 from aiohttp import web
@@ -659,6 +660,7 @@ def create_http_app(
     verification_broker: VerificationBroker | None = None,
     agent_safety_policy: AgentSafetyPolicy | None = None,
     agent_anchor_policy: AgentAnchorPolicy | None = None,
+    runtime_log_path: Path | str | None = None,
 ) -> web.Application:
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
@@ -670,6 +672,7 @@ def create_http_app(
     # the runtime's account pool, while its cursor still pins every follow-up
     # tool round to the selected account. Callers may opt back into anchors.
     openai_agent_anchor_policy = agent_anchor_policy or AgentAnchorPolicy(control_enabled=False)
+    log_path = Path(runtime_log_path).expanduser() if runtime_log_path else None
 
     def discard_agent_cursors() -> None:
         now = time.monotonic()
@@ -768,6 +771,28 @@ def create_http_app(
         except ValueError as error:
             raise web.HTTPBadRequest(text="limit must be an integer") from error
         return web.json_response(await service.get_activity(limit=limit))
+
+    async def runtime_logs(request: web.Request) -> web.Response:
+        """Return a bounded tail of this runtime's own log to administrators."""
+        require_admin(request)
+        if not log_path:
+            return web.json_response({"available": False, "message": "runtime log is not configured", "lines": []})
+        try:
+            lines = max(20, min(int(request.query.get("lines", "160")), 800))
+        except ValueError as error:
+            raise web.HTTPBadRequest(text="lines must be an integer") from error
+        try:
+            with log_path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 256 * 1024))
+                text = handle.read().decode("utf8", errors="replace")
+        except FileNotFoundError:
+            return web.json_response({"available": False, "message": "runtime log does not exist yet", "lines": []})
+        except OSError as error:
+            logger.warning("could not read runtime log %s: %s", log_path, error)
+            return web.json_response({"available": False, "message": "runtime log cannot be read", "lines": []})
+        return web.json_response({"available": True, "message": "", "lines": text.splitlines()[-lines:]})
 
     async def control_account(request: web.Request) -> web.Response:
         require_admin(request)
@@ -1278,6 +1303,7 @@ def create_http_app(
     app.router.add_post("/v1/accounts/{account}/control", control_account)
     app.router.add_get("/v1/usage", usage_status)
     app.router.add_get("/v1/activity", activity)
+    app.router.add_get("/v1/runtime/logs", runtime_logs)
     app.router.add_get("/v1/verification", verification_status)
     app.router.add_post("/v1/verification/{challenge_id}", submit_verification)
     app.router.add_delete("/v1/verification/{challenge_id}", cancel_verification)
@@ -1305,6 +1331,7 @@ def create_control_app(
     verification_broker: VerificationBroker,
     api_key: str | None = None,
     api_key_store: ApiKeyStore | None = None,
+    runtime_log_path: Path | str | None = None,
 ) -> web.Application:
     """Create the opt-in local operations console over the existing API."""
     app = create_http_app(
@@ -1312,6 +1339,7 @@ def create_control_app(
         api_key=api_key,
         api_key_store=api_key_store,
         verification_broker=verification_broker,
+        runtime_log_path=runtime_log_path,
     )
 
     async def dashboard(_: web.Request) -> web.Response:

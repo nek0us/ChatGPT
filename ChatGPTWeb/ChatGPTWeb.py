@@ -97,6 +97,7 @@ class chatgpt:
                  control_host: str = "127.0.0.1",
                  control_port: int | None = None,
                  control_api_key: str | None = None,
+                 control_log_path: Path | str | None = None,
                  verification_code_providers: typing.Sequence[VerificationCodeProvider] = (),
                
                  ) -> None:
@@ -173,6 +174,7 @@ class chatgpt:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
         self.control_port = control_port
+        self.control_log_path = Path(control_log_path) if control_log_path else None
         self.control_api_key = (
             control_api_key or secrets.token_urlsafe(24)
             if control_port is not None else None
@@ -852,6 +854,7 @@ class chatgpt:
             self.verification_broker,
             api_key=self.control_api_key,
             api_key_store=self.api_key_store,
+            runtime_log_path=getattr(self, "control_log_path", None),
         ))
         try:
             await runner.setup()
