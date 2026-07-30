@@ -813,6 +813,20 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         chat = await self.client.post(
             "/v1/bot/chat", json={"prompt": "bot turn"}, headers=key_headers,
         )
+        chat_request = self.backend.sent[-1]
+        responses = await self.client.post(
+            "/v1/bot/responses",
+            json={
+                "input": "bot agent turn",
+                "tools": [{
+                    "type": "function",
+                    "name": "workspace.read_text",
+                    "description": "Read a workspace text file.",
+                    "parameters": {"type": "object", "properties": {}},
+                }],
+            },
+            headers=key_headers,
+        )
         history = await self.client.post(
             "/v1/bot/history", json={"conversation_id": "conversation-service"}, headers=key_headers,
         )
@@ -823,15 +837,24 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "/v1/bot/capabilities",
             headers={"Authorization": f"Bearer {(await chat_key.json())['secret']}"},
         )
+        responses_denied = await self.client.post(
+            "/v1/bot/responses",
+            json={"input": "not allowed", "tools": []},
+            headers={"Authorization": f"Bearer {(await chat_key.json())['secret']}"},
+        )
 
         self.assertEqual(capabilities.status, 200)
         self.assertIn("stream", (await capabilities.json())["capabilities"])
+        self.assertIn("agent_responses", (await capabilities.json())["capabilities"])
         self.assertEqual(chat.status, 200)
+        self.assertEqual(responses.status, 200)
         self.assertTrue((await chat.json())["ok"])
-        self.assertEqual(self.backend.sent[-1].client_id.split(":", 1)[0], "api")
-        self.assertEqual(self.backend.sent[-1].request_priority, 10)
+        self.assertEqual(chat_request.client_id.split(":", 1)[0], "api")
+        self.assertEqual(chat_request.request_priority, 10)
+        self.assertEqual(self.backend.sent[-1].request_priority, 20)
         self.assertEqual(history.status, 200)
         self.assertEqual(denied.status, 403)
+        self.assertEqual(responses_denied.status, 403)
 
     async def test_bot_personas_are_isolated_by_dynamic_key(self):
         admin_headers = {"Authorization": "Bearer test-key"}

@@ -923,7 +923,7 @@ def create_http_app(
             "protocol_version": 1,
             "client_id": client_identity(request),
             "capabilities": [
-                "chat", "stream", "history", "persona", "persona_sync", "context_estimate",
+                "chat", "stream", "history", "persona", "persona_sync", "context_estimate", "agent_responses",
             ],
             "runtime": await service.get_runtime_health(),
         })
@@ -1256,6 +1256,7 @@ def create_http_app(
             raise web.HTTPBadRequest(text="request body must be valid JSON")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="request body must be a JSON object")
+        bot_responses = request.path == "/v1/bot/responses"
         discard_response_cursors()
         client_id = client_identity(request)
         previous_response_id = payload.get("previous_response_id") or ""
@@ -1284,6 +1285,8 @@ def create_http_app(
         tools = cursor.tools if cursor and cursor.agent_state is not None else None
         if isinstance(tool_payload, list) and tool_payload:
             tools = _openai_agent_tools(payload)
+        if bot_responses and tools is None:
+            raise web.HTTPBadRequest(text="bot Responses requires registered function tools")
         response_id = f"resp_{uuid.uuid4().hex}"
         tool_call_id = ""
 
@@ -1305,7 +1308,7 @@ def create_http_app(
                 safety_policy=agent_safety_policy,
                 anchor_policy=openai_agent_anchor_policy,
                 client_id=client_id,
-                request_priority=120,
+                request_priority=20 if bot_responses else 120,
                 enforce_client_ownership=True,
             ).turn(
                 task,
@@ -1348,7 +1351,7 @@ def create_http_app(
                 parent_message_id=cursor.parent_message_id if cursor else "",
                 model=model,
                 client_id=client_id,
-                request_priority=100,
+                request_priority=10 if bot_responses else 100,
                 enforce_client_ownership=True,
             )
             result = await service.send(chat_request)
@@ -1455,6 +1458,7 @@ def create_http_app(
     app.router.add_put("/v1/bot/personas", bot_upsert_persona)
     app.router.add_delete("/v1/bot/personas", bot_delete_persona)
     app.router.add_post("/v1/bot/context-estimate", bot_context_estimate)
+    app.router.add_post("/v1/bot/responses", responses)
     app.router.add_post("/v1/chat/completions", chat_completions)
     app.router.add_post("/v1/responses", responses)
     app.router.add_post("/v1/agent/turn", agent_turn)
