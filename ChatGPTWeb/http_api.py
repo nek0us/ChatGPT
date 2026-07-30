@@ -14,7 +14,14 @@ from typing import Any, Dict, List
 
 from aiohttp import web
 
-from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
+from .agent import (
+    AgentAnchorPolicy,
+    AgentSafetyPolicy,
+    AgentService,
+    AgentState,
+    AgentTool,
+    AgentToolResult,
+)
 from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
@@ -25,7 +32,9 @@ from .verification import VerificationBroker
 SERVICE_KEY: web.AppKey[ChatService] = web.AppKey("chatgptweb_service", ChatService)
 API_KEY_STORE: web.AppKey[ApiKeyStore] = web.AppKey("chatgptweb_api_key_store", ApiKeyStore)
 API_PRINCIPAL: web.RequestKey[Any] = web.RequestKey("chatgptweb_api_principal", object)
-logger = logging.getLogger(__name__)
+# Keep HTTP bridge diagnostics alongside browser and login events in the
+# runtime log exposed by the control console.
+logger = logging.getLogger("logger")
 
 
 @dataclass
@@ -462,6 +471,20 @@ def _response_tool_result(payload: Dict[str, Any], cursor: _ResponseCursor) -> A
     raise web.HTTPBadRequest(text="function continuation requires matching function_call_output")
 
 
+def _response_function_call_output_id(payload: Dict[str, Any]) -> str:
+    """Return the most recent Responses function-output call id, if present."""
+    value = payload.get("input")
+    if not isinstance(value, list):
+        return ""
+    for item in reversed(value):
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        call_id = item.get("call_id")
+        if isinstance(call_id, str) and call_id:
+            return call_id
+    return ""
+
+
 def _response_payload(
     response_id: str,
     *,
@@ -711,6 +734,10 @@ def create_http_app(
         raise ValueError("max_attachment_bytes must be positive")
     agent_cursors: dict[str, _OpenAIAgentCursor] = {}
     response_cursors: dict[str, _ResponseCursor] = {}
+    # The Responses API permits clients to continue from previous_response_id.
+    # The AI SDK used by OpenCode can instead provide only the completed
+    # function call's call_id, so retain both protocol identifiers.
+    response_call_cursors: dict[str, _ResponseCursor] = {}
     # A host such as OpenCode can create independent subagent sessions. Do not
     # pin all of them to one shared protocol root: a fresh task should enter
     # the runtime's account pool, while its cursor still pins every follow-up
@@ -729,6 +756,9 @@ def create_http_app(
         for token, cursor in tuple(response_cursors.items()):
             if cursor.expires_at <= now:
                 response_cursors.pop(token, None)
+        for token, cursor in tuple(response_call_cursors.items()):
+            if cursor.expires_at <= now:
+                response_call_cursors.pop(token, None)
 
     def supplied_bearer(request: web.Request) -> str:
         return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -1231,11 +1261,22 @@ def create_http_app(
         previous_response_id = payload.get("previous_response_id") or ""
         if not isinstance(previous_response_id, str):
             raise web.HTTPBadRequest(text="previous_response_id must be a string")
+        function_output_call_id = _response_function_call_output_id(payload)
         cursor = response_cursors.get(previous_response_id) if previous_response_id else None
+        if cursor is None and function_output_call_id:
+            cursor = response_call_cursors.get(function_output_call_id)
         if previous_response_id and cursor is None:
             raise web.HTTPNotFound(text="previous response was not found or has expired")
         if cursor is not None and cursor.client_id != client_id:
             raise web.HTTPForbidden(text="previous response belongs to another API client")
+
+        if function_output_call_id:
+            logger.info(
+                "Responses function continuation received: previous_response_id=%s call_id=%s cursor=%s",
+                bool(previous_response_id),
+                function_output_call_id,
+                bool(cursor),
+            )
 
         model = _response_model(payload, cursor)
         instructions = _response_instructions(payload)
@@ -1248,6 +1289,14 @@ def create_http_app(
 
         if tools is not None:
             tool_result = _response_tool_result(payload, cursor) if cursor and cursor.agent_state else None
+            if tool_result is not None:
+                # A function result is single-use. Retaining it would let a
+                # client replay an already-completed tool turn.
+                for response_token, saved_cursor in tuple(response_cursors.items()):
+                    if saved_cursor is cursor:
+                        response_cursors.pop(response_token, None)
+                if cursor.tool_call_id:
+                    response_call_cursors.pop(cursor.tool_call_id, None)
             task = _response_agent_task(payload) if tool_result is None else ""
             if instructions:
                 task = f"{instructions}\n\n{task}".strip()
@@ -1275,7 +1324,7 @@ def create_http_app(
                 turn=turn,
                 tool_call_id=tool_call_id,
             )
-            response_cursors[response_id] = _ResponseCursor(
+            next_cursor = _ResponseCursor(
                 conversation_id=turn.state.conversation_id,
                 parent_message_id=turn.state.parent_message_id,
                 model=turn.used_model or model,
@@ -1286,6 +1335,9 @@ def create_http_app(
                 tool_name=turn.decision.tool if turn.decision.kind == "tool_call" else "",
                 tool_call_id=tool_call_id,
             )
+            response_cursors[response_id] = next_cursor
+            if tool_call_id:
+                response_call_cursors[tool_call_id] = next_cursor
         else:
             prompt = _response_input_text(payload)
             if instructions:

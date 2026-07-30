@@ -203,6 +203,16 @@ class chatgpt:
         sh = logging.StreamHandler()
         sh.setFormatter(formator)
         self.logger.addHandler(sh)
+        self._control_log_handler = None
+        if self.control_log_path:
+            try:
+                self.control_log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_handler = logging.FileHandler(self.control_log_path, encoding="utf8")
+                log_handler.setFormatter(formator)
+                self.logger.addHandler(log_handler)
+                self._control_log_handler = log_handler
+            except OSError as error:
+                self.logger.warning("could not open control runtime log %s: %s", self.control_log_path, error)
         if not self.log_status:
             self.logger.removeHandler(sh)
         
@@ -1294,6 +1304,12 @@ class chatgpt:
             except Exception:
                 pass
             self.playwright_manager = None
+
+        log_handler = getattr(self, "_control_log_handler", None)
+        if log_handler:
+            self.logger.removeHandler(log_handler)
+            log_handler.close()
+            self._control_log_handler = None
 
         self.manage["browser_contexts"] = []
 

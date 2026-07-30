@@ -8,6 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
+from ChatGPTWeb.agent import AgentSafetyPolicy
 from ChatGPTWeb.api_keys import ApiKeyStore
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
@@ -699,6 +700,67 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_payload["output_text"], "service response")
         self.assertEqual(self.backend.sent[-1].msg_send, "second turn")
         self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-service")
+
+    async def test_responses_agent_continues_from_function_call_id_without_previous_response_id(self):
+        replies = iter((
+            '{"type":"tool_call","tool":"glob","arguments":{"pattern":"pyproject.toml"}}',
+            '{"type":"final","answer":"The project name is ChatGPTWeb."}',
+        ))
+
+        async def agent_reply(msg_data):
+            self.backend.sent.append(msg_data)
+            msg_data.status = True
+            msg_data.msg_recv = next(replies)
+            msg_data.conversation_id = "conversation-agent"
+            msg_data.next_msg_id = f"message-{len(self.backend.sent)}"
+            msg_data.model_requested = msg_data.gpt_model
+            msg_data.model_used = "gpt-5-5-mini"
+            msg_data.usage = {}
+            msg_data.response_metadata = {}
+            return msg_data
+
+        self.backend.continue_chat = agent_reply
+        client = TestClient(TestServer(create_http_app(
+            ChatService(self.backend),
+            api_key="test-key",
+            agent_safety_policy=AgentSafetyPolicy(enabled=False),
+        )))
+        await client.start_server()
+        try:
+            headers = {"Authorization": "Bearer test-key"}
+            first = await client.post("/v1/responses", json={
+                "model": "auto",
+                "input": "Read pyproject.toml and report the project name.",
+                "tools": [{
+                    "type": "function",
+                    "name": "glob",
+                    "description": "Find files by a glob pattern.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"pattern": {"type": "string"}},
+                        "required": ["pattern"],
+                    },
+                }],
+            }, headers=headers)
+            first_payload = await first.json()
+            call = first_payload["output"][0]
+            second = await client.post("/v1/responses", json={
+                "model": "auto",
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": "pyproject.toml",
+                }],
+            }, headers=headers)
+            second_payload = await second.json()
+        finally:
+            await client.close()
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(call["type"], "function_call")
+        self.assertEqual(second.status, 200)
+        self.assertEqual(second_payload["output_text"], "The project name is ChatGPTWeb.")
+        self.assertIn("pyproject.toml", self.backend.sent[-1].msg_send)
 
     async def test_responses_api_rejects_another_dynamic_client_cursor(self):
         admin_headers = {"Authorization": "Bearer test-key"}

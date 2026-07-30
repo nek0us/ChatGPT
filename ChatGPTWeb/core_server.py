@@ -79,7 +79,9 @@ class CoreServerSettings:
             raise ValueError(
                 "Set CHATGPTWEB_HTTP_API_KEY to a local administrator secret before starting the API"
             )
-        runtime_log_path = os.getenv("CHATGPTWEB_RUNTIME_LOG_PATH", "").strip() or None
+        runtime_log_path = os.getenv("CHATGPTWEB_RUNTIME_LOG_PATH", "").strip()
+        if not runtime_log_path:
+            runtime_log_path = str(storage_dir / "runtime.log")
         return cls(
             sessions_file=sessions_file,
             storage_dir=storage_dir,
