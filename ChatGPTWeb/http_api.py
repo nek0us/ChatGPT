@@ -326,7 +326,12 @@ def _openai_agent_tools(payload: Dict[str, Any]) -> list[AgentTool]:
     for item in raw_tools:
         if not isinstance(item, dict):
             raise web.HTTPBadRequest(text="every tool must be an object")
-        function = item.get("function") if item.get("type") == "function" else item
+        # Chat Completions wraps a function in ``{"type": "function",
+        # "function": {...}}`` while the Responses API uses the flat form
+        # ``{"type": "function", "name": ..., "parameters": ...}``.
+        # Accept both shapes so OpenAI SDK clients can switch endpoints without
+        # silently losing their host tools.
+        function = item.get("function") if item.get("type") == "function" and "function" in item else item
         if not isinstance(function, dict):
             raise web.HTTPBadRequest(text="OpenAI tool requires a function object")
         converted.append({
@@ -397,6 +402,32 @@ def _response_input_text(payload: Dict[str, Any]) -> str:
     raise web.HTTPBadRequest(text="responses request requires non-empty text input")
 
 
+def _response_agent_task(payload: Dict[str, Any]) -> str:
+    """Extract the actionable user turn without replaying host system prompts.
+
+    Coding hosts such as OpenCode send their large static system prompt and
+    entire tool documentation in the first ``input`` array.  Those rules are
+    already represented by the registered host tools and the core agent
+    protocol.  Passing them through as task data both wastes the browser
+    conversation and can exceed the agent task safety limit.
+    """
+    value = payload.get("input")
+    if not isinstance(value, list):
+        return _response_input_text(payload)
+    user_entries: list[str] = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("type") == "function_call_output":
+            continue
+        if item.get("role") != "user":
+            continue
+        text = _text_content(item.get("content")).strip()
+        if text:
+            user_entries.append(text)
+    if user_entries:
+        return "\n\n".join(user_entries)
+    return _response_input_text(payload)
+
+
 def _response_instructions(payload: Dict[str, Any]) -> str:
     value = payload.get("instructions")
     if value is None:
@@ -443,7 +474,16 @@ def _response_payload(
     output: list[dict[str, Any]]
     output_text = ""
     status = "completed"
-    usage: dict[str, Any] = {}
+    # ChatGPT's browser response does not reliably expose token accounting.
+    # The OpenAI Responses streaming schema nevertheless requires these
+    # numeric fields in ``response.completed``.  Keep a protocol-only zero
+    # value here instead of presenting an invented usage estimate as upstream
+    # telemetry.
+    usage: dict[str, Any] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    }
     if turn is not None:
         decision = turn.decision
         if decision.kind == "tool_call":
@@ -471,7 +511,11 @@ def _response_payload(
     elif result is not None:
         status = "completed" if result.ok else "failed"
         output_text = result.text
-        usage = dict(result.usage)
+        observed_usage = dict(result.usage)
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = observed_usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = value
         output = [{
             "type": "message",
             "id": result.message_id or f"msg_{uuid.uuid4().hex}",
@@ -1084,7 +1128,7 @@ def create_http_app(
         request: web.Request,
         response_object: Dict[str, Any],
     ) -> web.StreamResponse:
-        """Emit the small Responses SSE subset needed for text and tool turns."""
+        """Emit the Responses SSE events needed by OpenAI SDK consumers."""
         response = web.StreamResponse(headers={
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -1092,41 +1136,84 @@ def create_http_app(
         })
         await response.prepare(request)
         try:
-            await response.write(_sse("response.created", {"type": "response.created", "response": response_object}))
+            sequence = 0
+
+            async def emit(event: str, payload: dict[str, Any]) -> None:
+                nonlocal sequence
+                sequence += 1
+                await response.write(_sse(event, {"type": event, "sequence_number": sequence, **payload}))
+
+            # The OpenAI SDK's Responses stream reader builds output items
+            # before accepting their text/function deltas.
+            pending_response = dict(response_object)
+            pending_response["status"] = "in_progress"
+            pending_response["output"] = []
+            await emit("response.created", {"response": pending_response})
+            await emit("response.in_progress", {"response": pending_response})
             for output_index, item in enumerate(response_object.get("output", [])):
+                added_item = dict(item)
+                added_item["status"] = "in_progress"
+                if item.get("type") == "message":
+                    added_item["content"] = []
+                elif item.get("type") == "function_call":
+                    added_item["arguments"] = ""
+                await emit("response.output_item.added", {
+                    "output_index": output_index,
+                    "item": added_item,
+                })
                 if item.get("type") == "message":
                     content = item.get("content") or []
                     if content:
                         text = str(content[0].get("text") or "")
+                        await emit("response.content_part.added", {
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "content_index": 0,
+                            "part": {"type": "output_text", "text": "", "annotations": []},
+                        })
                         if text:
-                            await response.write(_sse("response.output_text.delta", {
-                                "type": "response.output_text.delta",
+                            await emit("response.output_text.delta", {
                                 "response_id": response_object["id"],
                                 "item_id": item["id"],
                                 "output_index": output_index,
                                 "content_index": 0,
                                 "delta": text,
-                            }))
-                        await response.write(_sse("response.output_text.done", {
-                            "type": "response.output_text.done",
+                            })
+                        await emit("response.output_text.done", {
                             "response_id": response_object["id"],
                             "item_id": item["id"],
                             "output_index": output_index,
                             "content_index": 0,
                             "text": text,
-                        }))
+                        })
+                        await emit("response.content_part.done", {
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "content_index": 0,
+                            "part": {"type": "output_text", "text": text, "annotations": []},
+                        })
                 elif item.get("type") == "function_call":
-                    await response.write(_sse("response.function_call_arguments.done", {
-                        "type": "response.function_call_arguments.done",
+                    arguments = str(item.get("arguments") or "")
+                    if arguments:
+                        await emit("response.function_call_arguments.delta", {
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "delta": arguments,
+                        })
+                    await emit("response.function_call_arguments.done", {
                         "response_id": response_object["id"],
                         "item_id": item["id"],
                         "output_index": output_index,
                         "call_id": item["call_id"],
                         "name": item["name"],
-                        "arguments": item["arguments"],
-                    }))
+                        "arguments": arguments,
+                    })
+                await emit("response.output_item.done", {
+                    "output_index": output_index,
+                    "item": item,
+                })
             event_type = "response.completed" if response_object["status"] == "completed" else "response.failed"
-            await response.write(_sse(event_type, {"type": event_type, "response": response_object}))
+            await emit(event_type, {"response": response_object})
             await response.write_eof()
         except ConnectionResetError:
             return response
@@ -1161,7 +1248,7 @@ def create_http_app(
 
         if tools is not None:
             tool_result = _response_tool_result(payload, cursor) if cursor and cursor.agent_state else None
-            task = _response_input_text(payload) if tool_result is None else ""
+            task = _response_agent_task(payload) if tool_result is None else ""
             if instructions:
                 task = f"{instructions}\n\n{task}".strip()
             turn = await AgentService(

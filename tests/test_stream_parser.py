@@ -11,13 +11,42 @@ from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api_keys import ApiKeyStore
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import MsgData, Session
-from ChatGPTWeb.http_api import chat_request_from_payload, create_control_app, create_http_app
+from ChatGPTWeb.http_api import (
+    _openai_agent_tools,
+    _response_agent_task,
+    chat_request_from_payload,
+    create_control_app,
+    create_http_app,
+)
 from ChatGPTWeb.service import ChatRequest, ChatService, ConversationOperation
 from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
 
 
 class ChatStreamParserTests(unittest.TestCase):
+    def test_responses_agent_task_ignores_host_system_prompt(self):
+        task = _response_agent_task({"input": [
+            {"role": "system", "content": "host policy " * 2000},
+            {"role": "user", "content": [{"type": "input_text", "text": "inspect the project"}]},
+        ]})
+
+        self.assertEqual(task, "inspect the project")
+
+    def test_openai_agent_tools_accepts_responses_flat_function_shape(self):
+        tools = _openai_agent_tools({"tools": [{
+            "type": "function",
+            "name": "list_files",
+            "description": "List project files.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+            },
+        }]})
+
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0].name, "list_files")
+        self.assertIn("path", tools[0].input_schema["properties"])
+
     def test_full_message_carries_model_usage_and_references(self):
         parser = ChatStreamParser()
         events = parser.feed(
@@ -703,8 +732,12 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn("event: response.created", body)
+        self.assertIn("event: response.output_item.added", body)
+        self.assertIn("event: response.content_part.added", body)
         self.assertIn("event: response.output_text.delta", body)
         self.assertIn("event: response.completed", body)
+        self.assertIn('"input_tokens": 0', body)
+        self.assertIn('"output_tokens":', body)
 
     async def test_bot_remote_protocol_uses_a_scoped_priority_lane(self):
         admin_headers = {"Authorization": "Bearer test-key"}
