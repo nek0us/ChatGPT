@@ -170,6 +170,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.requests[3].conversation_id, "agent-conversation")
         self.assertIn("created note.txt", backend.requests[4].msg_send)
         self.assertIn("创建一个 hello 文件", backend.requests[4].msg_send)
+        self.assertNotIn("Current registered tools JSON", backend.requests[4].msg_send)
 
     def test_agent_state_round_trips_the_original_task(self):
         state = AgentState.from_dict({
@@ -194,6 +195,8 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.decision.kind, "tool_call")
         self.assertEqual(len(backend.requests), 5)
         self.assertIn("previous response was not a valid agent decision", backend.requests[-1].msg_send)
+        self.assertIn("create a note", backend.requests[-1].msg_send)
+        self.assertIn("workspace.write_text", backend.requests[-1].msg_send)
         self.assertEqual(backend.requests[-1].conversation_id, "agent-conversation")
         self.assertEqual(backend.requests[-1].p_msg_id, "message-4")
 
