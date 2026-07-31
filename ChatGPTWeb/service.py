@@ -130,6 +130,8 @@ class ChatBackend(Protocol):
 
     async def get_activity(self, limit: int = 50) -> Dict[str, Any]: ...
 
+    async def get_runtime_logs(self, limit: int = 160) -> Dict[str, Any]: ...
+
     async def add_personality(self, personality: Dict[str, str]) -> None: ...
 
     async def del_personality(self, name: str) -> str: ...
@@ -423,6 +425,19 @@ class ChatService:
     async def get_activity(self, limit: int = 50) -> Dict[str, Any]:
         """Return bounded local runtime activity without browser internals."""
         return await self._backend.get_activity(limit=limit)
+
+    async def get_runtime_logs(self, limit: int = 160) -> Dict[str, Any]:
+        """Return a current-process log tail when the backend supports it."""
+        getter = getattr(self._backend, "get_runtime_logs", None)
+        if getter is None:
+            return {
+                "available": False,
+                "source": "unavailable",
+                "message": "runtime log is not available",
+                "entries": [],
+                "lines": [],
+            }
+        return await getter(limit=limit)
 
     async def get_usage_status(self) -> Dict[str, Any]:
         """Expose the current honest state: quota is unknown until upstream reports it."""

@@ -73,6 +73,7 @@ class ChatStreamParser:
                 "tool_calls",
                 "tool_results",
                 "attachments",
+                "image_results",
             ):
                 if key in metadata:
                     selected[key] = metadata[key]
@@ -172,7 +173,11 @@ class ChatStreamParser:
             metadata = message.get("metadata", {})
             if metadata.get("ui_card_title") == "Processing image":
                 self.image_gen = True
+                self.metadata["image_generation_pending"] = True
                 events.append(ChatStreamEvent(type="image_pending", raw=raw))
+            image_results = metadata.get("image_results")
+            if isinstance(image_results, list):
+                events.extend(self._handle_image_results(image_results, raw))
 
         content = message.get("content", {})
         if role == "assistant" and isinstance(content, dict):
@@ -213,7 +218,10 @@ class ChatStreamParser:
         elif path.endswith("/message/content/parts") and isinstance(value, list):
             if value and isinstance(value[0], str):
                 events.extend(self._merge_full_text(value[0], raw))
-        elif path.endswith("/message/metadata/image_results") and isinstance(value, list):
+        elif (
+            path.endswith("/message/metadata/image_results")
+            or path.endswith("/metadata/image_results")
+        ) and isinstance(value, list):
             events.extend(self._handle_image_results(value, raw))
         elif path == "/message" and isinstance(value, dict):
             events.extend(self._handle_message({"message": value}, raw))

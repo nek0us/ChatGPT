@@ -155,6 +155,27 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual(len(events[0].image_urls), 2)
         self.assertEqual(parser.final_event().image_urls, events[0].image_urls)
 
+    def test_tool_message_image_results_are_not_lost(self):
+        parser = ChatStreamParser()
+        events = parser.feed({
+            "message": {
+                "author": {"role": "tool"},
+                "metadata": {
+                    "ui_card_title": "Processing image",
+                    "image_results": [
+                        {"content_url": "https://images.example/generated.png"},
+                    ],
+                },
+                "content": {"parts": []},
+            },
+        })
+
+        self.assertIn("image_pending", [event.type for event in events])
+        self.assertIn("image", [event.type for event in events])
+        final = parser.final_event()
+        self.assertEqual(final.image_urls, ["https://images.example/generated.png"])
+        self.assertTrue(final.metadata["image_generation_pending"])
+
 
 class _FakeBackend:
     def __init__(self):
@@ -235,6 +256,19 @@ class _FakeBackend:
 
     async def get_activity(self, limit=50):
         return {"events": [{"at": "2026-01-01T00:00:00", "account": "account@example.com", "event": "test", "message": "safe"}][:limit]}
+
+    async def get_runtime_logs(self, limit=160):
+        entries = [
+            {"text": "2026-01-01 INFO runtime ready", "level": "info"},
+            {"text": "2026-01-01 ERROR request failed", "level": "error"},
+        ][-limit:]
+        return {
+            "available": True,
+            "source": "memory",
+            "message": "",
+            "entries": entries,
+            "lines": [entry["text"] for entry in entries],
+        }
 
 
 class _Logger:
@@ -1074,6 +1108,16 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthorized.status, 401)
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())["events"][0]["event"], "test")
+
+    async def test_runtime_logs_fall_back_to_structured_memory_tail(self):
+        headers = {"Authorization": "Bearer test-key"}
+        response = await self.client.get("/v1/runtime/logs?lines=20", headers=headers)
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["source"], "memory")
+        self.assertEqual(payload["entries"][-1]["level"], "error")
 
     async def test_account_control_requires_auth_and_valid_action(self):
         headers = {"Authorization": "Bearer test-key"}

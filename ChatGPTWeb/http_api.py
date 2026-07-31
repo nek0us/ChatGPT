@@ -32,6 +32,7 @@ from .remote_files import (
     RemoteFilePolicy,
     resolve_remote_input_payload,
 )
+from .runtime_logging import log_level_from_text, strip_ansi
 from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 
@@ -957,24 +958,34 @@ def create_http_app(
     async def runtime_logs(request: web.Request) -> web.Response:
         """Return a bounded tail of this runtime's own log to administrators."""
         require_admin(request)
-        if not log_path:
-            return web.json_response({"available": False, "message": "runtime log is not configured", "lines": []})
         try:
             lines = max(20, min(int(request.query.get("lines", "160")), 800))
         except ValueError as error:
             raise web.HTTPBadRequest(text="lines must be an integer") from error
-        try:
-            with log_path.open("rb") as handle:
-                handle.seek(0, 2)
-                size = handle.tell()
-                handle.seek(max(0, size - 256 * 1024))
-                text = handle.read().decode("utf8", errors="replace")
-        except FileNotFoundError:
-            return web.json_response({"available": False, "message": "runtime log does not exist yet", "lines": []})
-        except OSError as error:
-            logger.warning("could not read runtime log %s: %s", log_path, error)
-            return web.json_response({"available": False, "message": "runtime log cannot be read", "lines": []})
-        return web.json_response({"available": True, "message": "", "lines": text.splitlines()[-lines:]})
+        if log_path:
+            try:
+                with log_path.open("rb") as handle:
+                    handle.seek(0, 2)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 256 * 1024))
+                    text = handle.read().decode("utf8", errors="replace")
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logger.warning("could not read runtime log %s: %s", log_path, error)
+            else:
+                selected = [strip_ansi(line) for line in text.splitlines()[-lines:]]
+                return web.json_response({
+                    "available": True,
+                    "source": "file",
+                    "message": "",
+                    "entries": [
+                        {"text": line, "level": log_level_from_text(line)}
+                        for line in selected
+                    ],
+                    "lines": selected,
+                })
+        return web.json_response(await service.get_runtime_logs(limit=lines))
 
     async def control_account(request: web.Request) -> web.Response:
         require_admin(request)

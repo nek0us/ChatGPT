@@ -120,6 +120,19 @@
             </div>
             <span id="account-summary" class="section-meta"></span>
           </div>
+          <div class="account-toolbar">
+            <label class="account-search">
+              <span class="sr-only" data-i18n="searchAccounts">搜索账户</span>
+              <input
+                id="account-filter"
+                type="search"
+                autocomplete="off"
+                data-i18n-placeholder="searchAccounts"
+                placeholder="搜索账户"
+              >
+            </label>
+            <div id="account-index" class="account-index" aria-label="Account quick index"></div>
+          </div>
           <div class="table-frame">
             <table>
               <thead>
@@ -230,7 +243,7 @@
               <button id="refresh-logs" class="button" type="button" data-i18n="refreshLogs">刷新日志</button>
             </div>
           </div>
-          <pre id="runtime-log" class="runtime-log" tabindex="0"><span data-i18n="connectToLoad">连接后加载账户状态</span></pre>
+          <div id="runtime-log" class="runtime-log" tabindex="0" role="log" aria-live="polite"><span data-i18n="connectToLoad">连接后加载账户状态</span></div>
         </section>
       </main>
     </div>

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import ChatStreamEvent
+from ChatGPTWeb.capability_quota import IMAGE_GENERATION
 from ChatGPTWeb.config import MsgData, Session, Status
 
 
@@ -254,6 +255,38 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1].metadata["error_kind"], "session_reauthentication_pending")
         self.assertTrue(events[-1].metadata["retryable"])
         runtime._schedule_stream_reauthentication.assert_called_once_with(session)
+
+    async def test_image_generation_without_an_image_returns_a_typed_error(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._record_activity = MagicMock()
+        session = Session(
+            email="image@example.com",
+            status=Status.Ready.value,
+            login_state=True,
+        )
+        runtime._prepare_chat_session = AsyncMock(return_value=session)
+
+        async def stream_once(data, _session, attempt=1):
+            data.status = True
+            data.msg_recv = "The image task finished."
+            yield ChatStreamEvent(type="final", text=data.msg_recv)
+
+        runtime._stream_msg_by_browser_fetch = stream_once
+        data = MsgData(
+            msg_send="draw an image",
+            required_capabilities=[IMAGE_GENERATION],
+            persist_history=False,
+        )
+
+        events = [event async for event in runtime.continue_chat_stream(data)]
+
+        self.assertEqual([event.type for event in events], ["final", "error"])
+        self.assertEqual(
+            events[-1].metadata["error_kind"],
+            "image_generation_no_result",
+        )
+        self.assertTrue(events[-1].metadata["retryable"])
 
     async def test_non_auth_stream_error_is_returned_without_refresh_retry(self):
         runtime = chatgpt.__new__(chatgpt)

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.07.31.2";
+  const UI_VERSION = "2026.07.31.3";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
@@ -49,9 +49,11 @@
       connectToLoad: "连接后加载数据",
       noAccounts: "当前核心没有配置账户",
       accountSummary: "{ready} 个可用，共 {total} 个",
+      searchAccounts: "搜索或定位账户",
+      visibleAccounts: "显示 {visible} / {total}",
       recentActivity: "最近活动",
-      activitySubtitle: "当前核心进程内的运维事件",
-      noActivity: "当前进程还没有运维事件",
+      activitySubtitle: "聊天、附件、登录与运行状态",
+      noActivity: "当前进程还没有请求或运维事件",
       verificationSubtitle: "处理等待中的邮箱验证码与账户验证",
       pendingCount: "{count} 项等待处理",
       noVerification: "没有等待处理的验证",
@@ -128,6 +130,10 @@
       refreshCapabilities: "刷新账户能力",
       accountUpdated: "账户状态已更新",
       eventChat: "对话已完成",
+      eventChatStarted: "对话已开始",
+      eventChatFailed: "对话失败",
+      eventAttachment: "附件上传",
+      eventImageGeneration: "图片生成",
       eventControl: "账户设置已更新",
       eventLogin: "登录状态已更新",
       eventRuntime: "浏览器环境已恢复",
@@ -181,9 +187,11 @@
       connectToLoad: "Connect to load data",
       noAccounts: "No accounts are configured",
       accountSummary: "{ready} available of {total}",
+      searchAccounts: "Search or locate an account",
+      visibleAccounts: "Showing {visible} / {total}",
       recentActivity: "Recent activity",
-      activitySubtitle: "Operational events from this core process",
-      noActivity: "No operational events in this process",
+      activitySubtitle: "Chat, attachment, login, and runtime events",
+      noActivity: "No request or operational events in this process",
       verificationSubtitle: "Handle pending email codes and account checks",
       pendingCount: "{count} pending",
       noVerification: "No pending verification",
@@ -260,6 +268,10 @@
       refreshCapabilities: "Refresh capabilities",
       accountUpdated: "Account state updated",
       eventChat: "Chat completed",
+      eventChatStarted: "Chat started",
+      eventChatFailed: "Chat failed",
+      eventAttachment: "Attachment upload",
+      eventImageGeneration: "Image generation",
       eventControl: "Account settings changed",
       eventLogin: "Login state updated",
       eventRuntime: "Browser runtime recovered",
@@ -300,6 +312,7 @@
     drafts: new Map(),
     submitting: new Set(),
     lastUpdated: null,
+    accountFilter: "",
   };
 
   const elements = {};
@@ -328,6 +341,8 @@
       attention: document.querySelector("#metric-attention"),
       sessions: document.querySelector("#metric-sessions"),
       accountSummary: document.querySelector("#account-summary"),
+      accountFilter: document.querySelector("#account-filter"),
+      accountIndex: document.querySelector("#account-index"),
       accountRows: document.querySelector("#account-rows"),
       activityList: document.querySelector("#activity-list"),
       verificationBadge: document.querySelector("#verification-badge"),
@@ -501,8 +516,11 @@
 
   function accountState(item) {
     if (item.manual_disabled) return { label: t("disabled"), className: "disabled" };
-    if (item.login_retry_pending || item.status === "Login") {
+    if (item.status === "Working") {
       return { label: t("working"), className: "working" };
+    }
+    if (item.login_retry_pending || item.status === "Login") {
+      return { label: t("working"), className: "working attention-state" };
     }
     if (item.status === "Recovering") {
       return { label: t("recovering"), className: "working" };
@@ -519,6 +537,49 @@
     }
     if (item.login_failure_kind) return { label: t("needsLogin"), className: "error" };
     return { label: t("unavailable"), className: "attention" };
+  }
+
+  function accountNeedsAttention(item) {
+    if (item.status === "Working") return false;
+    return !isAccountReady(item);
+  }
+
+  function accountIndexLabel(email) {
+    const local = String(email || "--").split("@", 1)[0];
+    return local.length > 13 ? `${local.slice(0, 11)}…` : local;
+  }
+
+  function focusAccount(index) {
+    state.accountFilter = "";
+    elements.accountFilter.value = "";
+    renderAccounts();
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`[data-account-index="${index}"]`);
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.add("is-located");
+      window.setTimeout(() => row.classList.remove("is-located"), 1800);
+    });
+  }
+
+  function renderAccountIndex(list) {
+    elements.accountIndex.replaceChildren();
+    for (const [index, item] of list.entries()) {
+      const status = accountState(item);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `account-index-item ${status.className.split(" ")[0]}`;
+      button.title = `${item.email || "--"} · ${status.label}`;
+      button.setAttribute("aria-label", button.title);
+      const dot = document.createElement("span");
+      dot.className = "account-index-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = accountIndexLabel(item.email);
+      button.append(dot, label);
+      button.addEventListener("click", () => focusAccount(index));
+      elements.accountIndex.append(button);
+    }
   }
 
   function formatUsage(usage) {
@@ -621,19 +682,33 @@
   function renderAccounts() {
     const list = Array.isArray(state.status?.accounts) ? state.status.accounts : [];
     const ready = list.filter(isAccountReady).length;
+    const attention = list.filter(accountNeedsAttention).length;
     const sessions = list.reduce((total, item) => total + Number(item.conversation_count || 0), 0);
     elements.total.textContent = String(list.length);
     elements.ready.textContent = String(ready);
-    elements.attention.textContent = String(list.length - ready);
+    elements.attention.textContent = String(attention);
+    elements.attention.closest(".metric")?.classList.toggle("is-zero", attention === 0);
     elements.sessions.textContent = String(sessions);
-    elements.accountSummary.textContent = t("accountSummary", { ready, total: list.length });
+    const query = state.accountFilter.trim().toLocaleLowerCase();
+    const visible = list
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => !query || String(item.email || "").toLocaleLowerCase().includes(query));
+    elements.accountSummary.textContent = query
+      ? t("visibleAccounts", { visible: visible.length, total: list.length })
+      : t("accountSummary", { ready, total: list.length });
+    renderAccountIndex(list);
     elements.accountRows.replaceChildren();
     if (!list.length) {
       emptyTable(elements.accountRows, 6, t("noAccounts"));
       return;
     }
-    for (const item of list) {
+    if (!visible.length) {
+      emptyTable(elements.accountRows, 6, t("noAccounts"));
+      return;
+    }
+    for (const { item, index } of visible) {
       const row = document.createElement("tr");
+      row.dataset.accountIndex = String(index);
       textCell(row, item.email, "account-name");
       const statusCell = document.createElement("td");
       statusCell.className = "status-cell";
@@ -676,6 +751,10 @@
   function activityLabel(event) {
     const name = String(event || "");
     if (name === "chat_completed") return t("eventChat");
+    if (name === "chat_started") return t("eventChatStarted");
+    if (name === "chat_failed") return t("eventChatFailed");
+    if (name.includes("attachment_upload")) return t("eventAttachment");
+    if (name.includes("image_generation")) return t("eventImageGeneration");
     if (name === "account_control") return t("eventControl");
     if (name.includes("login")) return t("eventLogin");
     if (name.includes("runtime") || name.includes("context")) return t("eventRuntime");
@@ -694,7 +773,10 @@
     }
     for (const item of list.slice(0, 30)) {
       const row = document.createElement("div");
-      row.className = "activity-item";
+      const severity = ["debug", "info", "warning", "error", "critical"].includes(item.severity)
+        ? item.severity
+        : "info";
+      row.className = `activity-item severity-${severity}`;
       const time = document.createElement("time");
       time.textContent = formatTime(item.at);
       const account = document.createElement("span");
@@ -905,9 +987,24 @@
         elements.runtimeLog.textContent = payload.message || t("logUnavailable");
         return;
       }
-      const lines = Array.isArray(payload.lines) ? payload.lines : [];
+      const entries = Array.isArray(payload.entries)
+        ? payload.entries
+        : (Array.isArray(payload.lines) ? payload.lines.map((text) => ({ text, level: "info" })) : []);
       elements.logMessage.textContent = t("logsSubtitle");
-      elements.runtimeLog.textContent = lines.length ? lines.join("\n") : t("noLogLines");
+      elements.runtimeLog.replaceChildren();
+      if (!entries.length) {
+        elements.runtimeLog.textContent = t("noLogLines");
+      } else {
+        for (const entry of entries) {
+          const line = document.createElement("span");
+          const level = ["debug", "info", "warning", "error", "critical"].includes(entry.level)
+            ? entry.level
+            : "info";
+          line.className = `log-line log-${level}`;
+          line.textContent = String(entry.text || "");
+          elements.runtimeLog.append(line);
+        }
+      }
       elements.runtimeLog.scrollTop = elements.runtimeLog.scrollHeight;
     } catch (error) {
       elements.logMessage.textContent = error.message;
@@ -1089,6 +1186,10 @@
       setNotice(t("disconnected"), "success");
     });
     elements.refresh.addEventListener("click", () => refreshAll(true));
+    elements.accountFilter.addEventListener("input", () => {
+      state.accountFilter = elements.accountFilter.value;
+      if (state.status) renderAccounts();
+    });
     elements.clientKeyForm.addEventListener("submit", createClientKey);
     elements.copySecret.addEventListener("click", copySecret);
     elements.refreshLogs.addEventListener("click", refreshLogs);

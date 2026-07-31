@@ -482,6 +482,26 @@ class MsgData(BaseModel):
         False,
         description="internal guard against charging one request more than once",
     )
+    request_started_at: float = Field(
+        0,
+        description="internal monotonic timestamp used for runtime diagnostics",
+        exclude=True,
+    )
+    request_upload_count: int = Field(
+        0,
+        description="internal attachment count retained after upload buffers are released",
+        exclude=True,
+    )
+    request_image_upload_count: int = Field(
+        0,
+        description="internal image attachment count retained after upload",
+        exclude=True,
+    )
+    request_file_upload_count: int = Field(
+        0,
+        description="internal non-image attachment count retained after upload",
+        exclude=True,
+    )
     from_email: str = Field("", description="from email")
     account_hint: str = Field("", description="internal conversation owner hint")
     persist_history: bool = Field(True, description="whether this request is written to local conversation history")

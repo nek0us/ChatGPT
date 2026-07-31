@@ -10,6 +10,7 @@ import asyncio
 import threading
 import secrets
 import ipaddress
+import time
 from collections import deque
 from contextlib import suppress
 from datetime import datetime, timedelta
@@ -79,6 +80,12 @@ from .api import (
 )
 from .api_keys import ApiKeyStore
 from .request_scheduler import RequestLease, RequestScheduler
+from .runtime_logging import (
+    BoundedLogHandler,
+    ColorFormatter,
+    color_output_enabled,
+    default_stream,
+)
 
 class chatgpt:
     def __init__(self,
@@ -240,13 +247,22 @@ class chatgpt:
         self._usage_by_account: Dict[str, Dict[str, Dict[str, float]]] = {}
         self._account_selection_history: Dict[str, deque[datetime]] = {}
         self._request_scheduler = RequestScheduler(self._request_scheduler_capacity)
-        self._activity: List[Dict[str, str]] = []
+        self._activity: List[Dict[str, object]] = []
         self.verification_broker = VerificationBroker(code_providers=verification_code_providers)
         self.logger = logging.getLogger("logger")
+        self._standard_logger = self.logger
+        self._nonebot_runtime_sink_id = None
         self.logger.setLevel(logger_level)
         sh = logging.StreamHandler()
-        sh.setFormatter(formator)
+        sh.setFormatter(ColorFormatter(
+            formator,
+            enabled=color_output_enabled(getattr(sh, "stream", default_stream())),
+        ))
         self.logger.addHandler(sh)
+        self._stream_log_handler = sh
+        self._runtime_log_handler = BoundedLogHandler()
+        self._runtime_log_handler.setFormatter(formator)
+        self.logger.addHandler(self._runtime_log_handler)
         self._control_log_handler = None
         if self.control_log_path:
             try:
@@ -259,6 +275,7 @@ class chatgpt:
                 self.logger.warning("could not open control runtime log %s: %s", self.control_log_path, error)
         if not self.log_status:
             self.logger.removeHandler(sh)
+            self._stream_log_handler = None
         
         if not sessions:
             raise ValueError("session_token is empty!")
@@ -294,7 +311,18 @@ class chatgpt:
             self._start_task = asyncio.run_coroutine_threadsafe(self.__start__(self.browser_event_loop),self.browser_event_loop)
         elif self.log_status:
             from nonebot.log import logger # type: ignore
+            if self._stream_log_handler is not None:
+                self._standard_logger.removeHandler(self._stream_log_handler)
+                self._stream_log_handler.close()
+                self._stream_log_handler = None
+            self._standard_logger.removeHandler(self._runtime_log_handler)
             self.logger = logger
+            self._nonebot_runtime_sink_id = self.logger.add(
+                self._runtime_log_handler,
+                level=logger_level,
+                format="{time:YYYY/MM/DD HH:mm:ss} {file.name} {level} {message}",
+                colorize=False,
+            )
 
         '''
         data : base data type | 内部数据类型
@@ -985,7 +1013,25 @@ class chatgpt:
         for key, value in msg_data.usage.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 usage[key] = usage.get(key, 0) + value
-        self._record_activity(session.email, "chat_completed", f"model: {model}")
+        capabilities = list(msg_data.required_capabilities)
+        elapsed_ms = (
+            max(0, int((time.monotonic() - msg_data.request_started_at) * 1000))
+            if msg_data.request_started_at else 0
+        )
+        self._record_activity(
+            session.email,
+            "chat_completed",
+            (
+                f"model: {model}"
+                + (f"; capabilities: {', '.join(capabilities)}" if capabilities else "")
+            ),
+            details={
+                "model": model,
+                "duration_ms": elapsed_ms,
+                "uploads": msg_data.request_upload_count,
+                "generated_images": len(msg_data.img_list),
+            },
+        )
 
     @staticmethod
     def _is_paid_account(session: Session) -> bool:
@@ -1166,14 +1212,18 @@ class chatgpt:
             return
         self._reset_capability_usage_day(session)
         increments = {IMAGE_UPLOAD: 0, FILE_UPLOAD: 0, IMAGE_GENERATION: 0}
-        for file in msg_data.upload_file:
-            capability = (
-                IMAGE_UPLOAD
-                if file.content_type == "image_asset_pointer"
-                or str(file.mime_type or "").lower().startswith("image/")
-                else FILE_UPLOAD
-            )
-            increments[capability] += 1
+        if msg_data.upload_file:
+            for file in msg_data.upload_file:
+                capability = (
+                    IMAGE_UPLOAD
+                    if file.content_type == "image_asset_pointer"
+                    or str(file.mime_type or "").lower().startswith("image/")
+                    else FILE_UPLOAD
+                )
+                increments[capability] += 1
+        else:
+            increments[IMAGE_UPLOAD] = msg_data.request_image_upload_count
+            increments[FILE_UPLOAD] = msg_data.request_file_upload_count
         if msg_data.image_gen or msg_data.img_list:
             increments[IMAGE_GENERATION] = max(1, len(msg_data.img_list))
         changed = False
@@ -1203,17 +1253,33 @@ class chatgpt:
                 ),
             )
 
-    def _record_activity(self, account: str, event: str, message: str) -> None:
+    def _record_activity(
+        self,
+        account: str,
+        event: str,
+        message: str,
+        *,
+        severity: str = "info",
+        details: Optional[Dict[str, object]] = None,
+    ) -> None:
         """Record bounded, credential-free diagnostics for the local console."""
         activity = getattr(self, "_activity", None)
         if activity is None:
             activity = self._activity = []
-        activity.append({
+        item: Dict[str, object] = {
             "at": datetime.now().isoformat(timespec="seconds"),
             "account": account,
             "event": event,
             "message": message[:240],
-        })
+            "severity": severity,
+        }
+        if details:
+            item["details"] = {
+                str(key): value
+                for key, value in details.items()
+                if isinstance(value, (str, int, float, bool)) or value is None
+            }
+        activity.append(item)
         if len(activity) > 200:
             del activity[:-200]
 
@@ -1222,6 +1288,19 @@ class chatgpt:
         limit = max(1, min(limit, 200))
         activity = getattr(self, "_activity", [])
         return {"events": list(reversed(activity[-limit:]))}
+
+    async def get_runtime_logs(self, limit: int = 160) -> Dict[str, object]:
+        """Return a structured current-process tail when no log file is configured."""
+        limit = max(20, min(limit, 800))
+        handler = getattr(self, "_runtime_log_handler", None)
+        entries = handler.snapshot(limit) if handler is not None else []
+        return {
+            "available": bool(entries),
+            "source": "memory",
+            "message": "" if entries else "runtime log is empty",
+            "entries": entries,
+            "lines": [entry["text"] for entry in entries],
+        }
 
     def _usage_snapshot(self, account: str) -> Dict[str, object]:
         models = getattr(self, "_usage_by_account", {}).get(account, {})
@@ -1577,9 +1656,28 @@ class chatgpt:
 
         log_handler = getattr(self, "_control_log_handler", None)
         if log_handler:
-            self.logger.removeHandler(log_handler)
+            standard_logger = getattr(self, "_standard_logger", self.logger)
+            if log_handler in getattr(standard_logger, "handlers", ()):
+                standard_logger.removeHandler(log_handler)
             log_handler.close()
             self._control_log_handler = None
+
+        nonebot_sink_id = getattr(self, "_nonebot_runtime_sink_id", None)
+        if nonebot_sink_id is not None:
+            try:
+                self.logger.remove(nonebot_sink_id)
+            except (TypeError, ValueError):
+                pass
+            self._nonebot_runtime_sink_id = None
+
+        for attribute in ("_stream_log_handler", "_runtime_log_handler"):
+            handler = getattr(self, attribute, None)
+            if handler:
+                standard_logger = getattr(self, "_standard_logger", self.logger)
+                if handler in getattr(standard_logger, "handlers", ()):
+                    standard_logger.removeHandler(handler)
+                handler.close()
+                setattr(self, attribute, None)
 
         self.manage["browser_contexts"] = []
 
@@ -2910,7 +3008,11 @@ class chatgpt:
                     self._apply_stream_event(msg_data, event)
                     yield event
             if pending_final:
-                final_event = await self._reconcile_stream_final(session, pending_final)
+                final_event = await self._reconcile_stream_final(
+                    session,
+                    pending_final,
+                    settle=decoder.parser.image_gen,
+                )
                 if should_emit(final_event):
                     self._apply_stream_event(msg_data, final_event)
                     yield final_event
@@ -3234,7 +3336,7 @@ class chatgpt:
         page = session.page
         if not page:
             return event
-        attempts = 3 if settle else 1
+        attempts = 10 if settle else 1
         best_event = event
         for attempt in range(attempts):
             try:
@@ -3256,22 +3358,53 @@ class chatgpt:
                             const conversation = await result.json();
                             const mapping = conversation && conversation.mapping;
                             if (!mapping || typeof mapping !== 'object') continue;
+                            const nodes = Object.values(mapping);
                             let node = messageId ? mapping[messageId] : null;
                             if (!node || !node.message) {
-                                const nodes = Object.values(mapping);
-                                node = nodes.reverse().find((item) =>
+                                node = [...nodes].reverse().find((item) =>
                                     item && item.message && item.message.author && item.message.author.role === 'assistant'
                                 );
                             }
                             const message = node && node.message;
                             if (!message) continue;
                             const parts = message && message.content && message.content.parts;
+                            const imageUrls = [];
+                            let imagePending = false;
+                            const addImageResults = (value) => {
+                                if (!Array.isArray(value)) return;
+                                for (const image of value) {
+                                    if (!image || typeof image !== 'object') continue;
+                                    const url = image.content_url || image.download_url || image.url;
+                                    if (typeof url === 'string' && url && !imageUrls.includes(url)) {
+                                        imageUrls.push(url);
+                                    }
+                                }
+                            };
+                            let latestUserIndex = -1;
+                            for (let index = nodes.length - 1; index >= 0; index -= 1) {
+                                const candidate = nodes[index] && nodes[index].message;
+                                if (candidate && candidate.author && candidate.author.role === 'user') {
+                                    latestUserIndex = index;
+                                    break;
+                                }
+                            }
+                            for (const candidateNode of nodes.slice(latestUserIndex + 1)) {
+                                const candidate = candidateNode && candidateNode.message;
+                                if (!candidate) continue;
+                                const candidateMetadata = candidate.metadata || {};
+                                addImageResults(candidateMetadata.image_results);
+                                if (candidateMetadata.ui_card_title === 'Processing image') {
+                                    imagePending = true;
+                                }
+                            }
                             return {
                                 text: Array.isArray(parts) && typeof parts[0] === 'string'
                                     ? parts[0]
                                     : '',
                                 messageId: message.id || messageId || '',
                                 metadata: message.metadata || {},
+                                imageUrls,
+                                imagePending,
                                 title: typeof conversation.title === 'string'
                                     ? conversation.title
                                     : '',
@@ -3306,6 +3439,14 @@ class chatgpt:
                     metadata["conversation_created_at"] = response["createTime"]
                 if response.get("updateTime") not in (None, ""):
                     metadata["conversation_updated_at"] = response["updateTime"]
+                image_urls = best_event.image_urls.copy()
+                for image_url in response.get("imageUrls", []):
+                    if isinstance(image_url, str) and image_url and image_url not in image_urls:
+                        image_urls.append(image_url)
+                if response.get("imagePending") and not image_urls:
+                    metadata["image_generation_pending"] = True
+                elif image_urls:
+                    metadata.pop("image_generation_pending", None)
                 # A mapping node may briefly lag behind the final SSE patch.
                 # Keep the longer text while always accepting the canonical
                 # node metadata, which may contain generated-file references.
@@ -3321,18 +3462,25 @@ class chatgpt:
                         or best_event.message_id
                     ),
                     conversation_id=event.conversation_id,
-                    image_urls=best_event.image_urls.copy(),
+                    image_urls=image_urls,
                     model=best_event.model,
                     usage=best_event.usage.copy(),
                     metadata=metadata,
                     files=best_event.files.copy(),
                     raw=best_event.raw,
                 )
-                if len(text) > len(event.text):
+                if len(text) > len(event.text) or image_urls:
                     break
 
             if attempt + 1 < attempts:
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(1.5 if settle else 0.6)
+        if settle and not best_event.image_urls:
+            best_event.image_urls = await self._generated_image_urls_from_bootstrap(
+                session,
+                best_event.conversation_id,
+            )
+        if best_event.image_urls:
+            best_event.metadata.pop("image_generation_pending", None)
         if not best_event.files:
             best_event.files = await self._download_output_files(
                 session,
@@ -3340,6 +3488,70 @@ class chatgpt:
                 best_event.conversation_id,
             )
         return best_event
+
+    async def _generated_image_urls_from_bootstrap(
+        self,
+        session: Session,
+        conversation_id: str,
+    ) -> List[str]:
+        """Resolve a completed image task when SSE omitted its final asset URL."""
+        page = session.page
+        if not page or not conversation_id:
+            return []
+        try:
+            result = await page.evaluate(
+                """async ({ conversationId, accessToken }) => {
+                    const headers = { accept: 'application/json' };
+                    if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+                    const bootstrap = await fetch('/backend-api/images/bootstrap', {
+                        credentials: 'include',
+                        headers,
+                    });
+                    if (!bootstrap.ok) return { error: `bootstrap ${bootstrap.status}` };
+                    const payload = await bootstrap.json();
+                    const direct = payload && (payload.download_url || payload.content_url);
+                    if (typeof direct === 'string' && direct) return { urls: [direct] };
+                    const thumbnail = payload && payload.thumbnail_url;
+                    if (typeof thumbnail !== 'string' || !thumbnail) return { urls: [] };
+                    const match = thumbnail.match(/(?:file[_-])([A-Za-z0-9-]+)/);
+                    if (!match) return { urls: [] };
+                    const compact = `file_${match[1].replace(/-/g, '')}`;
+                    const path = `/backend-api/files/download/${compact}`
+                        + `?conversation_id=${encodeURIComponent(conversationId)}&inline=false`;
+                    const download = await fetch(path, {
+                        credentials: 'include',
+                        headers,
+                    });
+                    if (!download.ok) return { error: `download ${download.status}` };
+                    const resolved = await download.json();
+                    const url = resolved && resolved.download_url;
+                    return { urls: typeof url === 'string' && url ? [url] : [] };
+                }""",
+                {
+                    "conversationId": conversation_id,
+                    "accessToken": session.access_token,
+                },
+            )
+        except Exception as error:
+            self.logger.debug(
+                "%s generated image bootstrap reconciliation failed: %s",
+                session.email,
+                error,
+            )
+            return []
+        if not isinstance(result, dict):
+            return []
+        if result.get("error"):
+            self.logger.warning(
+                "%s generated image bootstrap did not resolve an asset: %s",
+                session.email,
+                result["error"],
+            )
+        return [
+            value
+            for value in result.get("urls", [])
+            if isinstance(value, str) and value
+        ]
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
@@ -4249,15 +4461,117 @@ class chatgpt:
         """
         session = await self._prepare_chat_session(msg_data)
         if not session:
+            error = msg_data.error_list[-1] if msg_data.error_list else {}
+            self._record_activity(
+                str(error.get("session_email") or msg_data.account_hint or ""),
+                "chat_failed",
+                f"request rejected: {error.get('kind') or 'session_unavailable'}",
+                severity="error",
+                details={"error_kind": str(error.get("kind") or "session_unavailable")},
+            )
             return msg_data
 
+        msg_data.request_started_at = time.monotonic()
+        msg_data.request_upload_count = len(msg_data.upload_file)
+        msg_data.request_image_upload_count = sum(
+            1
+            for file in msg_data.upload_file
+            if (
+                file.content_type == "image_asset_pointer"
+                or str(file.mime_type or "").lower().startswith("image/")
+            )
+        )
+        msg_data.request_file_upload_count = (
+            msg_data.request_upload_count - msg_data.request_image_upload_count
+        )
+        self._record_activity(
+            session.email,
+            "chat_started",
+            (
+                "request accepted"
+                + (
+                    f"; capabilities: {', '.join(msg_data.required_capabilities)}"
+                    if msg_data.required_capabilities else ""
+                )
+            ),
+            details={
+                "uploads": msg_data.request_upload_count,
+                "new_conversation": not bool(msg_data.conversation_id),
+            },
+        )
+        if msg_data.request_upload_count:
+            self._record_activity(
+                session.email,
+                "attachment_upload_started",
+                f"{msg_data.request_upload_count} attachment(s)",
+                details={"count": msg_data.request_upload_count},
+            )
+        if IMAGE_GENERATION in msg_data.required_capabilities:
+            self._record_activity(
+                session.email,
+                "image_generation_started",
+                "image generation requested",
+            )
         try:
             msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
+            if (
+                IMAGE_GENERATION in msg_data.required_capabilities
+                and not msg_data.img_list
+            ):
+                msg_data.add_error(
+                    kind="image_generation_no_result",
+                    message="upstream image generation completed without a retrievable image",
+                    retryable=True,
+                    session_email=session.email,
+                )
+                raise RuntimeError(msg_data.error_list[-1]["message"])
+            if not msg_data.status:
+                error_kind = (
+                    "image_generation_no_result"
+                    if IMAGE_GENERATION in msg_data.required_capabilities
+                    else "stream_no_final_result"
+                )
+                msg_data.add_error(
+                    kind=error_kind,
+                    message=(
+                        "upstream image generation completed without a retrievable image"
+                        if error_kind == "image_generation_no_result"
+                        else "upstream stream completed without a final result"
+                    ),
+                    retryable=True,
+                    session_email=session.email,
+                )
+                raise RuntimeError(msg_data.error_list[-1]["message"])
+
             if msg_data.status:
                 self._bind_conversation_client(msg_data, session)
             session.status = Status.Ready.value
             self._record_usage(session, msg_data)
             self._record_capability_usage(session, msg_data)
+            duration_ms = max(
+                0,
+                int((time.monotonic() - msg_data.request_started_at) * 1000),
+            )
+            if msg_data.request_upload_count:
+                self._record_activity(
+                    session.email,
+                    "attachment_upload_completed",
+                    f"{msg_data.request_upload_count} attachment(s)",
+                    details={
+                        "count": msg_data.request_upload_count,
+                        "duration_ms": duration_ms,
+                    },
+                )
+            if IMAGE_GENERATION in msg_data.required_capabilities:
+                self._record_activity(
+                    session.email,
+                    "image_generation_completed",
+                    f"{len(msg_data.img_list)} image(s)",
+                    details={
+                        "count": len(msg_data.img_list),
+                        "duration_ms": duration_ms,
+                    },
+                )
         except TimeoutError:
             msg_data.add_error(
                 kind="continue_chat_timeout",
@@ -4266,15 +4580,46 @@ class chatgpt:
                 session_email=session.email,
             )
             self.logger.warning(msg_data.error_info)
-        except Exception as e:
-            a, b, exc_traceback = sys.exc_info()
-            msg_data.add_error(
-                kind="continue_chat_error",
-                message=f"send msg {msg_data.msg_send} error:{e}",
-                session_email=session.email,
-                line=exc_traceback.tb_lineno, # type: ignore
+            self._record_activity(
+                session.email,
+                "chat_failed",
+                "request failed: continue_chat_timeout",
+                severity="error",
+                details={
+                    "error_kind": "continue_chat_timeout",
+                    "duration_ms": max(
+                        0,
+                        int((time.monotonic() - msg_data.request_started_at) * 1000),
+                    ),
+                },
             )
+        except Exception as e:
+            if not msg_data.error_info:
+                a, b, exc_traceback = sys.exc_info()
+                msg_data.add_error(
+                    kind="continue_chat_error",
+                    message=f"send msg {msg_data.msg_send} error:{e}",
+                    session_email=session.email,
+                    line=exc_traceback.tb_lineno, # type: ignore
+                )
             self.logger.error(msg_data.error_info)
+            error_kind = str(
+                (msg_data.error_list[-1] if msg_data.error_list else {}).get("kind")
+                or "continue_chat_error"
+            )
+            self._record_activity(
+                session.email,
+                "chat_failed",
+                f"request failed: {error_kind}",
+                severity="error",
+                details={
+                    "error_kind": error_kind,
+                    "duration_ms": max(
+                        0,
+                        int((time.monotonic() - msg_data.request_started_at) * 1000),
+                    ),
+                },
+            )
         else:
             if not msg_data.error_info or msg_data.status:
                 response_text = msg_data.msg_raw or msg_data.msg_recv
@@ -4308,6 +4653,13 @@ class chatgpt:
         session = await self._prepare_chat_session(msg_data)
         if not session:
             error = msg_data.error_list[-1] if msg_data.error_list else {}
+            self._record_activity(
+                str(error.get("session_email") or msg_data.account_hint or ""),
+                "chat_failed",
+                f"request rejected: {error.get('kind') or 'session_unavailable'}",
+                severity="error",
+                details={"error_kind": str(error.get("kind") or "session_unavailable")},
+            )
             yield ChatStreamEvent(
                 type="error",
                 text=msg_data.error_info or "failed to prepare chat session",
@@ -4324,6 +4676,47 @@ class chatgpt:
 
         context_num = session.email
         msg_data.from_email = session.email
+        msg_data.request_started_at = time.monotonic()
+        msg_data.request_upload_count = len(msg_data.upload_file)
+        msg_data.request_image_upload_count = sum(
+            1
+            for file in msg_data.upload_file
+            if (
+                file.content_type == "image_asset_pointer"
+                or str(file.mime_type or "").lower().startswith("image/")
+            )
+        )
+        msg_data.request_file_upload_count = (
+            msg_data.request_upload_count - msg_data.request_image_upload_count
+        )
+        self._record_activity(
+            session.email,
+            "chat_started",
+            (
+                "request accepted"
+                + (
+                    f"; capabilities: {', '.join(msg_data.required_capabilities)}"
+                    if msg_data.required_capabilities else ""
+                )
+            ),
+            details={
+                "uploads": msg_data.request_upload_count,
+                "new_conversation": not bool(msg_data.conversation_id),
+            },
+        )
+        if msg_data.request_upload_count:
+            self._record_activity(
+                session.email,
+                "attachment_upload_started",
+                f"{msg_data.request_upload_count} attachment(s)",
+                details={"count": msg_data.request_upload_count},
+            )
+        if IMAGE_GENERATION in msg_data.required_capabilities:
+            self._record_activity(
+                session.email,
+                "image_generation_started",
+                "image generation requested",
+            )
         self.logger.debug(f"session {session.email} begin stream work")
         stream_attempt = 1
         try:
@@ -4392,6 +4785,26 @@ class chatgpt:
                         )
                     raise
 
+            if (
+                IMAGE_GENERATION in msg_data.required_capabilities
+                and not msg_data.img_list
+            ):
+                msg_data.add_error(
+                    kind="image_generation_no_result",
+                    message="upstream image generation completed without a retrievable image",
+                    retryable=True,
+                    session_email=session.email,
+                )
+                raise RuntimeError(msg_data.error_list[-1]["message"])
+            if not msg_data.status:
+                msg_data.add_error(
+                    kind="stream_no_final_result",
+                    message="upstream stream completed without a final result",
+                    retryable=True,
+                    session_email=session.email,
+                )
+                raise RuntimeError(msg_data.error_list[-1]["message"])
+
             if msg_data.status:
                 self._clear_chat_rate_limit(session)
                 if session.login_state is False:
@@ -4404,10 +4817,61 @@ class chatgpt:
                 self.logger.info(
                     f"receive stream message: {build_chat_content(msg_data.msg_recv).markdown}"
                 )
+                if msg_data.request_upload_count:
+                    self._record_activity(
+                        session.email,
+                        "attachment_upload_completed",
+                        f"{msg_data.request_upload_count} attachment(s) delivered",
+                        details={"count": msg_data.request_upload_count},
+                    )
+                if IMAGE_GENERATION in msg_data.required_capabilities:
+                    if msg_data.img_list:
+                        self._record_activity(
+                            session.email,
+                            "image_generation_completed",
+                            f"{len(msg_data.img_list)} image(s) returned",
+                            details={"count": len(msg_data.img_list)},
+                        )
+                    else:
+                        self._record_activity(
+                            session.email,
+                            "image_generation_failed",
+                            "upstream completed without a generated image",
+                            severity="error",
+                        )
         except Exception as e:
             if not msg_data.error_info:
                 msg_data.add_error(kind="continue_chat_stream_error", message=str(e), session_email=session.email)
             self.logger.error(msg_data.error_info)
+            error_kind = str(
+                (msg_data.error_list[-1] if msg_data.error_list else {}).get("kind")
+                or "continue_chat_stream_error"
+            )
+            self._record_activity(
+                session.email,
+                "chat_failed",
+                f"request failed: {error_kind}",
+                severity="error",
+                details={
+                    "error_kind": error_kind,
+                    "duration_ms": (
+                        max(0, int((time.monotonic() - msg_data.request_started_at) * 1000))
+                        if msg_data.request_started_at else 0
+                    ),
+                },
+            )
+            structured_error = (
+                msg_data.error_list[-1]
+                if msg_data.error_list
+                else {"kind": error_kind, "retryable": False}
+            )
+            error_metadata = {
+                **msg_data.response_metadata,
+                "error_kind": str(structured_error.get("kind") or error_kind),
+                "retryable": bool(structured_error.get("retryable", False)),
+            }
+            if structured_error.get("capability"):
+                error_metadata["capability"] = str(structured_error["capability"])
             yield ChatStreamEvent(
                 type="error",
                 text=msg_data.error_info or str(e),
@@ -4415,34 +4879,7 @@ class chatgpt:
                 conversation_id=msg_data.conversation_id,
                 model=msg_data.model_used,
                 usage=msg_data.usage.copy(),
-                metadata={
-                    **msg_data.response_metadata,
-                    **(
-                        {
-                            "error_kind": next(
-                                str(item.get("kind"))
-                                for item in reversed(msg_data.error_list)
-                                if item.get("kind") in {
-                                    "capability_rate_limited",
-                                    "conversation_capability_rate_limited",
-                                }
-                            ),
-                            "retryable": True,
-                        }
-                        if any(
-                            item.get("kind") in {
-                                "capability_rate_limited",
-                                "conversation_capability_rate_limited",
-                            }
-                            for item in msg_data.error_list
-                        )
-                        else {"error_kind": "rate_limited", "retryable": True}
-                        if any(item.get("kind") in {"rate_limited", "conversation_rate_limited"} for item in msg_data.error_list)
-                        else {"error_kind": "session_reauthentication_pending", "retryable": True}
-                        if any(item.get("kind") == "session_reauthentication_pending" for item in msg_data.error_list)
-                        else {}
-                    ),
-                },
+                metadata=error_metadata,
             )
         finally:
             if session.status not in (Status.Update.value, Status.Recovering.value, Status.Stop.value):

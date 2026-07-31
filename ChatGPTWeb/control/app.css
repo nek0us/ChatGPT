@@ -30,6 +30,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   min-width: 320px;
@@ -560,6 +564,14 @@ select {
 .metric-rose::before { background: var(--rose); }
 .metric-violet::before { background: var(--violet); }
 
+.metric.is-zero::before {
+  background: var(--line-strong);
+}
+
+.metric.is-zero strong {
+  color: var(--muted);
+}
+
 .metric > span,
 .metric small {
   display: block;
@@ -610,7 +622,8 @@ select {
 }
 
 .table-frame {
-  overflow-x: auto;
+  max-height: min(58vh, 720px);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
@@ -621,6 +634,91 @@ table {
   width: 100%;
   min-width: 1050px;
   border-collapse: collapse;
+}
+
+.table-frame thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-soft);
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.account-toolbar {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.account-search input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 7px 10px;
+  outline: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.account-search input:focus {
+  border-color: #4d78b0;
+  box-shadow: 0 0 0 3px #326bc41a;
+}
+
+.account-index {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 4px 1px;
+  scrollbar-width: thin;
+}
+
+.account-index-item {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 7px;
+  background: var(--surface);
+  color: #536178;
+  font-size: 10px;
+}
+
+.account-index-item:hover {
+  border-color: #8295ad;
+  color: var(--ink);
+}
+
+.account-index-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a0a9b6;
+}
+
+.account-index-item.ready .account-index-dot { background: var(--green); }
+.account-index-item.working .account-index-dot { background: var(--blue); }
+.account-index-item.attention .account-index-dot { background: var(--amber); }
+.account-index-item.error .account-index-dot { background: var(--danger); }
+.account-index-item.disabled .account-index-dot { background: #8993a0; }
+
+#account-rows tr {
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+#account-rows tr.is-located {
+  background: #fff6d9;
+  box-shadow: inset 4px 0 #d29a2e;
 }
 
 th,
@@ -757,6 +855,15 @@ tbody tr:hover:not(.empty-row) {
   padding: 11px 13px;
   border-bottom: 1px solid #e7ebf1;
   font-size: 11px;
+}
+
+.activity-item.severity-warning {
+  box-shadow: inset 3px 0 #d29a2e;
+}
+
+.activity-item.severity-error,
+.activity-item.severity-critical {
+  box-shadow: inset 3px 0 var(--danger);
 }
 
 .activity-item:last-child {
@@ -942,14 +1049,32 @@ tbody tr:hover:not(.empty-row) {
   background: #132631;
   color: #d8e4e8;
   font: 12px/1.62 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
   tab-size: 2;
   box-shadow: var(--shadow);
 }
 
+.runtime-log .log-line {
+  display: block;
+  min-height: 1.62em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runtime-log .log-debug {
+  color: #8eb7cf;
+}
+
+.runtime-log .log-info {
+  color: #d8e4e8;
+}
+
 .runtime-log .log-warning {
   color: #f3cf7c;
+}
+
+.runtime-log .log-error,
+.runtime-log .log-critical {
+  color: #ff9c9c;
 }
 
 @media (max-width: 1180px) {
@@ -972,6 +1097,10 @@ tbody tr:hover:not(.empty-row) {
 
   .activity-item {
     grid-template-columns: 135px minmax(150px, 0.8fr) minmax(150px, 0.8fr) minmax(180px, 1.3fr);
+  }
+
+  .account-toolbar {
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 }
 
@@ -1072,6 +1201,14 @@ tbody tr:hover:not(.empty-row) {
 
   .activity-list {
     overflow-x: auto;
+  }
+
+  .account-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .account-index {
+    justify-content: flex-start;
   }
 
   .activity-item {
