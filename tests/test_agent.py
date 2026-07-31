@@ -77,6 +77,8 @@ class AgentDecisionTests(unittest.TestCase):
         self.assertIn("product-native image generation", prompt)
         self.assertIn("registered host tools", prompt)
         self.assertIn("named root", prompt)
+        self.assertIn("path-name locator", prompt)
+        self.assertIn("narrow any text search", prompt)
         self.assertIn("actual host tool output", prompt)
 
     def test_registered_tool_call_is_validated(self):
