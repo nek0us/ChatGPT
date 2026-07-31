@@ -103,6 +103,7 @@ class Status(Enum):
     Working = "Working"
     Stop = "Stop"
     Update = "Update"
+    Recovering = "Recovering"
     Ready = "Ready"
 
 
@@ -223,7 +224,8 @@ class Session:
             kind: str = LoginFailureKind.Unknown.value,
             details: str = "",
             cooldown_seconds: int = 300,
-            stop: bool = False
+            stop: bool = False,
+            requires_reauthentication: bool = False,
     ):
         permanent_kinds = {
             LoginFailureKind.BadCredentials.value,
@@ -240,12 +242,33 @@ class Session:
         self.last_login_error = details[:1000] if details else kind
         self.login_state = False
         self.login_state_first = False
-        if stop or kind in permanent_kinds or self.login_fail_count >= self.max_login_failures:
+        is_transient = kind == LoginFailureKind.Transient.value
+        if stop or kind in permanent_kinds or (
+            not is_transient and self.login_fail_count >= self.max_login_failures
+        ):
             self.status = Status.Stop.value
             self.disabled_until = None
         else:
-            self.status = Status.Update.value
-            self.disabled_until = datetime.datetime.now() + datetime.timedelta(seconds=cooldown_seconds)
+            self.status = (
+                Status.Update.value
+                if requires_reauthentication or not is_transient
+                else Status.Recovering.value
+            )
+            if cooldown_seconds > 0:
+                # A transport failure says nothing about the account itself.
+                # Keep retrying it with a bounded backoff instead of turning a
+                # short network outage into a permanently stopped account.
+                retry_seconds = cooldown_seconds
+                if is_transient:
+                    retry_seconds = min(
+                        cooldown_seconds * (2 ** min(self.login_fail_count - 1, 3)),
+                        1800,
+                    )
+                self.disabled_until = datetime.datetime.now() + datetime.timedelta(
+                    seconds=retry_seconds
+                )
+            else:
+                self.disabled_until = None
 
 
 class Personality:

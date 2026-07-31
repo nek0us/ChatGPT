@@ -104,6 +104,27 @@ class SessionLoginStateTests(unittest.TestCase):
         self.assertEqual(session.status, Status.Stop.value)
         self.assertTrue(session.is_login_disabled())
 
+    def test_transient_failure_keeps_retrying_after_configured_threshold(self):
+        session = Session(email="network@example.com", max_login_failures=2)
+
+        session.mark_login_failure(
+            kind=LoginFailureKind.Transient.value,
+            details="NS_ERROR_NET_INTERRUPT",
+            cooldown_seconds=60,
+        )
+        session.mark_login_failure(
+            kind=LoginFailureKind.Transient.value,
+            details="NS_ERROR_NET_INTERRUPT",
+            cooldown_seconds=60,
+        )
+
+        self.assertEqual(session.status, Status.Recovering.value)
+        self.assertTrue(session.is_login_disabled())
+        self.assertEqual(session.login_fail_count, 2)
+        self.assertIsNotNone(session.disabled_until)
+        remaining = (session.disabled_until - datetime.datetime.now()).total_seconds()
+        self.assertGreater(remaining, 100)
+
     def test_permanent_failure_is_not_overwritten_by_later_transient_error(self):
         session = Session(email="locked@example.com")
         session.mark_login_failure(kind=LoginFailureKind.AccountLocked.value, details="deactivated")
@@ -130,6 +151,23 @@ class SessionLoginStateTests(unittest.TestCase):
         self.assertTrue(restored.is_login_disabled())
         self.assertEqual(persisted.suffix, ".json")
         self.assertNotIn("locked@example.com", persisted.name)
+
+    def test_legacy_transient_stop_is_revived_after_session_restore(self):
+        session = Session(email="network@example.com", max_login_failures=3)
+        session.status = Status.Stop.value
+        session.login_fail_count = 3
+        session.login_failure_kind = LoginFailureKind.Transient.value
+        session.last_login_error = "Secure Connection Failed"
+        logger = _NoopLogger()
+
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RuntimeStorage(Path(directory))
+            save_session_state(session, storage, logger)
+            restored = restore_session_state(Session(email="network@example.com"), storage, logger)
+
+        self.assertEqual(restored.status, Status.Recovering.value)
+        self.assertFalse(restored.is_login_disabled())
+        self.assertEqual(restored.login_fail_count, 3)
 
     def test_ready_state_is_not_restored_as_a_stale_runtime_state(self):
         session = Session(email="ready@example.com")

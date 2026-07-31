@@ -157,7 +157,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         await runtime._chatgpt__login(session)
 
-        self.assertEqual(session.status, Status.Update.value)
+        self.assertEqual(session.status, Status.Recovering.value)
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.is_login_disabled())
         self.assertIsNone(session.browser_contexts)
@@ -254,7 +254,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             ready = await runtime._initialize_page_bridge(session, page)
 
         self.assertFalse(ready)
-        self.assertEqual(session.status, Status.Update.value)
+        self.assertEqual(session.status, Status.Recovering.value)
         self.assertEqual(session.login_failure_kind, "transient")
         self.assertTrue(session.is_login_disabled())
 
@@ -344,7 +344,7 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         runtime._mark_session_runtime_closed(session, "page crash")
 
-        self.assertEqual(session.status, Status.Update.value)
+        self.assertEqual(session.status, Status.Recovering.value)
         self.assertFalse(session.login_state)
         self.assertEqual(session.runtime_last_closed_source, "page crash")
         self.assertIsNotNone(session.runtime_last_closed_at)

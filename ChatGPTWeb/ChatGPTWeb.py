@@ -469,7 +469,7 @@ class chatgpt:
             return
         session.login_state = False
         session.login_state_first = False
-        session.status = Status.Update.value
+        session.status = Status.Recovering.value
         session.last_login_error = f"runtime {source} closed unexpectedly"
         session.runtime_last_closed_source = source
         session.runtime_last_closed_at = datetime.now()
@@ -479,7 +479,7 @@ class chatgpt:
         elif "page" in source:
             session.page = None
         self._record_activity(session.email, "runtime_closed", f"{source} closed unexpectedly")
-        self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Update")
+        self.logger.warning(f"{session.email} runtime {source} closed unexpectedly, set status Recovering")
 
     async def _recover_session_context_for_bridge(
         self,
@@ -534,7 +534,7 @@ class chatgpt:
     @staticmethod
     def _needs_startup_browser_relaunch(session: Session) -> bool:
         if (
-            session.status != Status.Update.value
+            session.status not in (Status.Update.value, Status.Recovering.value)
             or session.login_failure_kind != LoginFailureKind.Transient.value
         ):
             return False
@@ -703,6 +703,16 @@ class chatgpt:
             self.logger.debug(f"{session.email} bypass keep-alive for forced fresh login")
             await self.load_page(session, immediate=True)
             return
+        if session.status == Status.Recovering.value and session.session_refresh_recovery_needed:
+            self.logger.debug(f"{session.email} recreate browser context before retrying network recovery")
+            if not await self._recover_session_context_for_bridge(session):
+                session.mark_login_failure(
+                    kind=LoginFailureKind.Transient.value,
+                    details="could not recreate browser context after session refresh timeout",
+                    cooldown_seconds=60,
+                )
+                return
+            session.session_refresh_recovery_needed = False
         session = await retry_keep_alive(session, url, self.storage, self.js, self.js_used, self.save_screen, self.logger)
         if session.status == Status.Ready.value and session.login_state:
             if not await self._probe_stream_authorization(session):
@@ -838,10 +848,10 @@ class chatgpt:
         except TimeoutError:
             self.logger.warning(f"{session.email} auth and load_page timeout")
             for s in self.Sessions:
-                if s.status in (Status.Login.value, Status.Update.value):
+                if s.status in (Status.Login.value, Status.Update.value, Status.Recovering.value):
                     s.mark_login_failure(
+                        kind=LoginFailureKind.Transient.value,
                         details="startup auth/load_page timeout",
-                        stop=True,
                     )
         except Exception as e:
             a, b, exc_traceback = sys.exc_info()
@@ -1122,10 +1132,10 @@ class chatgpt:
                     break
                 if relogin_try >= session.max_login_failures:
                     session.mark_login_failure(
+                        kind=LoginFailureKind.Transient.value,
                         details="load_page relogin retry max",
-                        stop=True,
                     )
-                    self.logger.warning(f"context {session.email} relogin retry max, set Stop")
+                    self.logger.warning(f"context {session.email} relogin retry max, scheduled retry")
                     break
                 relogin_try += 1
                 self.logger.debug(f"context {session.email} begin relogin")
@@ -1138,7 +1148,7 @@ class chatgpt:
                 )
                 self.logger.debug(f"context {session.email} relogin over")
             
-            if session.status in (Status.Stop.value, Status.Update.value):
+            if session.status in (Status.Stop.value, Status.Update.value, Status.Recovering.value):
                 session.login_state = False
                 self.logger.warning(
                     f"context {session.email} not ready, status:{session.status}, failure:{session.login_failure_kind}, "
@@ -1156,7 +1166,7 @@ class chatgpt:
             await self._refresh_account_plan(session)
             
             if session.access_token:
-                if session.status != Status.Update.value:
+                if session.status not in (Status.Update.value, Status.Recovering.value):
                     session.login_state = True
                     session.status = Status.Ready.value
                     self.logger.debug(f"context {session.email} start!")
@@ -1328,7 +1338,7 @@ class chatgpt:
         text = str(error).lower()
         if self._is_upstream_rate_limit_error(text):
             return False
-        if session.status in (Status.Update.value, Status.Stop.value):
+        if session.status in (Status.Update.value, Status.Recovering.value, Status.Stop.value):
             return False
         retryable_marks = (
             "timeout",
@@ -1615,6 +1625,7 @@ class chatgpt:
             kind=LoginFailureKind.Transient.value,
             details=f"stream authorization remained expired after refresh: {error}",
             cooldown_seconds=0,
+            requires_reauthentication=True,
         )
         self.logger.warning(
             f"{session.email} stream authorization remained expired after refresh; scheduling relogin"
@@ -3310,7 +3321,12 @@ class chatgpt:
                         s for s in session_list
                         if (
                             s.type != "script"
-                            and s.status in (Status.Login.value, Status.Update.value, Status.Working.value)
+                            and s.status in (
+                                Status.Login.value,
+                                Status.Update.value,
+                                Status.Recovering.value,
+                                Status.Working.value,
+                            )
                             and not s.is_login_disabled()
                         )
                     ]
@@ -3345,7 +3361,7 @@ class chatgpt:
                     break
                 if wait_ready_seconds >= self.ready_timeout:
                     recovering = any(
-                        item.status in (Status.Login.value, Status.Update.value)
+                        item.status in (Status.Login.value, Status.Update.value, Status.Recovering.value)
                         or (
                             (task := getattr(self, "_control_login_tasks", {}).get(item.email))
                             and not task.done()
@@ -3396,7 +3412,7 @@ class chatgpt:
                 if wait_ready_seconds >= self.ready_timeout:
                     task = getattr(self, "_control_login_tasks", {}).get(session.email)
                     recovering = (
-                        session.status in (Status.Login.value, Status.Update.value)
+                        session.status in (Status.Login.value, Status.Update.value, Status.Recovering.value)
                         or (task and not task.done())
                     )
                     msg_data.add_error(
@@ -3552,7 +3568,7 @@ class chatgpt:
                     f"receive message: {build_chat_content(response_text).markdown}"
                 )
         finally:
-            if session.status not in (Status.Update.value, Status.Stop.value):
+            if session.status not in (Status.Update.value, Status.Recovering.value, Status.Stop.value):
                 session.status = Status.Ready.value
         self.logger.debug(f"session {session.email} finish work")
         return msg_data
@@ -3684,7 +3700,7 @@ class chatgpt:
                 },
             )
         finally:
-            if session.status not in (Status.Update.value, Status.Stop.value):
+            if session.status not in (Status.Update.value, Status.Recovering.value, Status.Stop.value):
                 session.status = Status.Ready.value
             self.logger.debug(f"session {session.email} finish stream work")
 
@@ -4220,6 +4236,12 @@ class chatgpt:
             return {
                 "state": "login_recovery_pending",
                 "guidance": "The account is waiting for login recovery.",
+                "action": "wait_then_retry",
+            }
+        if session.status == Status.Recovering.value:
+            return {
+                "state": "login_transport_failure",
+                "guidance": "The account is waiting for a network or browser recovery retry.",
                 "action": "wait_then_retry",
             }
         return {

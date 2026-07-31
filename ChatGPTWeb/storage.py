@@ -184,7 +184,7 @@ class RuntimeStorage:
             "last_wss": session.last_wss,
             "device_id": session.device_id,
             "mode": session.mode,
-            "status": session.status if session.status in ("Stop", "Update") else "",
+            "status": session.status if session.status in ("Stop", "Update", "Recovering") else "",
             "login_fail_count": session.login_fail_count,
             "max_login_failures": session.max_login_failures,
             "login_failure_kind": session.login_failure_kind,

@@ -30,6 +30,21 @@ renderAccounts=function(data){accounts.replaceChildren();const list=data.account
 </script></body></html>""",
 )
 
+# Keep the state pill concise while the existing diagnostics panel carries the
+# detailed failure kind and retry timing.
+CONTROL_HTML = CONTROL_HTML.replace(
+    "</body></html>",
+    """<script>
+const defaultOperationalLabel=label;
+label=function(item){
+  if(item.status==='Recovering'){
+    return language==='zh'?'网络/浏览器恢复中':'Network/browser recovery';
+  }
+  return defaultOperationalLabel(item);
+};
+</script></body></html>""",
+)
+
 # The document is intentionally compact to keep the packaged control surface small.
 # A verified live session must take precedence over any stale failure metadata
 # restored from an earlier browser run.

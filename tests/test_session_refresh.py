@@ -81,8 +81,7 @@ class SessionRefreshTests(unittest.IsolatedAsyncioTestCase):
                 logger=_Logger(),
             )
 
-        self.assertEqual(session.status, Status.Update.value)
+        self.assertEqual(session.status, Status.Recovering.value)
         self.assertEqual(session.login_failure_kind, LoginFailureKind.Transient.value)
         self.assertTrue(session.session_refresh_recovery_needed)
         self.assertFalse(session.login_state)
-

@@ -703,12 +703,13 @@ async def retry_keep_alive(session: Session,url: str,storage: RuntimeStorage,js:
         logger.debug(f"{session.email} flush retry {retry}")
     if retry == 0:
         if session.status != Status.Stop.value:
-            session.status = Status.Update.value
-            session.login_state = False
-            session.login_state_first = False
-            session.login_failure_kind = LoginFailureKind.Transient.value
-            session.last_login_error = "session refresh navigation did not complete after retries"
+            session.mark_login_failure(
+                kind=LoginFailureKind.Transient.value,
+                details="session refresh navigation did not complete after retries",
+                cooldown_seconds=60,
+            )
             session.session_refresh_recovery_needed = True
+            save_session_state(session, storage, logger)
             logger.warning(
                 f"{session.email} session refresh exhausted; recreate browser context before relogin"
             )
@@ -1030,7 +1031,16 @@ def restore_session_state(session: Session, storage: RuntimeStorage, logger):
                 except ValueError:
                     pass
         saved_status = str(record.get("status", ""))
-        if saved_status in (Status.Stop.value, Status.Update.value):
+        if (
+            saved_status == Status.Stop.value
+            and session.login_failure_kind == LoginFailureKind.Transient.value
+        ):
+            # Older runtimes promoted repeated network/browser failures to
+            # Stop.  Revive those persisted states on startup so a recovered
+            # network can heal without manual console intervention.
+            session.status = Status.Recovering.value
+            session.disabled_until = None
+        elif saved_status in (Status.Stop.value, Status.Update.value, Status.Recovering.value):
             session.status = saved_status
         if not session.status:
             permanent_kinds = {
@@ -1038,10 +1048,16 @@ def restore_session_state(session: Session, storage: RuntimeStorage, logger):
                 LoginFailureKind.AccountLocked.value,
                 LoginFailureKind.NeedVerification.value,
             }
-            if session.login_failure_kind in permanent_kinds or session.login_fail_count >= session.max_login_failures:
+            if session.login_failure_kind in permanent_kinds or (
+                session.login_failure_kind != LoginFailureKind.Transient.value
+                and session.login_fail_count >= session.max_login_failures
+            ):
                 session.status = Status.Stop.value
-            elif session.disabled_until:
-                session.status = Status.Update.value
+            elif (
+                session.disabled_until
+                or session.login_failure_kind == LoginFailureKind.Transient.value
+            ):
+                session.status = Status.Recovering.value
         return session
     except Exception as error:
         logger.warning(f"restore session state error: {error}")
