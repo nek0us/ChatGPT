@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ChatGPTWeb 控制台</title>
+  <link rel="stylesheet" href="/control/app.css?v=__CONTROL_UI_VERSION__">
+  <script defer src="/control/app.js?v=__CONTROL_UI_VERSION__"></script>
+</head>
+<body>
+  <div id="fatal-banner" class="fatal-banner" role="alert" hidden></div>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Console navigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">CW</span>
+        <span>
+          <strong>ChatGPTWeb</strong>
+          <small data-i18n="console">运维控制台</small>
+        </span>
+      </div>
+      <nav class="navigation">
+        <button class="nav-item is-active" type="button" data-view="overview">
+          <span class="nav-symbol" aria-hidden="true">01</span>
+          <span data-i18n="overview">运行概览</span>
+        </button>
+        <button class="nav-item" type="button" data-view="verification">
+          <span class="nav-symbol" aria-hidden="true">02</span>
+          <span data-i18n="verification">登录验证</span>
+          <span id="verification-badge" class="nav-badge" hidden>0</span>
+        </button>
+        <button class="nav-item" type="button" data-view="access">
+          <span class="nav-symbol" aria-hidden="true">03</span>
+          <span data-i18n="access">访问密钥</span>
+        </button>
+        <button class="nav-item" type="button" data-view="logs">
+          <span class="nav-symbol" aria-hidden="true">04</span>
+          <span data-i18n="logs">运行日志</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="status-dot" id="sidebar-dot" aria-hidden="true"></span>
+        <span id="sidebar-state" data-i18n="notConnected">尚未连接</span>
+        <small>UI __CONTROL_UI_VERSION__</small>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="view-eyebrow" data-i18n="operations">OPERATIONS</p>
+          <h1 id="view-title" data-i18n="overview">运行概览</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="connection-state" id="connection-state" data-state="idle">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label" data-i18n="notConnected">尚未连接</span>
+            <time id="last-updated"></time>
+          </div>
+          <div class="segmented" aria-label="Language">
+            <button type="button" data-language="zh">中文</button>
+            <button type="button" data-language="en">EN</button>
+          </div>
+          <button id="refresh" class="button icon-button" type="button" data-i18n-title="refresh" title="刷新" aria-label="刷新">
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="auth-strip" aria-labelledby="auth-title">
+        <div class="auth-heading">
+          <span class="status-dot" id="auth-dot" aria-hidden="true"></span>
+          <div>
+            <strong id="auth-title" data-i18n="adminConnection">管理员连接</strong>
+            <span id="auth-description" data-i18n="enterAdminKey">输入控制台管理密钥</span>
+          </div>
+        </div>
+        <form id="auth-form" class="auth-form">
+          <label class="field key-field">
+            <span class="sr-only" data-i18n="adminKey">控制台管理密钥</span>
+            <input id="admin-key" type="password" autocomplete="off" spellcheck="false" data-i18n-placeholder="adminKey">
+            <button id="toggle-key" class="field-action" type="button" data-i18n="show">显示</button>
+          </label>
+          <button id="connect" class="button primary" type="submit" data-i18n="connect">连接</button>
+          <button id="disconnect" class="button" type="button" data-i18n="clear">清除</button>
+        </form>
+      </section>
+
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <main>
+        <section class="view is-active" data-panel="overview">
+          <div class="metrics" aria-label="Account summary">
+            <div class="metric metric-blue">
+              <span data-i18n="configuredAccounts">配置账户</span>
+              <strong id="metric-total">--</strong>
+              <small data-i18n="accountsRegistered">已注册到当前核心</small>
+            </div>
+            <div class="metric metric-green">
+              <span data-i18n="availableAccounts">当前可用</span>
+              <strong id="metric-ready">--</strong>
+              <small data-i18n="readyForRequests">可接受新请求</small>
+            </div>
+            <div class="metric metric-rose">
+              <span data-i18n="attentionAccounts">需要处理</span>
+              <strong id="metric-attention">--</strong>
+              <small data-i18n="loginOrRecovery">登录、验证或恢复中</small>
+            </div>
+            <div class="metric metric-violet">
+              <span data-i18n="activeSessions">逻辑会话</span>
+              <strong id="metric-sessions">--</strong>
+              <small data-i18n="retainedSessions">核心保留的会话</small>
+            </div>
+          </div>
+
+          <div class="section-heading">
+            <div>
+              <h2 data-i18n="accounts">账户</h2>
+              <p data-i18n="accountsSubtitle">登录、用量与浏览器状态</p>
+            </div>
+            <span id="account-summary" class="section-meta"></span>
+          </div>
+          <div class="table-frame">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="account">账户</th>
+                  <th data-i18n="state">状态</th>
+                  <th data-i18n="sessions">会话</th>
+                  <th data-i18n="usage">用量</th>
+                  <th data-i18n="diagnostics">诊断</th>
+                  <th data-i18n="actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="account-rows">
+                <tr><td class="empty-row" colspan="6" data-i18n="connectToLoad">连接后加载账户状态</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-heading activity-heading">
+            <div>
+              <h2 data-i18n="recentActivity">最近活动</h2>
+              <p data-i18n="activitySubtitle">当前核心进程内的运维事件</p>
+            </div>
+          </div>
+          <div class="activity-list" id="activity-list">
+            <div class="empty-state" data-i18n="connectToLoad">连接后加载账户状态</div>
+          </div>
+        </section>
+
+        <section class="view" data-panel="verification">
+          <div class="page-intro">
+            <div>
+              <h2 data-i18n="verification">登录验证</h2>
+              <p data-i18n="verificationSubtitle">处理等待中的邮箱验证码与账户验证</p>
+            </div>
+            <span id="verification-count" class="section-meta"></span>
+          </div>
+          <div id="challenge-list" class="challenge-list">
+            <div class="empty-state" data-i18n="connectToLoad">连接后加载账户状态</div>
+          </div>
+        </section>
+
+        <section class="view" data-panel="access">
+          <div class="page-intro">
+            <div>
+              <h2 data-i18n="access">访问密钥</h2>
+              <p data-i18n="accessSubtitle">创建、轮换与吊销客户端 API 密钥</p>
+            </div>
+          </div>
+          <form id="client-key-form" class="key-creator">
+            <label class="field grow">
+              <span data-i18n="keyName">密钥名称</span>
+              <input id="client-key-label" required maxlength="80" data-i18n-placeholder="keyNamePlaceholder">
+            </label>
+            <fieldset class="scope-field">
+              <legend data-i18n="permissionScope">权限范围</legend>
+              <label><input type="checkbox" name="client-key-scope" value="chat" checked><span data-i18n="scopeChat">聊天 / Responses</span></label>
+              <label><input type="checkbox" name="client-key-scope" value="agent"><span data-i18n="scopeAgent">智能体协议</span></label>
+              <label><input type="checkbox" name="client-key-scope" value="bot"><span data-i18n="scopeBot">机器人桥接</span></label>
+            </fieldset>
+            <label class="field compact-field">
+              <span data-i18n="concurrency">并发数</span>
+              <input id="client-key-concurrency" type="number" min="1" max="16" value="2">
+            </label>
+            <button class="button primary create-key" type="submit" data-i18n="createKey">创建密钥</button>
+          </form>
+          <div id="secret-panel" class="secret-panel" hidden>
+            <div>
+              <strong data-i18n="secretOnce">新密钥仅显示一次</strong>
+              <code id="client-key-secret"></code>
+            </div>
+            <button id="copy-secret" class="button" type="button" data-i18n="copy">复制</button>
+          </div>
+          <div class="table-frame access-table">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="keyName">密钥名称</th>
+                  <th data-i18n="permissionScope">权限范围</th>
+                  <th data-i18n="concurrency">并发数</th>
+                  <th data-i18n="lastUsed">最后使用</th>
+                  <th data-i18n="actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="client-key-rows">
+                <tr><td class="empty-row" colspan="5" data-i18n="connectToLoad">连接后加载账户状态</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" data-panel="logs">
+          <div class="page-intro logs-intro">
+            <div>
+              <h2 data-i18n="logs">运行日志</h2>
+              <p id="log-message" data-i18n="logsSubtitle">核心启动、登录与恢复日志</p>
+            </div>
+            <div class="log-controls">
+              <label class="field compact-field">
+                <span data-i18n="lines">行数</span>
+                <select id="log-lines">
+                  <option value="80">80</option>
+                  <option value="160" selected>160</option>
+                  <option value="320">320</option>
+                  <option value="800">800</option>
+                </select>
+              </label>
+              <button id="refresh-logs" class="button" type="button" data-i18n="refreshLogs">刷新日志</button>
+            </div>
+          </div>
+          <pre id="runtime-log" class="runtime-log" tabindex="0"><span data-i18n="connectToLoad">连接后加载账户状态</span></pre>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

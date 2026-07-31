@@ -83,7 +83,12 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
             response = await client.get(runtime.control_url)
             body = await response.text()
         self.assertEqual(response.status, 200)
-        self.assertIn("ChatGPTWeb Control", body)
+        self.assertIn("ChatGPTWeb 控制台", body)
+        self.assertIn("/control/app.js?v=", body)
+        self.assertEqual(
+            response.headers["Cache-Control"],
+            "no-store, no-cache, must-revalidate",
+        )
 
         await runtime._close_control_server()
         self.assertIsNone(runtime._control_runner)

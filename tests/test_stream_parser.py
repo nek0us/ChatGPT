@@ -922,17 +922,35 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await console.start_server()
         try:
             page = await console.get("/")
+            stylesheet = await console.get("/control/app.css")
+            script = await console.get("/control/app.js")
             protected = await console.get("/v1/account/status")
+            authorized = await console.get(
+                "/v1/account/status",
+                headers={"Authorization": "Bearer test-key"},
+            )
             body = await page.text()
+            javascript = await script.text()
         finally:
             await console.close()
 
         self.assertEqual(page.status, 200)
-        self.assertIn("ChatGPTWeb Control", body)
-        self.assertIn("chatgptweb-control-language", body)
-        self.assertIn("本地运维控制台", body)
+        self.assertEqual(stylesheet.status, 200)
+        self.assertEqual(script.status, 200)
+        self.assertIn("ChatGPTWeb 控制台", body)
+        self.assertIn("/control/app.css?v=", body)
+        self.assertIn("/control/app.js?v=", body)
+        self.assertIn("chatgptweb-control-key-v2", javascript)
+        self.assertNotIn("chatgptweb-control-key'", javascript)
         self.assertNotIn("test-key", body)
         self.assertEqual(protected.status, 401)
+        self.assertEqual(authorized.status, 200)
+        for response in (page, stylesheet, script, authorized):
+            self.assertEqual(
+                response.headers["Cache-Control"],
+                "no-store, no-cache, must-revalidate",
+            )
+            self.assertTrue(response.headers["X-ChatGPTWeb-Control-Version"])
 
     async def test_verification_routes_submit_and_cancel_pending_challenges(self):
         task = asyncio.create_task(

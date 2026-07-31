@@ -25,7 +25,7 @@ from .agent import (
 from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
-from .control_ui import CONTROL_HTML
+from .control_ui import CONTROL_UI_VERSION, control_asset
 from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 
@@ -788,7 +788,7 @@ def create_http_app(
 
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
-        if request.path in ("/", "/health"):
+        if request.path in ("/", "/health") or request.path.startswith("/control/"):
             return await handler(request)
         # Keep the original no-auth local application behavior for callers
         # that intentionally create an app without either key mechanism.
@@ -1485,34 +1485,30 @@ def create_control_app(
         runtime_log_path=runtime_log_path,
     )
 
+    @web.middleware
+    async def disable_control_cache(request: web.Request, handler):
+        response = await handler(request)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        response.headers["X-ChatGPTWeb-Control-Version"] = CONTROL_UI_VERSION
+        return response
+
+    def asset_response(name: str) -> web.Response:
+        body, content_type = control_asset(name)
+        return web.Response(body=body, headers={"Content-Type": content_type})
+
     async def dashboard(_: web.Request) -> web.Response:
-        return web.Response(text=CONTROL_HTML, content_type="text/html")
+        return asset_response("index.html")
 
+    async def control_css(_: web.Request) -> web.Response:
+        return asset_response("app.css")
+
+    async def control_js(_: web.Request) -> web.Response:
+        return asset_response("app.js")
+
+    app.middlewares.append(disable_control_cache)
     app.router.add_get("/", dashboard)
+    app.router.add_get("/control/app.css", control_css)
+    app.router.add_get("/control/app.js", control_js)
     return app
-
-
-_CONTROL_HTML = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ChatGPTWeb Control</title><style>
-:root{color-scheme:light;font-family:Arial,sans-serif;color:#172033;background:#f4f6f8}.shell{max-width:1240px;margin:32px auto;padding:0 20px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #cbd2d9;padding-bottom:18px}.top h1{font-size:22px;margin:0}.key{display:flex;gap:8px}.key input{width:210px}.panel{margin-top:22px}.panel h2{font-size:15px;margin:0 0 10px}.table-wrap{overflow-x:auto}.table{width:100%;min-width:1030px;border-collapse:collapse;background:#fff}.table th,.table td{padding:11px 12px;border-bottom:1px solid #e2e6ea;text-align:left;font-size:13px;vertical-align:top}.table th{color:#53606e;font-weight:600}.details{max-width:210px;line-height:1.45}.challenge{display:grid;grid-template-columns:minmax(180px,1fr) 160px 112px 82px;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px;margin-bottom:8px}.key-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#fff;border:1px solid #d7dde3;padding:12px}.key-form label{font-size:13px}.key-form input[type=checkbox]{margin-right:4px}.key-list{background:#fff;border:1px solid #d7dde3;border-top:0}.key-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,1fr) 100px 150px;gap:8px;align-items:center;padding:10px 12px;border-top:1px solid #e2e6ea;font-size:13px}.secret{display:block;overflow-wrap:anywhere;background:#fff8db;border:1px solid #f0d88a;padding:10px;margin:8px 0;font-family:ui-monospace,monospace;font-size:12px}.muted{color:#66717d;font-size:13px}.error{color:#b42318;font-size:13px;min-height:18px}input{box-sizing:border-box;border:1px solid #aeb8c2;border-radius:4px;padding:8px 10px;font:inherit}button{border:1px solid #254d70;background:#fff;color:#173b58;border-radius:4px;padding:8px 11px;font:inherit;cursor:pointer;margin-right:6px}button.primary{background:#176b87;border-color:#176b87;color:#fff}button.danger{color:#9b1c1c;border-color:#d9aaaa}@media(max-width:700px){.top{align-items:flex-start;flex-direction:column}.challenge{grid-template-columns:1fr}.key-row{grid-template-columns:1fr}.key input{width:min(260px,65vw)}}
-</style></head><body><main class="shell"><header class="top"><h1>ChatGPTWeb Control</h1><div class="key"><input id="key" type="password" autocomplete="off" placeholder="API key"><button id="refresh">Refresh</button></div></header><p id="error" class="error"></p><section class="panel"><h2>Accounts</h2><div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>State</th><th>Sessions</th><th>Usage</th><th>Details</th><th>Control</th></tr></thead><tbody id="accounts"></tbody></table></div></section><section class="panel"><h2>Verification</h2><div id="challenges" class="muted">No pending verification.</div></section><section class="panel"><h2>Client API Keys</h2><form id="key-form" class="key-form"><input id="key-label" placeholder="Key label" required><label><input type="checkbox" name="key-scope" value="chat" checked>Chat / Responses</label><label><input type="checkbox" name="key-scope" value="agent">Agent protocol</label><label><input type="checkbox" name="key-scope" value="bot">Bot bridge</label><input id="key-concurrency" type="number" min="1" max="16" value="2" title="Maximum concurrent requests"><button class="primary">Create key</button></form><code id="key-secret" class="secret" hidden></code><div id="client-keys" class="key-list muted">No client keys loaded.</div></section><section class="panel"><h2>Recent Activity</h2><div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>Account</th><th>Event</th><th>Detail</th></tr></thead><tbody id="activity"></tbody></table></div></section></main><script>
-const key=document.querySelector('#key'),error=document.querySelector('#error'),accounts=document.querySelector('#accounts'),challenges=document.querySelector('#challenges'),activity=document.querySelector('#activity'),keyForm=document.querySelector('#key-form'),keyLabel=document.querySelector('#key-label'),keyConcurrency=document.querySelector('#key-concurrency'),keySecret=document.querySelector('#key-secret'),clientKeys=document.querySelector('#client-keys'),drafts=new Map(),submitting=new Set();key.value=sessionStorage.getItem('chatgptweb-control-key')||'';
-function headers(){const value=key.value.trim();return value?{Authorization:'Bearer '+value,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
-async function call(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(!response.ok)throw new Error(response.status===401?'Enter a valid API key':await response.text());return response.status===204?null:response.json()}
-function cell(row,value){const td=document.createElement('td');td.textContent=value||'--';row.append(td)}
-async function changeAccount(account,action,button){button.disabled=true;try{await call('/v1/accounts/'+encodeURIComponent(account)+'/control',{method:'POST',body:JSON.stringify({action})});await refresh(true)}catch(e){error.textContent=e.message;button.disabled=false}}
-function accountButton(control,item,label,action,danger=false){const button=document.createElement('button');button.textContent=label;if(danger)button.className='danger';button.addEventListener('click',()=>changeAccount(item.email,action,button));control.append(button)}
-function formatUsage(usage){if(!usage||!usage.requests)return 'No upstream usage observed';const models=Object.entries(usage.models||{}).map(([name,value])=>{const tokens=['input_tokens','output_tokens','total_tokens'].filter(key=>typeof value[key]==='number').map(key=>key.replace('_tokens','')+': '+value[key]).join(', ');return name+' ('+value.requests+' req'+(tokens?', '+tokens:'')+')'});return models.join(' | ')||usage.requests+' request(s)'}
-function retryTime(item){if(!item.retry_after_seconds)return '';const seconds=item.retry_after_seconds;if(seconds<60)return seconds+'s remaining';const minutes=Math.ceil(seconds/60);return minutes+'m remaining'}
-function details(item){const plan=item.account_plan&&item.account_plan!=='unknown'?item.account_plan+' ('+(item.account_plan_source||'observed')+')':'unknown (legacy '+(item.gptplus?'plus':'free')+')';const bits=['mode: '+(item.mode||'--'),'plan: '+plan,'models: '+(item.observed_model_count||0)+' ('+(item.observed_models_source||'unavailable')+')','login: '+(item.login_state?'ready':'not ready')];if(item.login_guidance)bits.push('status: '+item.login_guidance);if(item.login_failure_kind)bits.push('failure: '+item.login_failure_kind+' ('+(item.login_fail_count||0)+'/'+(item.max_login_failures||'--')+')');const wait=retryTime(item);if(wait)bits.push('cooldown: '+wait);if(item.persist_auth_state)bits.push('auth state: '+(item.auth_state_loaded?'restored':'enabled'));if(item.runtime&&item.runtime.recovery_count)bits.push('recovery: '+item.runtime.recovery_count);return bits.join('\\n')}
-function retryLabel(item){return item.retry_mode==='manual'?'Retry manually':item.retry_mode==='cooldown'?'Retry now':item.retry_mode==='wait'?'Login in progress':'Retry login'}
-function renderAccounts(data){accounts.replaceChildren();for(const item of data.accounts||[]){const row=document.createElement('tr');cell(row,item.email);cell(row,item.login_retry_pending?'login in progress':item.manual_disabled?'manually disabled':item.status);cell(row,String(item.conversation_count||0));cell(row,formatUsage(item.usage));const diagnostic=document.createElement('td');diagnostic.className='details';diagnostic.textContent=details(item);row.append(diagnostic);const control=document.createElement('td');if(item.manual_disabled)accountButton(control,item,'Enable','enable');else{accountButton(control,item,'Disable','disable',true);if(!item.login_state&&item.can_retry_login&&!item.login_retry_pending)accountButton(control,item,retryLabel(item),'retry_login')}accountButton(control,item,'Refresh plan','refresh_capabilities');row.append(control);accounts.append(row)}}
-function renderActivity(data){activity.replaceChildren();const events=data.events||[];if(!events.length){const row=document.createElement('tr');const empty=document.createElement('td');empty.colSpan=4;empty.className='muted';empty.textContent='No local activity yet.';row.append(empty);activity.append(row);return}for(const item of events){const row=document.createElement('tr');cell(row,item.at);cell(row,item.account);cell(row,item.event);cell(row,item.message);activity.append(row)}}
-function renderChallenges(data){challenges.replaceChildren();const list=data.challenges||[];if(!list.length){challenges.textContent='No pending verification.';return}for(const item of list){const card=document.createElement('form');card.className='challenge';const label=document.createElement('div');label.textContent=item.account+' · '+item.provider;const input=document.createElement('input');input.inputMode='numeric';input.autocomplete='one-time-code';input.maxLength=12;input.placeholder='Verification code';input.value=drafts.get(item.id)||'';input.addEventListener('input',()=>drafts.set(item.id,input.value));const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit';const cancel=document.createElement('button');cancel.type='button';cancel.className='danger';cancel.textContent='Cancel';const busy=submitting.has(item.id);submit.disabled=busy;cancel.disabled=busy;card.append(label,input,submit,cancel);card.addEventListener('submit',async event=>{event.preventDefault();const code=input.value.trim();if(!code){error.textContent='Enter the verification code.';return}submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'POST',body:JSON.stringify({code})});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});cancel.addEventListener('click',async()=>{submitting.add(item.id);submit.disabled=true;cancel.disabled=true;try{await call('/v1/verification/'+item.id,{method:'DELETE'});drafts.delete(item.id);await refresh(true)}catch(e){error.textContent=e.message}finally{submitting.delete(item.id);submit.disabled=false;cancel.disabled=false}});challenges.append(card)}}
-function showSecret(secret){keySecret.hidden=!secret;keySecret.textContent=secret?'Copy this secret now. It is shown only once: '+secret:''}
-function renderKeys(data){clientKeys.replaceChildren();const list=data.keys||[];if(!list.length){clientKeys.textContent='No active client keys.';return}for(const item of list){const row=document.createElement('div');row.className='key-row';const label=document.createElement('strong');label.textContent=item.label;const scope=document.createElement('span');scope.textContent=(item.scopes||[]).join(', ');const limit=document.createElement('span');limit.textContent='active '+(item.active_requests||0)+' / '+item.max_concurrency;const controls=document.createElement('span');const rotate=document.createElement('button');rotate.textContent='Rotate';rotate.addEventListener('click',async()=>{try{const data=await call('/v1/keys/'+encodeURIComponent(item.id)+'/rotate',{method:'POST'});showSecret(data.secret);await refresh(true)}catch(e){error.textContent=e.message}});const revoke=document.createElement('button');revoke.className='danger';revoke.textContent='Revoke';revoke.addEventListener('click',async()=>{if(!confirm('Revoke '+item.label+'?'))return;try{await call('/v1/keys/'+encodeURIComponent(item.id),{method:'DELETE'});await refresh(true)}catch(e){error.textContent=e.message}});controls.append(rotate,revoke);row.append(label,scope,limit,controls);clientKeys.append(row)}}
-keyForm.addEventListener('submit',async event=>{event.preventDefault();const scopes=[...document.querySelectorAll('input[name=key-scope]:checked')].map(item=>item.value);if(!scopes.length){error.textContent='Choose at least one scope.';return}try{const data=await call('/v1/keys',{method:'POST',body:JSON.stringify({label:keyLabel.value,scopes,max_concurrency:Number(keyConcurrency.value)})});showSecret(data.secret);keyLabel.value='';await refresh(true)}catch(e){error.textContent=e.message}})
-async function refresh(force=false){if(!force&&(submitting.size||challenges.contains(document.activeElement)))return;error.textContent='';sessionStorage.setItem('chatgptweb-control-key',key.value.trim());try{const [status,verification,events,keys]=await Promise.all([call('/v1/account/status'),call('/v1/verification'),call('/v1/activity'),call('/v1/keys')]);renderAccounts(status);renderChallenges(verification);renderActivity(events);renderKeys(keys)}catch(e){error.textContent=e.message}}
-document.querySelector('#refresh').addEventListener('click',refresh);refresh();setInterval(refresh,5000);
-</script></body></html>"""
