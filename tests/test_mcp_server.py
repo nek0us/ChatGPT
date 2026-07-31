@@ -66,6 +66,32 @@ class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["used_model"], "gpt-5-mini")
         self.assertNotIn("access_token", result["metadata"])
 
+    async def test_confirmed_send_accepts_inline_attachments(self):
+        result = await self.adapter.chat_send(
+            "inspect",
+            attachments=[{
+                "name": "note.txt",
+                "mime_type": "text/plain",
+                "content_base64": "aGVsbG8=",
+            }],
+            confirm=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.backend.sent[-1].upload_file[0].name, "note.txt")
+        self.assertEqual(self.backend.sent[-1].upload_file[0].content, b"hello")
+
+    async def test_confirmed_send_rejects_invalid_attachment_without_calling_backend(self):
+        result = await self.adapter.chat_send(
+            "inspect",
+            attachments=[{"name": "note.txt", "content_base64": "not base64"}],
+            confirm=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("invalid base64", result["error"])
+        self.assertEqual(self.backend.sent, [])
+
     async def test_read_tools_keep_credentials_out_of_responses(self):
         accounts = await self.adapter.list_accounts()
         models = await self.adapter.list_models(fetch_remote=True)

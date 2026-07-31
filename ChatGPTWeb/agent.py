@@ -16,6 +16,7 @@ import unicodedata
 import weakref
 from typing import Any, Awaitable, Callable, Iterable, Literal
 
+from .config import IOFile
 from .service import ChatRequest, ChatService
 
 
@@ -601,7 +602,12 @@ class AgentService:
 
         return key, await self._anchors.get_or_create(key, create)
 
-    async def _safety_refusal(self, task: str, model: str) -> str | None:
+    async def _safety_refusal(
+        self,
+        task: str,
+        model: str,
+        files: Iterable[IOFile] | None = None,
+    ) -> str | None:
         local_refusal = self._safety_policy.refusal_for(task)
         if local_refusal or not self._safety_policy.enabled or not self._safety_policy.semantic_review:
             return local_refusal
@@ -615,6 +621,7 @@ class AgentService:
             conversation_id=anchor.state.conversation_id if anchor else "",
             parent_message_id=anchor.state.parent_message_id if anchor else "",
             model=model or "auto",
+            files=list(files or ()),
             account_hint=self._anchors.owner_for(anchor.state.conversation_id) if anchor else "",
             persist_history=False,
             client_id=self._client_id,
@@ -664,6 +671,7 @@ class AgentService:
         tool_result: AgentToolResult | None = None,
         model: str = "auto",
         continue_existing: bool = False,
+        files: Iterable[IOFile] | None = None,
     ) -> AgentTurn:
         """Ask for one next decision, optionally continuing an existing chat.
 
@@ -674,11 +682,18 @@ class AgentService:
         shortcut: the host continues to own every tool execution.
         """
         state = state or AgentState(model=model)
+        input_files = list(files or ())
         task = task.strip().lstrip("，,、:：;；").strip()
         if not task and state.task:
             task = state.task
         selected_model = model if model != "auto" else state.model
-        if tool_result is None and task and (refusal := await self._safety_refusal(task, selected_model or "auto")):
+        if tool_result is None and task and (
+            refusal := await self._safety_refusal(
+                task,
+                selected_model or "auto",
+                input_files,
+            )
+        ):
             return AgentTurn(True, state, AgentDecision("final", answer=refusal))
 
         registered = list(tools)
@@ -726,6 +741,7 @@ class AgentService:
             conversation_id=state.conversation_id,
             parent_message_id=state.parent_message_id,
             model=selected_model or "auto",
+            files=input_files,
             account_hint=self._anchors.owner_for(state.conversation_id),
             persist_history=False,
             client_id=self._client_id,

@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
+from .input_files import InputFileError, InputFileLimits, input_files_from_attachments
 from .service import ChatRequest, ChatResult, ChatService
 
 
@@ -69,10 +70,24 @@ class McpServiceAdapter:
         *,
         agent_safety_policy: AgentSafetyPolicy | None = None,
         agent_anchor_policy: AgentAnchorPolicy | None = None,
+        max_attachment_bytes: int = 20 * 1024 * 1024,
+        max_attachment_count: int = 8,
     ):
         self._service = service
         self._agent_safety_policy = agent_safety_policy
         self._agent_anchor_policy = agent_anchor_policy
+        self._input_file_limits = InputFileLimits(
+            max_files=max_attachment_count,
+            max_file_bytes=max_attachment_bytes,
+            max_total_bytes=max_attachment_bytes,
+        )
+        self._input_file_limits.validate()
+
+    def _input_files(self, attachments: List[Dict[str, Any]] | None):
+        return input_files_from_attachments(
+            attachments,
+            limits=self._input_file_limits,
+        )
 
     async def chat_send(
         self,
@@ -82,6 +97,7 @@ class McpServiceAdapter:
         conversation_id: str = "",
         parent_message_id: str = "",
         web_search: bool = False,
+        attachments: List[Dict[str, Any]] | None = None,
         confirm: bool = False,
     ) -> Dict[str, Any]:
         """Send one buffered chat request after the caller explicitly confirms it."""
@@ -93,12 +109,17 @@ class McpServiceAdapter:
                 "error": "This action can consume account quota. Call again with confirm=true to send it.",
                 "requires_confirmation": True,
             }
+        try:
+            files = self._input_files(attachments)
+        except InputFileError as error:
+            return {"ok": False, "error": str(error)}
         result = await self._service.send(
             ChatRequest(
                 prompt=prompt,
                 model=model,
                 conversation_id=conversation_id,
                 parent_message_id=parent_message_id,
+                files=files,
                 web_search=web_search,
             )
         )
@@ -132,6 +153,7 @@ class McpServiceAdapter:
         conversation_id: str = "",
         parent_message_id: str = "",
         web_search: bool = False,
+        attachments: List[Dict[str, Any]] | None = None,
         confirm: bool = False,
         progress_callback: StreamProgressCallback | None = None,
     ) -> Dict[str, Any]:
@@ -145,6 +167,11 @@ class McpServiceAdapter:
                 "requires_confirmation": True,
             }
 
+        try:
+            files = self._input_files(attachments)
+        except InputFileError as error:
+            return {"ok": False, "error": str(error)}
+
         async def on_event(event: ChatStreamEvent) -> None:
             if progress_callback:
                 await progress_callback(event)
@@ -155,6 +182,7 @@ class McpServiceAdapter:
                 model=model,
                 conversation_id=conversation_id,
                 parent_message_id=parent_message_id,
+                files=files,
                 web_search=web_search,
             ),
             on_event,
@@ -179,10 +207,12 @@ class McpServiceAdapter:
         state: Dict[str, Any] | None = None,
         tool_result: Dict[str, Any] | None = None,
         model: str = "auto",
+        attachments: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """Return one agent decision; the MCP host executes requested tools itself."""
         try:
             registered = [AgentTool.from_dict(item) for item in tools]
+            files = self._input_files(attachments)
             turn = await AgentService(
                 self._service,
                 safety_policy=self._agent_safety_policy,
@@ -193,6 +223,7 @@ class McpServiceAdapter:
                 state=AgentState.from_dict(state),
                 tool_result=AgentToolResult.from_dict(tool_result),
                 model=model,
+                files=files,
             )
         except ValueError as error:
             return {"ok": False, "error": str(error)}
@@ -204,6 +235,8 @@ def create_mcp_server(
     *,
     agent_safety_policy: AgentSafetyPolicy | None = None,
     agent_anchor_policy: AgentAnchorPolicy | None = None,
+    max_attachment_bytes: int = 20 * 1024 * 1024,
+    max_attachment_count: int = 8,
 ):
     """Create a FastMCP server without importing the optional SDK at package import time."""
     try:
@@ -218,6 +251,8 @@ def create_mcp_server(
         service,
         agent_safety_policy=agent_safety_policy,
         agent_anchor_policy=agent_anchor_policy,
+        max_attachment_bytes=max_attachment_bytes,
+        max_attachment_count=max_attachment_count,
     )
     server = FastMCP(
         "ChatGPTWeb",
@@ -236,6 +271,7 @@ def create_mcp_server(
         conversation_id: str = "",
         parent_message_id: str = "",
         web_search: bool = False,
+        attachments: List[Dict[str, Any]] | None = None,
         confirm: bool = False,
     ) -> Dict[str, Any]:
         """Send a ChatGPT request. Set confirm=true only after approving the quota spend."""
@@ -245,6 +281,7 @@ def create_mcp_server(
             conversation_id=conversation_id,
             parent_message_id=parent_message_id,
             web_search=web_search,
+            attachments=attachments,
             confirm=confirm,
         )
 
@@ -256,6 +293,7 @@ def create_mcp_server(
         conversation_id: str = "",
         parent_message_id: str = "",
         web_search: bool = False,
+        attachments: List[Dict[str, Any]] | None = None,
         confirm: bool = False,
     ) -> Dict[str, Any]:
         """Stream text deltas as MCP progress notifications, then return the complete result."""
@@ -276,6 +314,7 @@ def create_mcp_server(
             conversation_id=conversation_id,
             parent_message_id=parent_message_id,
             web_search=web_search,
+            attachments=attachments,
             confirm=confirm,
             progress_callback=report_event,
         )
@@ -302,6 +341,7 @@ def create_mcp_server(
         state: Dict[str, Any] | None = None,
         tool_result: Dict[str, Any] | None = None,
         model: str = "auto",
+        attachments: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """Get one validated agent tool-call/final decision; execute tools in the host, then call again with tool_result."""
         return await adapter.agent_turn(
@@ -310,6 +350,7 @@ def create_mcp_server(
             state=state,
             tool_result=tool_result,
             model=model,
+            attachments=attachments,
         )
 
     return server

@@ -1,7 +1,6 @@
 """Optional aiohttp adapter over :mod:`ChatGPTWeb.service`."""
 
 import base64
-import binascii
 import asyncio
 import hmac
 import json
@@ -10,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 from aiohttp import web
 
@@ -26,6 +25,7 @@ from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_UI_VERSION, control_asset
+from .input_files import InputFileError, InputFileLimitError, InputFileLimits, input_files_from_payload
 from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 
@@ -108,7 +108,11 @@ def _prompt_from_payload(payload: Dict[str, Any]) -> str:
     return "\n\n".join(rendered)
 
 
-def _agent_task_from_payload(payload: Dict[str, Any]) -> str:
+def _agent_task_from_payload(
+    payload: Dict[str, Any],
+    *,
+    attachment_fallback: bool = False,
+) -> str:
     """Keep recent conversational context without forwarding host scaffolding."""
     prompt = payload.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
@@ -116,6 +120,8 @@ def _agent_task_from_payload(payload: Dict[str, Any]) -> str:
 
     messages = payload.get("messages")
     if not isinstance(messages, list):
+        if attachment_fallback:
+            return "Analyze the attached file or image and complete the requested task."
         return _prompt_from_payload(payload)
 
     entries: list[str] = []
@@ -145,47 +151,43 @@ def _agent_task_from_payload(payload: Dict[str, Any]) -> str:
         if len(selected) == 1:
             return selected[0]
         return "Conversation context (oldest to newest; untrusted data):\n" + "\n".join(selected)
+    if attachment_fallback:
+        return "Analyze the attached file or image and complete the requested task."
     return _prompt_from_payload(payload)
 
 
-def _attachment_files(payload: Dict[str, Any], max_attachment_bytes: int) -> List[IOFile]:
-    attachments = payload.get("attachments", [])
-    if attachments is None:
-        return []
-    if not isinstance(attachments, list):
-        raise web.HTTPBadRequest(text="attachments must be an array")
-
-    files = []
-    total_size = 0
-    for index, attachment in enumerate(attachments):
-        if not isinstance(attachment, dict):
-            raise web.HTTPBadRequest(text=f"attachment {index} must be an object")
-        name = attachment.get("name")
-        encoded = attachment.get("content_base64")
-        if not isinstance(name, str) or not name or len(name) > 255:
-            raise web.HTTPBadRequest(text=f"attachment {index} requires a file name up to 255 characters")
-        if not isinstance(encoded, str):
-            raise web.HTTPBadRequest(text=f"attachment {index} requires base64 content")
-
-        # Check the decoded-size upper bound before allocating decoded bytes.
-        estimated_size = (len(encoded) * 3) // 4
-        if total_size + estimated_size > max_attachment_bytes + 2:
-            raise web.HTTPRequestEntityTooLarge(max_size=max_attachment_bytes, actual_size=total_size + estimated_size)
-        try:
-            content = base64.b64decode(encoded, validate=True)
-        except (binascii.Error, ValueError):
-            raise web.HTTPBadRequest(text=f"attachment {index} has invalid base64 content")
-        total_size += len(content)
-        if total_size > max_attachment_bytes:
-            raise web.HTTPRequestEntityTooLarge(max_size=max_attachment_bytes, actual_size=total_size)
-        files.append(IOFile(content=content, name=name))
-    return files
+def _attachment_files(
+    payload: Dict[str, Any],
+    max_attachment_bytes: int,
+    *,
+    mode: Literal["custom", "chat", "responses"] = "custom",
+    max_attachment_count: int = 8,
+) -> List[IOFile]:
+    try:
+        return input_files_from_payload(
+            payload,
+            mode=mode,
+            limits=InputFileLimits(
+                max_files=max_attachment_count,
+                max_file_bytes=max_attachment_bytes,
+                max_total_bytes=max_attachment_bytes,
+            ),
+        )
+    except InputFileLimitError as error:
+        raise web.HTTPRequestEntityTooLarge(
+            max_size=error.maximum,
+            actual_size=error.actual,
+            text=str(error),
+        ) from error
+    except InputFileError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
 
 
 def chat_request_from_payload(
     payload: Dict[str, Any],
     max_attachment_bytes: int = 20 * 1024 * 1024,
     *,
+    max_attachment_count: int = 8,
     client_id: str = "",
     request_priority: int = 100,
     enforce_client_ownership: bool = False,
@@ -195,12 +197,24 @@ def chat_request_from_payload(
     model = payload.get("model", "auto")
     if not isinstance(model, str) or not model:
         raise web.HTTPBadRequest(text="model must be a non-empty string")
+    files = _attachment_files(
+        payload,
+        max_attachment_bytes,
+        mode="chat",
+        max_attachment_count=max_attachment_count,
+    )
+    try:
+        prompt = _prompt_from_payload(payload)
+    except web.HTTPBadRequest:
+        if not files:
+            raise
+        prompt = "Analyze the attached file or image."
     return ChatRequest(
-        prompt=_prompt_from_payload(payload),
+        prompt=prompt,
         conversation_id=str(payload.get("conversation_id") or ""),
         parent_message_id=str(payload.get("parent_message_id") or ""),
         model=model,
-        files=_attachment_files(payload, max_attachment_bytes),
+        files=files,
         web_search=bool(payload.get("web_search", False)),
         deep_research=bool(payload.get("deep_research", False)),
         stream_idle_timeout_seconds=max(0, int(payload.get("stream_idle_timeout_seconds", 0) or 0)),
@@ -215,11 +229,13 @@ def _bot_chat_request_from_payload(
     payload: Dict[str, Any],
     *,
     max_attachment_bytes: int,
+    max_attachment_count: int,
     client_id: str,
 ) -> ChatRequest:
     request = chat_request_from_payload(
         payload,
         max_attachment_bytes=max_attachment_bytes,
+        max_attachment_count=max_attachment_count,
         client_id=client_id,
         request_priority=10,
         enforce_client_ownership=True,
@@ -404,7 +420,11 @@ def _tool_result_from_openai_messages(
     raise web.HTTPBadRequest(text="tool continuation requires the matching role=tool result")
 
 
-def _response_input_text(payload: Dict[str, Any]) -> str:
+def _response_input_text(
+    payload: Dict[str, Any],
+    *,
+    attachment_fallback: bool = False,
+) -> str:
     """Extract only this Responses turn; previous state stays server-side."""
     value = payload.get("input")
     if isinstance(value, str):
@@ -422,10 +442,16 @@ def _response_input_text(payload: Dict[str, Any]) -> str:
                 entries.append(f"{role}: {text}" if role != "user" else text)
         if entries:
             return "\n\n".join(entries)
+    if attachment_fallback:
+        return "Analyze the attached file or image."
     raise web.HTTPBadRequest(text="responses request requires non-empty text input")
 
 
-def _response_agent_task(payload: Dict[str, Any]) -> str:
+def _response_agent_task(
+    payload: Dict[str, Any],
+    *,
+    attachment_fallback: bool = False,
+) -> str:
     """Extract the actionable user turn without replaying host system prompts.
 
     Coding hosts such as OpenCode send their large static system prompt and
@@ -436,7 +462,7 @@ def _response_agent_task(payload: Dict[str, Any]) -> str:
     """
     value = payload.get("input")
     if not isinstance(value, list):
-        return _response_input_text(payload)
+        return _response_input_text(payload, attachment_fallback=attachment_fallback)
     user_entries: list[str] = []
     for item in value:
         if not isinstance(item, dict) or item.get("type") == "function_call_output":
@@ -448,7 +474,7 @@ def _response_agent_task(payload: Dict[str, Any]) -> str:
             user_entries.append(text)
     if user_entries:
         return "\n\n".join(user_entries)
-    return _response_input_text(payload)
+    return _response_input_text(payload, attachment_fallback=attachment_fallback)
 
 
 def _response_instructions(payload: Dict[str, Any]) -> str:
@@ -744,6 +770,7 @@ def create_http_app(
     api_key: str | None = None,
     api_key_store: ApiKeyStore | None = None,
     max_attachment_bytes: int = 20 * 1024 * 1024,
+    max_attachment_count: int = 8,
     verification_broker: VerificationBroker | None = None,
     agent_safety_policy: AgentSafetyPolicy | None = None,
     agent_anchor_policy: AgentAnchorPolicy | None = None,
@@ -752,6 +779,8 @@ def create_http_app(
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
         raise ValueError("max_attachment_bytes must be positive")
+    if max_attachment_count <= 0:
+        raise ValueError("max_attachment_count must be positive")
     agent_cursors: dict[str, _OpenAIAgentCursor] = {}
     response_cursors: dict[str, _ResponseCursor] = {}
     # The Responses API permits clients to continue from previous_response_id.
@@ -845,8 +874,14 @@ def create_http_app(
     async def health(_: web.Request) -> web.Response:
         payload = await service.get_runtime_health()
         payload["api"] = {
-            "version": "2026-07-29",
-            "capabilities": ["chat_completions", "responses", "agent_turn", "bot_bridge"],
+            "version": "2026-07-31",
+            "capabilities": [
+                "chat_completions",
+                "responses",
+                "inline_files",
+                "agent_turn",
+                "bot_bridge",
+            ],
         }
         return web.json_response(payload)
 
@@ -943,7 +978,14 @@ def create_http_app(
             "protocol_version": 1,
             "client_id": client_identity(request),
             "capabilities": [
-                "chat", "stream", "history", "persona", "persona_sync", "context_estimate", "agent_responses",
+                "chat",
+                "stream",
+                "attachments",
+                "history",
+                "persona",
+                "persona_sync",
+                "context_estimate",
+                "agent_responses",
             ],
             "runtime": await service.get_runtime_health(),
         })
@@ -961,6 +1003,7 @@ def create_http_app(
         chat_request = _bot_chat_request_from_payload(
             await bot_payload(request),
             max_attachment_bytes=max_attachment_bytes,
+            max_attachment_count=max_attachment_count,
             client_id=client_identity(request),
         )
         return web.json_response(_chat_result_payload(await service.send(chat_request)))
@@ -969,6 +1012,7 @@ def create_http_app(
         chat_request = _bot_chat_request_from_payload(
             await bot_payload(request),
             max_attachment_bytes=max_attachment_bytes,
+            max_attachment_count=max_attachment_count,
             client_id=client_identity(request),
         )
         if chat_request.operation is not ConversationOperation.SEND:
@@ -1065,6 +1109,12 @@ def create_http_app(
         if tool_call_id and cursor is None and payload.get("tools") is None:
             raise web.HTTPBadRequest(text="tool-call cursor is unknown or expired; restart the agent request")
         if payload.get("tools") is not None or cursor is not None:
+            files = _attachment_files(
+                payload,
+                max_attachment_bytes,
+                mode="chat",
+                max_attachment_count=max_attachment_count,
+            )
             if cursor is None:
                 tools = _openai_agent_tools(payload)
             else:
@@ -1079,7 +1129,10 @@ def create_http_app(
                         request_priority=120,
                         enforce_client_ownership=True,
                     ).turn(
-                        _agent_task_from_payload(payload), tools, model=str(payload.get("model") or "auto"),
+                        _agent_task_from_payload(payload, attachment_fallback=bool(files)),
+                        tools,
+                        model=str(payload.get("model") or "auto"),
+                        files=files,
                     )
                 else:
                     # Keep the stored tool set instead of trusting a continuation to broaden it.
@@ -1120,6 +1173,7 @@ def create_http_app(
         chat_request = chat_request_from_payload(
             payload,
             max_attachment_bytes=max_attachment_bytes,
+            max_attachment_count=max_attachment_count,
             client_id=client_id,
             request_priority=100,
             enforce_client_ownership=True,
@@ -1277,6 +1331,12 @@ def create_http_app(
             raise web.HTTPBadRequest(text="request body must be valid JSON")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="request body must be a JSON object")
+        files = _attachment_files(
+            payload,
+            max_attachment_bytes,
+            mode="responses",
+            max_attachment_count=max_attachment_count,
+        )
         bot_responses = request.path == "/v1/bot/responses"
         discard_response_cursors()
         client_id = client_identity(request)
@@ -1321,7 +1381,11 @@ def create_http_app(
                         response_cursors.pop(response_token, None)
                 if cursor.tool_call_id:
                     response_call_cursors.pop(cursor.tool_call_id, None)
-            task = _response_agent_task(payload) if tool_result is None else ""
+            task = (
+                _response_agent_task(payload, attachment_fallback=bool(files))
+                if tool_result is None
+                else ""
+            )
             if instructions:
                 task = f"{instructions}\n\n{task}".strip()
             turn = await AgentService(
@@ -1338,6 +1402,7 @@ def create_http_app(
                 tool_result=tool_result,
                 model=model,
                 continue_existing=bool(cursor),
+                files=files,
             )
             if turn.ok and turn.decision.kind == "tool_call":
                 tool_call_id = f"call_{uuid.uuid4().hex}"
@@ -1363,7 +1428,7 @@ def create_http_app(
             if tool_call_id:
                 response_call_cursors[tool_call_id] = next_cursor
         else:
-            prompt = _response_input_text(payload)
+            prompt = _response_input_text(payload, attachment_fallback=bool(files))
             if instructions:
                 prompt = f"{instructions}\n\n{prompt}"
             chat_request = ChatRequest(
@@ -1371,6 +1436,7 @@ def create_http_app(
                 conversation_id=cursor.conversation_id if cursor else "",
                 parent_message_id=cursor.parent_message_id if cursor else "",
                 model=model,
+                files=files,
                 client_id=client_id,
                 request_priority=10 if bot_responses else 100,
                 enforce_client_ownership=True,

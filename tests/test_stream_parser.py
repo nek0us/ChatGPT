@@ -559,6 +559,45 @@ class HttpApiRequestTests(unittest.TestCase):
                 "attachments": [{"name": "note.txt", "content_base64": "aGVsbG8="}],
             }, max_attachment_bytes=4)
 
+    def test_openai_chat_content_decodes_inline_image_and_file(self):
+        request = chat_request_from_payload({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect these"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                    },
+                    {
+                        "type": "file",
+                        "file": {
+                            "filename": "note.txt",
+                            "file_data": "data:text/plain;base64,aGVsbG8=",
+                        },
+                    },
+                ],
+            }],
+        })
+
+        self.assertEqual(request.prompt, "user: inspect these")
+        self.assertEqual([file.name for file in request.files], ["image-1.png", "note.txt"])
+        self.assertEqual(request.files[1].content, b"hello")
+
+    def test_attachment_only_chat_request_gets_a_neutral_prompt(self):
+        request = chat_request_from_payload({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                }],
+            }],
+        })
+
+        self.assertEqual(request.prompt, "Analyze the attached file or image.")
+        self.assertEqual(len(request.files), 1)
+
 class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend = _FakeBackend()
@@ -622,6 +661,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health_payload["readiness"], "not_ready")
         self.assertEqual(health_payload["accounts"]["configured"], 1)
         self.assertIn("responses", health_payload["api"]["capabilities"])
+        self.assertIn("inline_files", health_payload["api"]["capabilities"])
         self.assertIn("bot_bridge", health_payload["api"]["capabilities"])
 
     async def test_dynamic_client_key_is_scoped_rotatable_and_revocable(self):
@@ -721,6 +761,55 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend.sent[-1].msg_send, "second turn")
         self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-service")
 
+    async def test_responses_api_forwards_inline_image_and_file(self):
+        response = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "auto",
+                "input": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "inspect these"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,aW1hZ2U=",
+                        },
+                        {
+                            "type": "input_file",
+                            "filename": "note.txt",
+                            "file_data": "data:text/plain;base64,aGVsbG8=",
+                        },
+                    ],
+                }],
+            },
+            headers={"Authorization": "Bearer test-key"},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.backend.sent[-1].msg_send, "inspect these")
+        self.assertEqual(
+            [file.name for file in self.backend.sent[-1].upload_file],
+            ["image-1.png", "note.txt"],
+        )
+
+    async def test_responses_api_rejects_remote_attachment_urls(self):
+        response = await self.client.post(
+            "/v1/responses",
+            json={
+                "input": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "input_file",
+                        "file_url": "http://127.0.0.1/private",
+                    }],
+                }],
+            },
+            headers={"Authorization": "Bearer test-key"},
+        )
+
+        self.assertEqual(response.status, 400)
+        self.assertIn("remote URLs are not supported", await response.text())
+
     async def test_responses_agent_continues_from_function_call_id_without_previous_response_id(self):
         replies = iter((
             '{"type":"tool_call","tool":"glob","arguments":{"pattern":"pyproject.toml"}}',
@@ -750,7 +839,19 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
             headers = {"Authorization": "Bearer test-key"}
             first = await client.post("/v1/responses", json={
                 "model": "auto",
-                "input": "Read pyproject.toml and report the project name.",
+                "input": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "Read pyproject.toml and report the project name.",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,aW1hZ2U=",
+                        },
+                    ],
+                }],
                 "tools": [{
                     "type": "function",
                     "name": "glob",
@@ -781,6 +882,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.status, 200)
         self.assertEqual(second_payload["output_text"], "The project name is ChatGPTWeb.")
         self.assertIn("pyproject.toml", self.backend.sent[-1].msg_send)
+        self.assertEqual(self.backend.sent[0].upload_file[0].name, "image-1.png")
 
     async def test_responses_api_rejects_another_dynamic_client_cursor(self):
         admin_headers = {"Authorization": "Bearer test-key"}
@@ -866,6 +968,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.status, 200)
         self.assertIn("stream", (await capabilities.json())["capabilities"])
         self.assertIn("agent_responses", (await capabilities.json())["capabilities"])
+        self.assertIn("attachments", (await capabilities.json())["capabilities"])
         self.assertEqual(chat.status, 200)
         self.assertEqual(responses.status, 200)
         self.assertTrue((await chat.json())["ok"])
