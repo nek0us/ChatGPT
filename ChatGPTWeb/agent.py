@@ -791,7 +791,12 @@ class AgentService:
             }
             error_message = (
                 "The upstream chat account has reached its message limit. Please retry later."
-                if error_kinds & {"rate_limited", "conversation_rate_limited"}
+                if error_kinds & {
+                    "rate_limited",
+                    "conversation_rate_limited",
+                    "capability_rate_limited",
+                    "conversation_capability_rate_limited",
+                }
                 else "智能体模型请求失败，未执行任何工具。"
             )
             return AgentTurn(

@@ -12,7 +12,7 @@ import secrets
 import ipaddress
 from collections import deque
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import ClientSession, web
 from playwright_firefox.stealth import Stealth
@@ -50,6 +50,12 @@ from .capabilities import (
     infer_plan_from_model_categories,
     supports_observed_model,
     supports_paid_models,
+)
+from .capability_quota import (
+    FILE_UPLOAD,
+    IMAGE_GENERATION,
+    IMAGE_UPLOAD,
+    infer_request_capabilities,
 )
 from .api import (
     async_send_msg,
@@ -94,6 +100,10 @@ class chatgpt:
                  startup_timeout: int = 60,
                  session_health_check_interval: int = 300,
                  chat_rate_limit_cooldown_seconds: int = 5 * 60 * 60,
+                 capability_quota_enabled: bool = True,
+                 free_upload_daily_limit: int = 2,
+                 free_image_generation_daily_limit: int = 2,
+                 capability_rate_limit_cooldown_seconds: int = 24 * 60 * 60,
                  account_selection_strategy: Literal["least_recently_used", "usage_balanced"] = "least_recently_used",
                  account_selection_window_seconds: int = 5 * 60 * 60,
                  request_queue_timeout_seconds: int = 120,
@@ -163,6 +173,22 @@ class chatgpt:
                 "chat_rate_limit_cooldown_seconds must be between 60 and 86400"
             )
         self.chat_rate_limit_cooldown_seconds = chat_rate_limit_cooldown_seconds
+        if not 0 <= free_upload_daily_limit <= 1000:
+            raise ValueError("free_upload_daily_limit must be between 0 and 1000")
+        if not 0 <= free_image_generation_daily_limit <= 1000:
+            raise ValueError(
+                "free_image_generation_daily_limit must be between 0 and 1000"
+            )
+        if not 60 <= capability_rate_limit_cooldown_seconds <= 7 * 24 * 60 * 60:
+            raise ValueError(
+                "capability_rate_limit_cooldown_seconds must be between 60 and 604800"
+            )
+        self.capability_quota_enabled = bool(capability_quota_enabled)
+        self.free_upload_daily_limit = free_upload_daily_limit
+        self.free_image_generation_daily_limit = free_image_generation_daily_limit
+        self.capability_rate_limit_cooldown_seconds = (
+            capability_rate_limit_cooldown_seconds
+        )
         if account_selection_strategy not in {"least_recently_used", "usage_balanced"}:
             raise ValueError(
                 "account_selection_strategy must be 'least_recently_used' or 'usage_balanced'"
@@ -961,6 +987,222 @@ class chatgpt:
                 usage[key] = usage.get(key, 0) + value
         self._record_activity(session.email, "chat_completed", f"model: {model}")
 
+    @staticmethod
+    def _is_paid_account(session: Session) -> bool:
+        plan = str(getattr(session, "account_plan", "unknown")).lower()
+        if plan and plan != "unknown":
+            return plan in {
+                "plus", "pro", "go", "team", "business", "enterprise",
+            }
+        return bool(session.gptplus)
+
+    @staticmethod
+    def _reset_capability_usage_day(session: Session) -> None:
+        today = datetime.now().date().isoformat()
+        if session.capability_usage_day == today:
+            return
+        session.capability_usage_day = today
+        session.capability_usage.clear()
+
+    def _required_capabilities(self, msg_data: MsgData) -> list[str]:
+        capabilities = infer_request_capabilities(
+            msg_data.msg_send,
+            msg_data.upload_file,
+            msg_data.required_capabilities,
+        )
+        msg_data.required_capabilities = capabilities
+        return capabilities
+
+    def _capability_soft_limit(self, capability: str) -> int:
+        if capability in {IMAGE_UPLOAD, FILE_UPLOAD}:
+            return getattr(self, "free_upload_daily_limit", 0)
+        if capability == IMAGE_GENERATION:
+            return getattr(self, "free_image_generation_daily_limit", 0)
+        return 0
+
+    @staticmethod
+    def _capability_usage_key(capability: str) -> str:
+        if capability in {IMAGE_UPLOAD, FILE_UPLOAD}:
+            return "upload_total"
+        return capability
+
+    def _capability_availability(
+        self,
+        session: Session,
+        capability: str,
+    ) -> tuple[bool, int, str]:
+        if not getattr(self, "capability_quota_enabled", True):
+            return True, 0, ""
+        self._reset_capability_usage_day(session)
+        limited_until = session.capability_limited_until.get(capability)
+        if limited_until and datetime.now() < limited_until:
+            return (
+                False,
+                max(0, int((limited_until - datetime.now()).total_seconds())),
+                "upstream",
+            )
+        if limited_until:
+            session.clear_capability_rate_limit(capability)
+        if self._is_paid_account(session):
+            return True, 0, ""
+        limit = self._capability_soft_limit(capability)
+        if limit <= 0:
+            return True, 0, ""
+        used = int(session.capability_usage.get(
+            self._capability_usage_key(capability),
+            0,
+        ))
+        if used < limit:
+            return True, 0, ""
+        tomorrow = datetime.combine(
+            datetime.now().date() + timedelta(days=1),
+            datetime.min.time(),
+        )
+        return (
+            False,
+            max(60, int((tomorrow - datetime.now()).total_seconds())),
+            "local_soft_budget",
+        )
+
+    def _session_supports_capabilities(
+        self,
+        session: Session,
+        capabilities: typing.Iterable[str],
+    ) -> bool:
+        return all(
+            self._capability_availability(session, capability)[0]
+            for capability in capabilities
+        )
+
+    def _add_capability_unavailable_error(
+        self,
+        msg_data: MsgData,
+        sessions: typing.Iterable[Session],
+        capabilities: typing.Iterable[str],
+        *,
+        conversation: bool = False,
+    ) -> None:
+        session_list = list(sessions)
+        required = list(capabilities)
+        blocked = [
+            capability
+            for capability in required
+            if not any(
+                self._capability_availability(session, capability)[0]
+                for session in session_list
+            )
+        ]
+        reported = blocked or required
+        retry_values = [
+            self._capability_availability(session, capability)[1]
+            for session in session_list
+            for capability in reported
+            if not self._capability_availability(session, capability)[0]
+        ]
+        retry_after = min((value for value in retry_values if value > 0), default=0)
+        kind = (
+            "conversation_capability_rate_limited"
+            if conversation else "capability_rate_limited"
+        )
+        msg_data.add_error(
+            kind=kind,
+            message=(
+                f"required capability is cooling down: {', '.join(reported)}; "
+                f"retry after about {retry_after} seconds"
+            ),
+            retryable=True,
+            capability=reported[0] if len(reported) == 1 else "",
+        )
+
+    def _capability_snapshot(self, session: Session) -> Dict[str, object]:
+        self._reset_capability_usage_day(session)
+        result: Dict[str, object] = {
+            "enabled": bool(getattr(self, "capability_quota_enabled", True)),
+            "usage_day": session.capability_usage_day,
+            "paid_account": self._is_paid_account(session),
+            "budget_source": "local_estimate",
+            "upstream_state_source": "observed_errors",
+            "upload_total": int(session.capability_usage.get("upload_total", 0)),
+        }
+        for capability in (IMAGE_UPLOAD, FILE_UPLOAD, IMAGE_GENERATION):
+            available, retry_after, reason = self._capability_availability(
+                session,
+                capability,
+            )
+            usage_key = self._capability_usage_key(capability)
+            limit = 0 if self._is_paid_account(session) else self._capability_soft_limit(
+                capability
+            )
+            result[capability] = {
+                "used": int(session.capability_usage.get(capability, 0)),
+                "budget_used": int(session.capability_usage.get(usage_key, 0)),
+                "limit": limit,
+                "remaining": (
+                    max(0, limit - int(session.capability_usage.get(usage_key, 0)))
+                    if limit > 0 else None
+                ),
+                "available": available,
+                "limited": not available,
+                "limit_reason": reason,
+                "retry_after_seconds": retry_after,
+                "limited_until": (
+                    session.capability_limited_until[capability].isoformat()
+                    if capability in session.capability_limited_until else ""
+                ),
+                "source": session.capability_limit_source.get(capability, ""),
+            }
+        return result
+
+    def _record_capability_usage(
+        self,
+        session: Session,
+        msg_data: MsgData,
+    ) -> None:
+        if (
+            not getattr(self, "capability_quota_enabled", True)
+            or msg_data.capability_usage_recorded
+            or not msg_data.status
+        ):
+            return
+        self._reset_capability_usage_day(session)
+        increments = {IMAGE_UPLOAD: 0, FILE_UPLOAD: 0, IMAGE_GENERATION: 0}
+        for file in msg_data.upload_file:
+            capability = (
+                IMAGE_UPLOAD
+                if file.content_type == "image_asset_pointer"
+                or str(file.mime_type or "").lower().startswith("image/")
+                else FILE_UPLOAD
+            )
+            increments[capability] += 1
+        if msg_data.image_gen or msg_data.img_list:
+            increments[IMAGE_GENERATION] = max(1, len(msg_data.img_list))
+        changed = False
+        upload_count = increments[IMAGE_UPLOAD] + increments[FILE_UPLOAD]
+        if upload_count:
+            session.capability_usage["upload_total"] = (
+                int(session.capability_usage.get("upload_total", 0)) + upload_count
+            )
+            changed = True
+        for capability, count in increments.items():
+            if not count:
+                continue
+            session.capability_usage[capability] = (
+                int(session.capability_usage.get(capability, 0)) + count
+            )
+            changed = True
+        msg_data.capability_usage_recorded = True
+        if changed:
+            save_session_state(session, self.storage, self.logger)
+            self._record_activity(
+                session.email,
+                "capability_usage_recorded",
+                ", ".join(
+                    f"{capability}: +{count}"
+                    for capability, count in increments.items()
+                    if count
+                ),
+            )
+
     def _record_activity(self, account: str, event: str, message: str) -> None:
         """Record bounded, credential-free diagnostics for the local console."""
         activity = getattr(self, "_activity", None)
@@ -1380,6 +1622,13 @@ class chatgpt:
             "too many requests",
             "too many messages",
             "status: 429",
+            "upload limit",
+            "uploads left",
+            "file limit reached",
+            "image generation limit",
+            "image creation limit",
+            "can't create more images",
+            "cannot create more images",
         ))
 
     @staticmethod
@@ -1429,6 +1678,111 @@ class chatgpt:
         self.logger.warning(
             f"{session.email} upstream chat rate limit reached; "
             f"temporarily excluding this account from new conversations for about {cooldown_seconds}s"
+        )
+
+    def _rate_limited_capabilities(
+        self,
+        error: Exception | str,
+        msg_data: MsgData,
+    ) -> list[str]:
+        text = str(error).lower()
+        matches: list[str] = []
+        if any(marker in text for marker in (
+            "upload limit",
+            "uploads left",
+            "attachment limit",
+            "file upload",
+            "upload files",
+            "上传限制",
+            "上传额度",
+            "文件上传",
+        )):
+            return [IMAGE_UPLOAD, FILE_UPLOAD]
+        markers = {
+            IMAGE_GENERATION: (
+                "image generation", "image creation", "create images",
+                "generating images", "生成图片", "图像生成",
+            ),
+            IMAGE_UPLOAD: (
+                "image upload", "upload images", "上传图片", "图片上传",
+            ),
+            FILE_UPLOAD: (
+                "上传文件",
+            ),
+        }
+        for capability, capability_markers in markers.items():
+            if any(marker in text for marker in capability_markers):
+                matches.append(capability)
+        if matches:
+            return matches
+        required = self._required_capabilities(msg_data)
+        return required if len(required) == 1 else []
+
+    def _mark_capability_rate_limited(
+        self,
+        session: Session,
+        capabilities: typing.Iterable[str],
+        error: Exception | str,
+    ) -> None:
+        upstream_cooldown = self._upstream_rate_limit_cooldown_seconds(error)
+        cooldown_seconds = upstream_cooldown or getattr(
+            self,
+            "capability_rate_limit_cooldown_seconds",
+            24 * 60 * 60,
+        )
+        source = "upstream_retry_hint" if upstream_cooldown else "configured_cooldown"
+        marked: list[str] = []
+        for capability in capabilities:
+            session.mark_capability_rate_limited(
+                capability,
+                str(error),
+                cooldown_seconds=cooldown_seconds,
+                source=source,
+            )
+            marked.append(capability)
+        if not marked:
+            return
+        save_session_state(session, self.storage, self.logger)
+        self._record_activity(
+            session.email,
+            "capability_rate_limited",
+            f"{', '.join(marked)} paused for about {cooldown_seconds}s ({source})",
+        )
+        self.logger.warning(
+            f"{session.email} upstream capability limit reached for "
+            f"{', '.join(marked)}; cooling down for about {cooldown_seconds}s"
+        )
+
+    def _handle_upstream_rate_limit(
+        self,
+        session: Session,
+        msg_data: MsgData,
+        error: Exception | str,
+        *,
+        attempt: int,
+    ) -> None:
+        capabilities = self._rate_limited_capabilities(error, msg_data)
+        if capabilities and getattr(self, "capability_quota_enabled", True):
+            self._mark_capability_rate_limited(session, capabilities, error)
+            msg_data.add_error(
+                kind="capability_rate_limited",
+                message=(
+                    "upstream capability rate limit reached for "
+                    + ", ".join(capabilities)
+                ),
+                retryable=True,
+                attempt=attempt,
+                session_email=session.email,
+                capability=capabilities[0] if len(capabilities) == 1 else "",
+            )
+            return
+        self._mark_chat_rate_limited(session, error)
+        msg_data.add_error(
+            kind="rate_limited",
+            message="upstream chat message rate limit reached",
+            retryable=True,
+            attempt=attempt,
+            session_email=session.email,
         )
 
     def _clear_chat_rate_limit(self, session: Session) -> None:
@@ -3036,13 +3390,11 @@ class chatgpt:
             except Exception as e:
                 error_text = str(e)
                 if self._is_upstream_rate_limit_error(error_text):
-                    self._mark_chat_rate_limited(session, error_text)
-                    msg_data.add_error(
-                        kind="rate_limited",
-                        message="upstream chat message rate limit reached",
-                        retryable=True,
+                    self._handle_upstream_rate_limit(
+                        session,
+                        msg_data,
+                        error_text,
                         attempt=attempt,
-                        session_email=session.email,
                     )
                     return msg_data
                 if "Unusual activity" in error_text or "unusual activity" in error_text:
@@ -3311,13 +3663,11 @@ class chatgpt:
                         response_text = await res.text()
                         self.logger.warning(f"download msg may json_wss,and error: {e} {response_text},line number {exc_traceback.tb_lineno}") # type: ignore
                         if self._is_upstream_rate_limit_error(response_text):
-                            self._mark_chat_rate_limited(session, response_text)
-                            msg_data.add_error(
-                                kind="rate_limited",
-                                message="upstream chat message rate limit reached",
-                                retryable=True,
+                            self._handle_upstream_rate_limit(
+                                session,
+                                msg_data,
+                                response_text,
                                 attempt=attempt,
-                                session_email=session.email,
                             )
                             raise RuntimeError(f"upstream chat rate limit: {response_text[:500]}") from e
                         if "token_expired" in response_text:
@@ -3496,12 +3846,17 @@ class chatgpt:
         '''
         while not self.manage["start"]:
             self.sleep(0.5)
+        required_capabilities = self._required_capabilities(msg_data)
         sessions = filter(
             lambda s: (
                 s.type != "script"
                 and s.login_state is True
                 and not s.is_login_disabled()
                 and not s.is_chat_rate_limited()
+                and self._session_supports_capabilities(
+                    s,
+                    required_capabilities,
+                )
             ),
             sorted(self.Sessions, key=lambda s: s.last_active)
         )
@@ -3515,6 +3870,7 @@ class chatgpt:
 
     async def _prepare_chat_session(self, msg_data: MsgData) -> Optional[Session]:
         """Select and reserve the session that should handle this request."""
+        required_capabilities = self._required_capabilities(msg_data)
         startup_wait_seconds = 0
         while not self.manage["start"]:
             await asyncio.sleep(0.5)
@@ -3576,6 +3932,10 @@ class chatgpt:
                         and s.status == Status.Ready.value
                         and not s.is_login_disabled()
                         and not s.is_chat_rate_limited()
+                        and self._session_supports_capabilities(
+                            s,
+                            required_capabilities,
+                        )
                     )
                 ]
                 if filtered_sessions:
@@ -3596,6 +3956,10 @@ class chatgpt:
                                 Status.Working.value,
                             )
                             and not s.is_login_disabled()
+                            and self._session_supports_capabilities(
+                                s,
+                                required_capabilities,
+                            )
                         )
                     ]
                     rate_limited_sessions = [
@@ -3612,6 +3976,33 @@ class chatgpt:
                             kind="rate_limited",
                             message=f"all eligible accounts are rate limited; retry after about {retry_after} seconds",
                             retryable=True,
+                        )
+                        self.logger.warning(msg_data.error_info)
+                        return None
+                    capability_candidates = [
+                        s for s in session_list
+                        if (
+                            s.type != "script"
+                            and not s.is_login_disabled()
+                            and not s.is_chat_rate_limited()
+                        )
+                    ]
+                    capability_eligible_sessions = [
+                        s for s in capability_candidates
+                        if self._session_supports_capabilities(
+                            s,
+                            required_capabilities,
+                        )
+                    ]
+                    if (
+                        required_capabilities
+                        and capability_candidates
+                        and not capability_eligible_sessions
+                    ):
+                        self._add_capability_unavailable_error(
+                            msg_data,
+                            session_list,
+                            required_capabilities,
                         )
                         self.logger.warning(msg_data.error_info)
                         return None
@@ -3669,6 +4060,17 @@ class chatgpt:
                     message=f"the account associated with this conversation is rate limited; retry after about {retry_after} seconds",
                     retryable=True,
                     session_email=session.email,
+                )
+                return None
+            if not self._session_supports_capabilities(
+                session,
+                required_capabilities,
+            ):
+                self._add_capability_unavailable_error(
+                    msg_data,
+                    [session],
+                    required_capabilities,
+                    conversation=True,
                 )
                 return None
             wait_ready_seconds = 0
@@ -3812,6 +4214,7 @@ class chatgpt:
                 self._bind_conversation_client(msg_data, session)
             session.status = Status.Ready.value
             self._record_usage(session, msg_data)
+            self._record_capability_usage(session, msg_data)
         except TimeoutError:
             msg_data.add_error(
                 kind="continue_chat_timeout",
@@ -3861,7 +4264,19 @@ class chatgpt:
         """Stream chat events from the browser fetch transport."""
         session = await self._prepare_chat_session(msg_data)
         if not session:
-            yield ChatStreamEvent(type="error", text=msg_data.error_info or "failed to prepare chat session")
+            error = msg_data.error_list[-1] if msg_data.error_list else {}
+            yield ChatStreamEvent(
+                type="error",
+                text=msg_data.error_info or "failed to prepare chat session",
+                metadata={
+                    "error_kind": str(error.get("kind") or "stream_error"),
+                    "retryable": bool(error.get("retryable", False)),
+                    **(
+                        {"capability": error["capability"]}
+                        if error.get("capability") else {}
+                    ),
+                },
+            )
             return
 
         context_num = session.email
@@ -3942,6 +4357,7 @@ class chatgpt:
                 if msg_data.persist_history:
                     await self.save_chat(msg_data, context_num)
                 self._record_usage(session, msg_data)
+                self._record_capability_usage(session, msg_data)
                 self.logger.info(
                     f"receive stream message: {build_chat_content(msg_data.msg_recv).markdown}"
                 )
@@ -3959,7 +4375,25 @@ class chatgpt:
                 metadata={
                     **msg_data.response_metadata,
                     **(
-                        {"error_kind": "rate_limited", "retryable": True}
+                        {
+                            "error_kind": next(
+                                str(item.get("kind"))
+                                for item in reversed(msg_data.error_list)
+                                if item.get("kind") in {
+                                    "capability_rate_limited",
+                                    "conversation_capability_rate_limited",
+                                }
+                            ),
+                            "retryable": True,
+                        }
+                        if any(
+                            item.get("kind") in {
+                                "capability_rate_limited",
+                                "conversation_capability_rate_limited",
+                            }
+                            for item in msg_data.error_list
+                        )
+                        else {"error_kind": "rate_limited", "retryable": True}
                         if any(item.get("kind") in {"rate_limited", "conversation_rate_limited"} for item in msg_data.error_list)
                         else {"error_kind": "session_reauthentication_pending", "retryable": True}
                         if any(item.get("kind") == "session_reauthentication_pending" for item in msg_data.error_list)
@@ -4316,6 +4750,7 @@ class chatgpt:
                 "auth_state_loaded": session.auth_state_loaded,
                 "conversation_count": self.storage.conversation_count(session.email),
                 "usage": self._usage_snapshot(session.email),
+                "capability_quota": self._capability_snapshot(session),
                 "recent_assignment_count": self._recent_account_assignment_count(session.email),
                 "login_fail_count": session.login_fail_count,
                 "max_login_failures": session.max_login_failures,
@@ -4345,6 +4780,22 @@ class chatgpt:
             "account_selection": {
                 "strategy": getattr(self, "account_selection_strategy", "least_recently_used"),
                 "window_seconds": getattr(self, "account_selection_window_seconds", 5 * 60 * 60),
+            },
+            "capability_quota": {
+                "enabled": bool(getattr(self, "capability_quota_enabled", True)),
+                "free_upload_daily_limit": int(
+                    getattr(self, "free_upload_daily_limit", 0)
+                ),
+                "free_image_generation_daily_limit": int(
+                    getattr(self, "free_image_generation_daily_limit", 0)
+                ),
+                "upstream_fallback_cooldown_seconds": int(
+                    getattr(
+                        self,
+                        "capability_rate_limit_cooldown_seconds",
+                        24 * 60 * 60,
+                    )
+                ),
             },
             "accounts": accounts,
             "verification": pending_verifications,

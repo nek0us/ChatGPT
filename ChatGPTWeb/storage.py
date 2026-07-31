@@ -192,6 +192,13 @@ class RuntimeStorage:
             "disabled_until": timestamp(session.disabled_until),
             "chat_rate_limited_until": timestamp(session.chat_rate_limited_until),
             "chat_rate_limit_source": session.chat_rate_limit_source,
+            "capability_usage_day": session.capability_usage_day,
+            "capability_usage": dict(session.capability_usage),
+            "capability_limited_until": {
+                capability: timestamp(limited_until)
+                for capability, limited_until in session.capability_limited_until.items()
+            },
+            "capability_limit_source": dict(session.capability_limit_source),
             "manual_disabled": session.manual_disabled,
             "runtime_last_closed_source": session.runtime_last_closed_source,
             "runtime_last_closed_at": timestamp(session.runtime_last_closed_at),

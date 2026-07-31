@@ -154,6 +154,7 @@ class McpServiceAdapter:
             "chat_rate_limited", "chat_rate_limited_until", "chat_rate_limit_source",
             "gptplus", "conversation_count", "login_failure_kind", "runtime",
             "operational_state", "operational_guidance", "recommended_action",
+            "capability_quota",
         }
         return {
             "accounts": [

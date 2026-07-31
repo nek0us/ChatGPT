@@ -111,3 +111,13 @@ class ConversationPayloadTests(unittest.TestCase):
         data = ChatRequest(prompt="paid", prefer_paid_account=True).to_msg_data()
 
         self.assertTrue(data.gpt_plus)
+
+    def test_required_capabilities_reach_message_data(self):
+        from ChatGPTWeb.service import ChatRequest
+
+        data = ChatRequest(
+            prompt="draw",
+            required_capabilities=["image_generation"],
+        ).to_msg_data()
+
+        self.assertEqual(data.required_capabilities, ["image_generation"])

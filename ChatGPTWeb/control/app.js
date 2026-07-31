@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.07.31.1";
+  const UI_VERSION = "2026.07.31.2";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
@@ -96,6 +96,13 @@
       coolingDown: "等待恢复",
       unknown: "未知",
       noUsage: "尚未观测到上游用量",
+      capabilityUsage: "高级能力（本地估算）",
+      uploadBudget: "上传",
+      imageUploads: "图片",
+      fileUploads: "文件",
+      imageGeneration: "生图",
+      observeOnly: "仅统计",
+      capabilityCooling: "上游冷却",
       requestCount: "{count} 次请求",
       mode: "模式",
       plan: "套餐",
@@ -221,6 +228,13 @@
       coolingDown: "Cooling down",
       unknown: "Unknown",
       noUsage: "No observed upstream usage",
+      capabilityUsage: "Capabilities (local estimate)",
+      uploadBudget: "Uploads",
+      imageUploads: "images",
+      fileUploads: "files",
+      imageGeneration: "image generation",
+      observeOnly: "observe only",
+      capabilityCooling: "upstream cooldown",
       requestCount: "{count} request(s)",
       mode: "Mode",
       plan: "Plan",
@@ -526,6 +540,31 @@
     return t("minutesRemaining", { count: Math.ceil(seconds / 60) });
   }
 
+  function capabilityDiagnostics(item) {
+    const quota = item.capability_quota;
+    if (!quota || !quota.enabled) return "";
+    const imageUpload = quota.image_upload || {};
+    const fileUpload = quota.file_upload || {};
+    const imageGeneration = quota.image_generation || {};
+    const uploadLimit = Number(imageUpload.limit || fileUpload.limit || 0);
+    const uploadUsed = Number(quota.upload_total || 0);
+    const generationLimit = Number(imageGeneration.limit || 0);
+    const generationUsed = Number(imageGeneration.budget_used || 0);
+    const lines = [
+      `${t("capabilityUsage")}:`,
+      `${t("uploadBudget")}: ${uploadUsed}/${uploadLimit || t("observeOnly")} (${t("imageUploads")} ${Number(imageUpload.used || 0)}, ${t("fileUploads")} ${Number(fileUpload.used || 0)})`,
+      `${t("imageGeneration")}: ${generationUsed}/${generationLimit || t("observeOnly")}`,
+    ];
+    const cooling = [imageUpload, fileUpload, imageGeneration]
+      .filter((value) => value.limit_reason === "upstream")
+      .map((value) => Number(value.retry_after_seconds || 0))
+      .filter(Boolean);
+    if (cooling.length) {
+      lines.push(`${t("capabilityCooling")}: ${t("minutesRemaining", { count: Math.ceil(Math.min(...cooling) / 60) })}`);
+    }
+    return lines.join("\n");
+  }
+
   function accountDiagnostics(item) {
     const plan = item.account_plan && item.account_plan !== "unknown"
       ? `${item.account_plan} (${t("observed")})`
@@ -548,6 +587,8 @@
     if (item.runtime?.recovery_count) {
       parts.push(`${t("recoveryCount")}: ${item.runtime.recovery_count}`);
     }
+    const capabilityUsage = capabilityDiagnostics(item);
+    if (capabilityUsage) parts.push(capabilityUsage);
     return parts.join("\n");
   }
 

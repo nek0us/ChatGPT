@@ -74,6 +74,10 @@ class CoreServerSettings:
     remote_input_enabled: bool
     remote_input_timeout_seconds: float
     remote_input_max_redirects: int
+    capability_quota_enabled: bool = True
+    free_upload_daily_limit: int = 2
+    free_image_generation_daily_limit: int = 2
+    capability_rate_limit_cooldown_seconds: int = 24 * 60 * 60
 
     @classmethod
     def from_environment(cls) -> "CoreServerSettings":
@@ -110,6 +114,25 @@ class CoreServerSettings:
             ),
             remote_input_max_redirects=int(
                 os.getenv("CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS", "3")
+            ),
+            capability_quota_enabled=_env_enabled(
+                "CHATGPTWEB_CAPABILITY_QUOTA_ENABLED",
+                True,
+            ),
+            free_upload_daily_limit=int(
+                os.getenv("CHATGPTWEB_FREE_UPLOAD_DAILY_LIMIT", "2")
+            ),
+            free_image_generation_daily_limit=int(
+                os.getenv(
+                    "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT",
+                    "2",
+                )
+            ),
+            capability_rate_limit_cooldown_seconds=int(
+                os.getenv(
+                    "CHATGPTWEB_CAPABILITY_RATE_LIMIT_COOLDOWN_SECONDS",
+                    str(24 * 60 * 60),
+                )
             ),
         )
 
@@ -160,6 +183,16 @@ def validate_settings(settings: CoreServerSettings) -> None:
         or settings.remote_input_max_redirects > 10
     ):
         raise ValueError("CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS must be between 0 and 10")
+    if not 0 <= settings.free_upload_daily_limit <= 1000:
+        raise ValueError("CHATGPTWEB_FREE_UPLOAD_DAILY_LIMIT must be between 0 and 1000")
+    if not 0 <= settings.free_image_generation_daily_limit <= 1000:
+        raise ValueError(
+            "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT must be between 0 and 1000"
+        )
+    if not 60 <= settings.capability_rate_limit_cooldown_seconds <= 7 * 24 * 60 * 60:
+        raise ValueError(
+            "CHATGPTWEB_CAPABILITY_RATE_LIMIT_COOLDOWN_SECONDS must be between 60 and 604800"
+        )
 
 
 def create_core_application(settings: CoreServerSettings) -> web.Application:
@@ -175,6 +208,14 @@ def create_core_application(settings: CoreServerSettings) -> web.Application:
         control_port=settings.control_port,
         control_api_key=settings.control_api_key,
         control_log_path=settings.runtime_log_path,
+        capability_quota_enabled=settings.capability_quota_enabled,
+        free_upload_daily_limit=settings.free_upload_daily_limit,
+        free_image_generation_daily_limit=(
+            settings.free_image_generation_daily_limit
+        ),
+        capability_rate_limit_cooldown_seconds=(
+            settings.capability_rate_limit_cooldown_seconds
+        ),
     )
     app = create_http_app(
         ChatService(runtime),

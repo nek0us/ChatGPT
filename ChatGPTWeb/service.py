@@ -30,6 +30,7 @@ class ChatRequest:
     parent_message_id: str = ""
     model: str = "auto"
     files: List[IOFile] = field(default_factory=list)
+    required_capabilities: List[str] = field(default_factory=list)
     web_search: bool = False
     deep_research: bool = False
     prefer_paid_account: bool = False
@@ -54,6 +55,7 @@ class ChatRequest:
             p_msg_id=self.parent_message_id,
             gpt_model=self.model,
             upload_file=self.files.copy(),
+            required_capabilities=self.required_capabilities.copy(),
             web_search=self.web_search,
             deep_research=self.deep_research,
             gpt_plus=self.prefer_paid_account,
@@ -234,11 +236,14 @@ class ChatService:
                 if event.image_urls:
                     image_urls = event.image_urls.copy()
             elif event.type == "error":
-                errors.append({
+                error = {
                     "kind": str(event.metadata.get("error_kind") or "stream_error"),
                     "message": event.text,
                     "retryable": bool(event.metadata.get("retryable", False)),
-                })
+                }
+                if event.metadata.get("capability"):
+                    error["capability"] = str(event.metadata["capability"])
+                errors.append(error)
 
             callback_result = callback(event)
             if inspect.isawaitable(callback_result):
@@ -369,6 +374,23 @@ class ChatService:
         ready = available > 0
         scheduler_status = getattr(self._backend, "request_scheduler_status", None)
         scheduler = await scheduler_status() if scheduler_status else None
+        capability_names = ("image_upload", "file_upload", "image_generation")
+        capability_availability = {
+            capability: sum(
+                1
+                for account in accounts
+                if (
+                    isinstance(account, dict)
+                    and isinstance(account.get("capability_quota"), dict)
+                    and isinstance(
+                        account["capability_quota"].get(capability),
+                        dict,
+                    )
+                    and account["capability_quota"][capability].get("available")
+                )
+            )
+            for capability in capability_names
+        }
         return {
             "status": "ok" if ready else "degraded",
             "liveness": "ok",
@@ -378,6 +400,13 @@ class ChatService:
                 "configured": configured,
                 "available": available,
                 "login_in_progress": login_in_progress,
+            },
+            "capability_quota": {
+                "policy": (
+                    status.get("capability_quota")
+                    if isinstance(status.get("capability_quota"), dict) else {}
+                ),
+                "available_accounts": capability_availability,
             },
             **({"request_queue": scheduler} if isinstance(scheduler, dict) else {}),
         }

@@ -154,6 +154,11 @@ class Session:
     chat_rate_limited_until: Optional[datetime.datetime] = None
     chat_rate_limit_source: str = ""
     chat_rate_limit_error: str = ""
+    capability_usage_day: str = ""
+    capability_usage: Dict[str, int] = field(default_factory=dict)
+    capability_limited_until: Dict[str, datetime.datetime] = field(default_factory=dict)
+    capability_limit_source: Dict[str, str] = field(default_factory=dict)
+    capability_limit_error: Dict[str, str] = field(default_factory=dict)
     manual_disabled: bool = False
     runtime_last_closed_source: str = ""
     runtime_last_closed_at: Optional[datetime.datetime] = None
@@ -210,6 +215,29 @@ class Session:
         self.chat_rate_limited_until = None
         self.chat_rate_limit_source = ""
         self.chat_rate_limit_error = ""
+
+    def is_capability_rate_limited(self, capability: str) -> bool:
+        limited_until = self.capability_limited_until.get(capability)
+        return bool(limited_until and datetime.datetime.now() < limited_until)
+
+    def mark_capability_rate_limited(
+            self,
+            capability: str,
+            details: str = "",
+            cooldown_seconds: int = 3600,
+            source: str = "",
+    ):
+        self.capability_limited_until[capability] = (
+            datetime.datetime.now()
+            + datetime.timedelta(seconds=max(1, cooldown_seconds))
+        )
+        self.capability_limit_source[capability] = source
+        self.capability_limit_error[capability] = details[:1000]
+
+    def clear_capability_rate_limit(self, capability: str):
+        self.capability_limited_until.pop(capability, None)
+        self.capability_limit_source.pop(capability, None)
+        self.capability_limit_error.pop(capability, None)
 
     def mark_login_success(self):
         self.login_fail_count = 0
@@ -446,6 +474,14 @@ class MsgData(BaseModel):
     last_wss: str = Field("", description="最后WebSocket地址")
     title: str = Field("", description="conversation title")
     image_gen: bool = Field(False, description="image generation")
+    required_capabilities: List[str] = Field(
+        default_factory=list,
+        description="capability hints used for account routing",
+    )
+    capability_usage_recorded: bool = Field(
+        False,
+        description="internal guard against charging one request more than once",
+    )
     from_email: str = Field("", description="from email")
     account_hint: str = Field("", description="internal conversation owner hint")
     persist_history: bool = Field(True, description="whether this request is written to local conversation history")
@@ -531,7 +567,8 @@ class MsgData(BaseModel):
             retryable: bool = False,
             attempt: Optional[int] = None,
             session_email: str = "",
-            line: Optional[int] = None
+            line: Optional[int] = None,
+            capability: str = "",
     ):
         item: Dict[str, Any] = {
             "kind": kind,
@@ -544,6 +581,8 @@ class MsgData(BaseModel):
             item["session_email"] = session_email
         if line is not None:
             item["line"] = line
+        if capability:
+            item["capability"] = capability
         self.error_list.append(item)
 
         parts = [kind]

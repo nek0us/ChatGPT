@@ -1016,6 +1016,29 @@ def restore_session_state(session: Session, storage: RuntimeStorage, logger):
         session.login_failure_kind = str(record.get("login_failure_kind", ""))
         session.last_login_error = str(record.get("last_login_error", ""))
         session.chat_rate_limit_source = str(record.get("chat_rate_limit_source", ""))
+        session.capability_usage_day = str(record.get("capability_usage_day", ""))
+        saved_usage = record.get("capability_usage", {})
+        if isinstance(saved_usage, dict):
+            session.capability_usage = {
+                str(capability): max(0, int(count))
+                for capability, count in saved_usage.items()
+                if isinstance(count, int) and not isinstance(count, bool)
+            }
+        saved_capability_sources = record.get("capability_limit_source", {})
+        if isinstance(saved_capability_sources, dict):
+            session.capability_limit_source = {
+                str(capability): str(source)
+                for capability, source in saved_capability_sources.items()
+            }
+        saved_capability_limits = record.get("capability_limited_until", {})
+        if isinstance(saved_capability_limits, dict):
+            for capability, value in saved_capability_limits.items():
+                if not isinstance(value, str) or not value:
+                    continue
+                try:
+                    session.capability_limited_until[str(capability)] = datetime.fromisoformat(value)
+                except ValueError:
+                    pass
         session.manual_disabled = bool(record.get("manual_disabled", False))
         session.runtime_last_closed_source = str(record.get("runtime_last_closed_source", ""))
         session.runtime_recovery_count = int(record.get("runtime_recovery_count", 0))

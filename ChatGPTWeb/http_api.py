@@ -24,6 +24,7 @@ from .agent import (
 from .api_keys import ApiKeyStore
 from .api import ChatStreamEvent
 from .config import IOFile
+from .capability_quota import normalize_capabilities
 from .control_ui import CONTROL_UI_VERSION, control_asset
 from .input_files import InputFileError, InputFileLimitError, InputFileLimits, input_files_from_payload
 from .remote_files import (
@@ -214,12 +215,20 @@ def chat_request_from_payload(
         if not files:
             raise
         prompt = "Analyze the attached file or image."
+    raw_capabilities = payload.get("required_capabilities", [])
+    if not isinstance(raw_capabilities, list) or not all(
+        isinstance(item, str) for item in raw_capabilities
+    ):
+        raise web.HTTPBadRequest(
+            text="required_capabilities must be a list of strings"
+        )
     return ChatRequest(
         prompt=prompt,
         conversation_id=str(payload.get("conversation_id") or ""),
         parent_message_id=str(payload.get("parent_message_id") or ""),
         model=model,
         files=files,
+        required_capabilities=normalize_capabilities(raw_capabilities),
         web_search=bool(payload.get("web_search", False)),
         deep_research=bool(payload.get("deep_research", False)),
         stream_idle_timeout_seconds=max(0, int(payload.get("stream_idle_timeout_seconds", 0) or 0)),
