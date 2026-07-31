@@ -7,6 +7,8 @@ and makes the core behavior testable without installing the MCP SDK.
 
 from __future__ import annotations
 
+import base64
+
 from typing import Any, Awaitable, Callable, Dict, List
 
 from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
@@ -41,6 +43,14 @@ def _result_to_dict(result: ChatResult) -> Dict[str, Any]:
             "requested_model": result.requested_model,
             "used_model": result.used_model,
             "image_urls": result.image_urls,
+            "files": [
+                {
+                    "name": file.name,
+                    "mime_type": file.mime_type,
+                    "content_base64": base64.b64encode(file.content).decode("ascii"),
+                }
+                for file in result.files
+            ],
             "usage": result.usage,
             "metadata": result.metadata,
             "errors": result.errors,

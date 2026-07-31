@@ -9,6 +9,7 @@ import re
 import asyncio
 import threading
 import secrets
+import ipaddress
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
@@ -17,10 +18,11 @@ from aiohttp import ClientSession, web
 from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
 from typing import Any, AsyncIterator, Dict, Optional,Literal,List
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit
 from .config import (
     Payload,
     Personality,
+    IOFile,
     MsgData,
     ProxySettings,
     logging,
@@ -40,6 +42,7 @@ from .load import load_js
 from .http_api import create_control_app
 from .service import ChatService
 from .content import build_chat_content
+from .output_files import OutputFileReference, output_file_references, safe_output_filename
 from .storage import RuntimeStorage
 from .verification import VerificationBroker, VerificationCodeProvider
 from .capabilities import (
@@ -99,6 +102,9 @@ class chatgpt:
                  control_api_key: str | None = None,
                  control_log_path: Path | str | None = None,
                  verification_code_providers: typing.Sequence[VerificationCodeProvider] = (),
+                 output_file_max_size: int = 20 * 1024 * 1024,
+                 output_file_max_total_size: int = 40 * 1024 * 1024,
+                 output_file_max_count: int = 8,
                
                  ) -> None:
         """
@@ -170,6 +176,18 @@ class chatgpt:
         if not 1 <= request_queue_timeout_seconds <= 3600:
             raise ValueError("request_queue_timeout_seconds must be between 1 and 3600")
         self.request_queue_timeout_seconds = request_queue_timeout_seconds
+        if not 1024 <= output_file_max_size <= 100 * 1024 * 1024:
+            raise ValueError("output_file_max_size must be between 1024 and 104857600")
+        if not output_file_max_size <= output_file_max_total_size <= 500 * 1024 * 1024:
+            raise ValueError(
+                "output_file_max_total_size must be at least output_file_max_size "
+                "and no greater than 524288000"
+            )
+        if not 1 <= output_file_max_count <= 32:
+            raise ValueError("output_file_max_count must be between 1 and 32")
+        self.output_file_max_size = output_file_max_size
+        self.output_file_max_total_size = output_file_max_total_size
+        self.output_file_max_count = output_file_max_count
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -2587,6 +2605,232 @@ class chatgpt:
         except Exception as error:
             self.logger.debug(f"browser stream cleanup skipped: {error}")
 
+    @staticmethod
+    def _safe_output_download_url(url: str) -> bool:
+        try:
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme.lower() != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in {None, 443}
+            ):
+                return False
+            try:
+                return ipaddress.ip_address(parsed.hostname).is_global
+            except ValueError:
+                return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _output_request_headers(url: str, access_token: str) -> Dict[str, str]:
+        headers = {"accept": "*/*"}
+        hostname = (urlsplit(url).hostname or "").lower()
+        if hostname in {"chatgpt.com", "chat.openai.com"} and access_token:
+            headers["authorization"] = f"Bearer {access_token}"
+        return headers
+
+    @staticmethod
+    def _output_filename_from_headers(headers: Dict[str, str], fallback: str) -> str:
+        disposition = next(
+            (
+                value
+                for key, value in headers.items()
+                if key.lower() == "content-disposition"
+            ),
+            "",
+        )
+        encoded = re.search(r"filename\*=UTF-8''(?P<name>[^;]+)", disposition, re.I)
+        regular = re.search(r'filename="?(?P<name>[^";]+)', disposition, re.I)
+        value = (
+            unquote(encoded.group("name"))
+            if encoded
+            else regular.group("name") if regular else fallback
+        )
+        return safe_output_filename(value, fallback)
+
+    async def _download_output_reference(
+        self,
+        session: Session,
+        reference: OutputFileReference,
+        conversation_id: str,
+    ) -> IOFile | None:
+        context = session.browser_contexts
+        request_context = getattr(context, "request", None) if context else None
+        if request_context is None:
+            return None
+        if reference.size is not None and reference.size > self.output_file_max_size:
+            self.logger.warning(
+                "%s output file %s exceeds the configured size limit",
+                session.email,
+                reference.name,
+            )
+            return None
+
+        candidates: List[str] = []
+        if reference.url and self._safe_output_download_url(reference.url):
+            candidates.append(reference.url)
+        file_id = reference.file_id.strip()
+        if file_id and re.fullmatch(r"[A-Za-z0-9_-]{1,255}", file_id):
+            encoded_id = quote(file_id, safe="")
+            compact_id = "file_" + re.sub(
+                r"[^A-Za-z0-9]",
+                "",
+                re.sub(r"^file[-_]", "", file_id),
+            )
+            conversation_query = quote(conversation_id, safe="")
+            candidates.extend([
+                (
+                    f"https://chatgpt.com/backend-api/files/download/{encoded_id}"
+                    f"?conversation_id={conversation_query}&inline=false"
+                ),
+                (
+                    f"https://chatgpt.com/backend-api/files/download/{compact_id}"
+                    f"?conversation_id={conversation_query}&inline=false"
+                ),
+                (
+                    f"https://chatgpt.com/backend-api/files/{encoded_id}/download"
+                    f"?conversation_id={conversation_query}"
+                ),
+            ])
+
+        queue = list(dict.fromkeys(candidates))
+        visited: set[str] = set()
+        while queue:
+            url = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
+            try:
+                response = await request_context.get(
+                    url,
+                    headers=self._output_request_headers(
+                        url,
+                        session.access_token,
+                    ),
+                    timeout=45_000,
+                    fail_on_status_code=False,
+                    max_redirects=0,
+                )
+            except Exception as error:
+                self.logger.debug(
+                    "%s output file candidate failed for %s: %s",
+                    session.email,
+                    reference.name,
+                    error,
+                )
+                continue
+            response_headers = dict(response.headers)
+            if 300 <= response.status < 400:
+                location = next(
+                    (
+                        value
+                        for key, value in response_headers.items()
+                        if key.lower() == "location"
+                    ),
+                    "",
+                )
+                redirect_url = urljoin(url, location)
+                if (
+                    location
+                    and self._safe_output_download_url(redirect_url)
+                    and redirect_url not in visited
+                ):
+                    queue.insert(0, redirect_url)
+                continue
+            if response.status < 200 or response.status >= 300:
+                continue
+            content_type = next(
+                (
+                    value.split(";", maxsplit=1)[0].strip().lower()
+                    for key, value in response_headers.items()
+                    if key.lower() == "content-type"
+                ),
+                "",
+            )
+            if content_type == "application/json":
+                try:
+                    payload = await response.json()
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    download_url = payload.get("download_url") or payload.get("url")
+                    if (
+                        isinstance(download_url, str)
+                        and self._safe_output_download_url(download_url)
+                        and download_url not in visited
+                    ):
+                        queue.insert(0, download_url)
+                continue
+            content_length = next(
+                (
+                    value
+                    for key, value in response_headers.items()
+                    if key.lower() == "content-length"
+                ),
+                "",
+            )
+            if content_length:
+                try:
+                    if int(content_length) > self.output_file_max_size:
+                        return None
+                except ValueError:
+                    pass
+            try:
+                content = await response.body()
+            except Exception:
+                continue
+            if not content or len(content) > self.output_file_max_size:
+                return None
+            mime_type = content_type or reference.mime_type or "application/octet-stream"
+            if mime_type.startswith("image/"):
+                # Generated images already have a dedicated image result path.
+                return None
+            return IOFile(
+                content=content,
+                name=self._output_filename_from_headers(
+                    response_headers,
+                    reference.name,
+                ),
+                mime_type=mime_type,
+            )
+        return None
+
+    async def _download_output_files(
+        self,
+        session: Session,
+        metadata: Dict[str, Any],
+        conversation_id: str,
+    ) -> List[IOFile]:
+        files: List[IOFile] = []
+        total_size = 0
+        for reference in output_file_references(metadata):
+            if len(files) >= self.output_file_max_count:
+                break
+            if reference.mime_type.lower().startswith("image/"):
+                continue
+            file = await self._download_output_reference(
+                session,
+                reference,
+                conversation_id,
+            )
+            if file is None:
+                continue
+            if total_size + len(file.content) > self.output_file_max_total_size:
+                self.logger.warning(
+                    "%s output files exceed the configured total size limit",
+                    session.email,
+                )
+                break
+            identity = (file.name, file.content)
+            if any((item.name, item.content) == identity for item in files):
+                continue
+            files.append(file)
+            total_size += len(file.content)
+        return files
+
     def _apply_stream_event(self, msg_data: MsgData, event: ChatStreamEvent):
         if event.type == "delta" and event.text:
             msg_data.msg_recv += event.text
@@ -2607,6 +2851,8 @@ class chatgpt:
                 msg_data.usage = event.usage.copy()
             if event.metadata:
                 msg_data.response_metadata = event.metadata.copy()
+            if event.files:
+                msg_data.download_file = event.files.copy()
         elif event.type == "image":
             msg_data.img_list = event.image_urls
             msg_data.image_gen = True
@@ -2659,10 +2905,12 @@ class chatgpt:
                                 );
                             }
                             const message = node && node.message;
+                            if (!message) continue;
                             const parts = message && message.content && message.content.parts;
-                            if (!Array.isArray(parts) || typeof parts[0] !== 'string') continue;
                             return {
-                                text: parts[0],
+                                text: Array.isArray(parts) && typeof parts[0] === 'string'
+                                    ? parts[0]
+                                    : '',
                                 messageId: message.id || messageId || '',
                                 metadata: message.metadata || {},
                             };
@@ -2680,32 +2928,46 @@ class chatgpt:
                 )
             except Exception as error:
                 self.logger.debug(f"{session.email} stream final reconciliation was unavailable: {error}")
-                return best_event
+                break
 
             if isinstance(response, dict) and isinstance(response.get("text"), str):
                 text = response["text"]
-                # A mapping node may briefly lag behind the final SSE patch.  It
-                # must never replace an already observed longer response.
-                if text and len(text) >= len(best_event.text):
-                    metadata = event.metadata.copy()
-                    if isinstance(response.get("metadata"), dict):
-                        metadata.update(response["metadata"])
-                    best_event = ChatStreamEvent(
-                        type="final",
-                        text=text,
-                        message_id=str(response.get("messageId") or event.message_id),
-                        conversation_id=event.conversation_id,
-                        image_urls=event.image_urls.copy(),
-                        model=event.model,
-                        usage=event.usage.copy(),
-                        metadata=metadata,
-                        raw=event.raw,
-                    )
-                    if len(text) > len(event.text):
-                        return best_event
+                metadata = best_event.metadata.copy()
+                if isinstance(response.get("metadata"), dict):
+                    metadata.update(response["metadata"])
+                # A mapping node may briefly lag behind the final SSE patch.
+                # Keep the longer text while always accepting the canonical
+                # node metadata, which may contain generated-file references.
+                best_event = ChatStreamEvent(
+                    type="final",
+                    text=(
+                        text
+                        if text and len(text) >= len(best_event.text)
+                        else best_event.text
+                    ),
+                    message_id=str(
+                        response.get("messageId")
+                        or best_event.message_id
+                    ),
+                    conversation_id=event.conversation_id,
+                    image_urls=best_event.image_urls.copy(),
+                    model=best_event.model,
+                    usage=best_event.usage.copy(),
+                    metadata=metadata,
+                    files=best_event.files.copy(),
+                    raw=best_event.raw,
+                )
+                if len(text) > len(event.text):
+                    break
 
             if attempt + 1 < attempts:
                 await asyncio.sleep(0.6)
+        if not best_event.files:
+            best_event.files = await self._download_output_files(
+                session,
+                best_event.metadata,
+                best_event.conversation_id,
+            )
         return best_event
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
@@ -3173,6 +3435,12 @@ class chatgpt:
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:
+            if not msg_data.download_file:
+                msg_data.download_file = await self._download_output_files(
+                    session,
+                    msg_data.response_metadata,
+                    msg_data.conversation_id,
+                )
             self._clear_chat_rate_limit(session)
             if session.login_state is False:
                 session.login_state = True

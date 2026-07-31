@@ -19,7 +19,7 @@ from playwright_firefox.async_api import Page
 from playwright_firefox.async_api import Response,Route, Request
 
 from .OpenAIAuth import AsyncAuth0
-from .config import MsgData,Session,SetCookieParam,Status,LoginFailureKind,url_requirements,Payload
+from .config import IOFile,MsgData,Session,SetCookieParam,Status,LoginFailureKind,url_requirements,Payload
 from .storage import RuntimeStorage
 from .verification import VerificationBroker
 
@@ -42,6 +42,7 @@ class ChatStreamEvent:
     model: str = ""
     usage: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    files: List[IOFile] = field(default_factory=list)
     raw: Optional[Dict[str, Any]] = None
     raw_text: str = ""
 

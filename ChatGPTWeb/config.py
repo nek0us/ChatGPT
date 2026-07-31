@@ -339,7 +339,7 @@ class IOFile(BaseModel):
         self.size = len(self.content)
 
         kind = filetype.guess(self.content)
-        self.mime_type = kind.mime if kind else 'application/octet-stream'
+        self.mime_type = kind.mime if kind else (self.mime_type or 'application/octet-stream')
 
         if self.mime_type and "image" in self.mime_type:
             self.content_type = "image_asset_pointer"

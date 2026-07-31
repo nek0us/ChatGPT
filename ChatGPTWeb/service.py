@@ -87,6 +87,7 @@ class ChatResult:
     errors: List[Dict[str, Any]] = field(default_factory=list)
     account: str = ""
     content: ChatContent = field(default_factory=ChatContent)
+    files: List[IOFile] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ class ChatService:
             errors=list(msg_data.error_list),
             account=msg_data.from_email,
             content=content,
+            files=msg_data.download_file.copy(),
         )
 
     async def send(self, request: ChatRequest) -> ChatResult:
@@ -259,6 +261,7 @@ class ChatService:
             metadata=metadata,
             errors=errors,
             content=content,
+            files=terminal.files.copy() if terminal else [],
         )
 
     async def get_history(self, conversation_id: str) -> List[Dict[str, Any]]:

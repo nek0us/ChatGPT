@@ -11,7 +11,7 @@ from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.agent import AgentSafetyPolicy
 from ChatGPTWeb.api_keys import ApiKeyStore
 from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
-from ChatGPTWeb.config import MsgData, Session
+from ChatGPTWeb.config import IOFile, MsgData, Session
 from ChatGPTWeb.http_api import (
     _openai_agent_tools,
     _response_agent_task,
@@ -304,7 +304,7 @@ class _ShortReconcilePage:
         return {
             "text": "short answer",
             "messageId": "message-final",
-            "metadata": {},
+            "metadata": {"generated_file_marker": "kept"},
         }
 
 
@@ -324,6 +324,25 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.used_model, "gpt-5-5-mini")
         self.assertEqual(result.usage, {"output_tokens": 3})
         self.assertTrue(result.ok)
+
+    async def test_send_keeps_downloaded_output_files(self):
+        class FileBackend(_FakeBackend):
+            async def continue_chat(self, msg_data):
+                result = await super().continue_chat(msg_data)
+                result.download_file = [
+                    IOFile(
+                        content=b"name,score\n",
+                        name="scores.csv",
+                        mime_type="text/csv",
+                    )
+                ]
+                return result
+
+        result = await ChatService(FileBackend()).send(ChatRequest(prompt="report"))
+
+        self.assertEqual(result.files[0].name, "scores.csv")
+        self.assertEqual(result.files[0].content, b"name,score\n")
+        self.assertEqual(result.files[0].mime_type, "text/csv")
 
     async def test_status_and_history_do_not_expose_backend_details(self):
         service = ChatService(_FakeBackend())
@@ -497,6 +516,7 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         reconciled = await runtime._reconcile_stream_final(session, event)
 
         self.assertEqual(reconciled.text, event.text)
+        self.assertEqual(reconciled.metadata["generated_file_marker"], "kept")
 
 
 class HttpApiRequestTests(unittest.TestCase):

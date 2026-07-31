@@ -256,7 +256,20 @@ def _chat_result_payload(result: ChatResult) -> Dict[str, Any]:
         "errors": result.errors,
         "account": result.account,
         "content": result.content.to_dict(),
+        "files": _output_files_payload(result.files),
     }
+
+
+def _output_files_payload(files: List[IOFile]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": file.name,
+            "mime_type": file.mime_type or "application/octet-stream",
+            "size": len(file.content),
+            "content_base64": base64.b64encode(file.content).decode("ascii"),
+        }
+        for file in files
+    ]
 
 
 def _stream_event_payload(event: ChatStreamEvent) -> Dict[str, Any]:
@@ -270,6 +283,7 @@ def _stream_event_payload(event: ChatStreamEvent) -> Dict[str, Any]:
         "model": event.model,
         "usage": event.usage,
         "metadata": event.metadata,
+        "files": _output_files_payload(event.files),
     }
 
 
@@ -548,7 +562,7 @@ def _response_payload(
         }] if output_text else []
     else:
         raise ValueError("response requires a chat result or agent turn")
-    return {
+    response = {
         "id": response_id,
         "object": "response",
         "created_at": int(time.time()),
@@ -559,6 +573,11 @@ def _response_payload(
         "previous_response_id": previous_response_id or None,
         "usage": usage,
     }
+    if result is not None:
+        response["chatgptweb"] = {
+            "files": _output_files_payload(result.files),
+        }
+    return response
 
 
 def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
@@ -583,6 +602,7 @@ def _result_payload(result: ChatResult, request_id: str) -> Dict[str, Any]:
             "metadata": result.metadata,
             "errors": result.errors,
             "content": result.content.to_dict(),
+            "files": _output_files_payload(result.files),
         },
     }
 
@@ -1135,6 +1155,7 @@ def create_http_app(
                         "usage": event.usage,
                         "metadata": event.metadata,
                         "image_urls": event.image_urls,
+                        "files": _output_files_payload(event.files),
                     }))
                 elif event.type in ("image", "image_pending"):
                     await response.write(_sse(f"chatgptweb.{event.type}", {
