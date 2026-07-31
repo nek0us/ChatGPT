@@ -26,6 +26,11 @@ from .api import ChatStreamEvent
 from .config import IOFile
 from .control_ui import CONTROL_UI_VERSION, control_asset
 from .input_files import InputFileError, InputFileLimitError, InputFileLimits, input_files_from_payload
+from .remote_files import (
+    RemoteFileDownloader,
+    RemoteFilePolicy,
+    resolve_remote_input_payload,
+)
 from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 
@@ -775,12 +780,29 @@ def create_http_app(
     agent_safety_policy: AgentSafetyPolicy | None = None,
     agent_anchor_policy: AgentAnchorPolicy | None = None,
     runtime_log_path: Path | str | None = None,
+    remote_input_enabled: bool = True,
+    remote_input_timeout_seconds: float = 15.0,
+    remote_input_max_redirects: int = 3,
+    remote_file_downloader: RemoteFileDownloader | None = None,
 ) -> web.Application:
     """Create an opt-in local API application without opening a listening port."""
     if max_attachment_bytes <= 0:
         raise ValueError("max_attachment_bytes must be positive")
     if max_attachment_count <= 0:
         raise ValueError("max_attachment_count must be positive")
+    input_file_limits = InputFileLimits(
+        max_files=max_attachment_count,
+        max_file_bytes=max_attachment_bytes,
+        max_total_bytes=max_attachment_bytes,
+    )
+    input_file_limits.validate()
+    remote_policy = RemoteFilePolicy(
+        enabled=remote_input_enabled,
+        timeout_seconds=remote_input_timeout_seconds,
+        max_redirects=remote_input_max_redirects,
+    )
+    remote_policy.validate()
+    remote_downloader = remote_file_downloader or RemoteFileDownloader(remote_policy)
     agent_cursors: dict[str, _OpenAIAgentCursor] = {}
     response_cursors: dict[str, _ResponseCursor] = {}
     # The Responses API permits clients to continue from previous_response_id.
@@ -793,6 +815,27 @@ def create_http_app(
     # tool round to the selected account. Callers may opt back into anchors.
     openai_agent_anchor_policy = agent_anchor_policy or AgentAnchorPolicy(control_enabled=False)
     log_path = Path(runtime_log_path).expanduser() if runtime_log_path else None
+
+    async def resolve_input_payload(
+        payload: Dict[str, Any],
+        *,
+        mode: Literal["custom", "chat", "responses"],
+    ) -> Dict[str, Any]:
+        try:
+            return await resolve_remote_input_payload(
+                payload,
+                mode=mode,
+                limits=input_file_limits,
+                downloader=remote_downloader,
+            )
+        except InputFileLimitError as error:
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=error.maximum,
+                actual_size=error.actual,
+                text=str(error),
+            ) from error
+        except InputFileError as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
 
     def discard_agent_cursors() -> None:
         now = time.monotonic()
@@ -879,6 +922,7 @@ def create_http_app(
                 "chat_completions",
                 "responses",
                 "inline_files",
+                *(["remote_files"] if remote_input_enabled else []),
                 "agent_turn",
                 "bot_bridge",
             ],
@@ -981,6 +1025,7 @@ def create_http_app(
                 "chat",
                 "stream",
                 "attachments",
+                *(["remote_attachments"] if remote_input_enabled else []),
                 "history",
                 "persona",
                 "persona_sync",
@@ -1000,8 +1045,9 @@ def create_http_app(
         return payload
 
     async def bot_chat(request: web.Request) -> web.Response:
+        payload = await resolve_input_payload(await bot_payload(request), mode="custom")
         chat_request = _bot_chat_request_from_payload(
-            await bot_payload(request),
+            payload,
             max_attachment_bytes=max_attachment_bytes,
             max_attachment_count=max_attachment_count,
             client_id=client_identity(request),
@@ -1009,8 +1055,9 @@ def create_http_app(
         return web.json_response(_chat_result_payload(await service.send(chat_request)))
 
     async def bot_chat_stream(request: web.Request) -> web.StreamResponse:
+        payload = await resolve_input_payload(await bot_payload(request), mode="custom")
         chat_request = _bot_chat_request_from_payload(
-            await bot_payload(request),
+            payload,
             max_attachment_bytes=max_attachment_bytes,
             max_attachment_count=max_attachment_count,
             client_id=client_identity(request),
@@ -1096,6 +1143,9 @@ def create_http_app(
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="request body must be a JSON object")
+        payload = await resolve_input_payload(payload, mode="chat")
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
         client_id = client_identity(request)
         supplied_call_id = payload.get("chatgptweb_tool_call_id")
@@ -1331,6 +1381,7 @@ def create_http_app(
             raise web.HTTPBadRequest(text="request body must be valid JSON")
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="request body must be a JSON object")
+        payload = await resolve_input_payload(payload, mode="responses")
         files = _attachment_files(
             payload,
             max_attachment_bytes,
@@ -1466,6 +1517,9 @@ def create_http_app(
             payload = await request.json()
         except (json.JSONDecodeError, ValueError):
             raise web.HTTPBadRequest(text="request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="request body must be a JSON object")
+        payload = await resolve_input_payload(payload, mode="custom")
         return web.json_response(await agent_turn_from_payload(
             service,
             payload,

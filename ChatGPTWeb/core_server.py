@@ -69,6 +69,11 @@ class CoreServerSettings:
     headless: bool
     local_js: bool
     log_level: str
+    max_attachment_bytes: int
+    max_attachment_count: int
+    remote_input_enabled: bool
+    remote_input_timeout_seconds: float
+    remote_input_max_redirects: int
 
     @classmethod
     def from_environment(cls) -> "CoreServerSettings":
@@ -95,6 +100,17 @@ class CoreServerSettings:
             headless=_env_enabled("CHATGPTWEB_HEADLESS", False),
             local_js=_env_enabled("CHATGPTWEB_LOCAL_JS", False),
             log_level=os.getenv("CHATGPTWEB_LOG_LEVEL", "INFO"),
+            max_attachment_bytes=int(
+                os.getenv("CHATGPTWEB_MAX_ATTACHMENT_BYTES", str(20 * 1024 * 1024))
+            ),
+            max_attachment_count=int(os.getenv("CHATGPTWEB_MAX_ATTACHMENT_COUNT", "8")),
+            remote_input_enabled=_env_enabled("CHATGPTWEB_REMOTE_INPUT_ENABLED", True),
+            remote_input_timeout_seconds=float(
+                os.getenv("CHATGPTWEB_REMOTE_INPUT_TIMEOUT_SECONDS", "15")
+            ),
+            remote_input_max_redirects=int(
+                os.getenv("CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS", "3")
+            ),
         )
 
 
@@ -133,6 +149,17 @@ def validate_settings(settings: CoreServerSettings) -> None:
         raise ValueError("CHATGPTWEB_HTTP_PORT must be between 1 and 65535")
     if settings.control_port < 1 or settings.control_port > 65535:
         raise ValueError("CHATGPTWEB_CONTROL_PORT must be between 1 and 65535")
+    if settings.max_attachment_bytes <= 0:
+        raise ValueError("CHATGPTWEB_MAX_ATTACHMENT_BYTES must be positive")
+    if settings.max_attachment_count <= 0:
+        raise ValueError("CHATGPTWEB_MAX_ATTACHMENT_COUNT must be positive")
+    if settings.remote_input_timeout_seconds <= 0:
+        raise ValueError("CHATGPTWEB_REMOTE_INPUT_TIMEOUT_SECONDS must be positive")
+    if (
+        settings.remote_input_max_redirects < 0
+        or settings.remote_input_max_redirects > 10
+    ):
+        raise ValueError("CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS must be between 0 and 10")
 
 
 def create_core_application(settings: CoreServerSettings) -> web.Application:
@@ -154,6 +181,11 @@ def create_core_application(settings: CoreServerSettings) -> web.Application:
         api_key=settings.api_key,
         api_key_store=runtime.api_key_store,
         runtime_log_path=settings.runtime_log_path,
+        max_attachment_bytes=settings.max_attachment_bytes,
+        max_attachment_count=settings.max_attachment_count,
+        remote_input_enabled=settings.remote_input_enabled,
+        remote_input_timeout_seconds=settings.remote_input_timeout_seconds,
+        remote_input_max_redirects=settings.remote_input_max_redirects,
     )
 
     async def start_runtime(_: web.Application) -> None:

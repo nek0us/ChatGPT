@@ -19,6 +19,7 @@ from ChatGPTWeb.http_api import (
     create_control_app,
     create_http_app,
 )
+from ChatGPTWeb.remote_files import RemoteFile
 from ChatGPTWeb.service import ChatRequest, ChatService, ConversationOperation
 from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
@@ -792,7 +793,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ["image-1.png", "note.txt"],
         )
 
-    async def test_responses_api_rejects_remote_attachment_urls(self):
+    async def test_responses_api_rejects_non_public_remote_attachment_urls(self):
         response = await self.client.post(
             "/v1/responses",
             json={
@@ -808,7 +809,46 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status, 400)
-        self.assertIn("remote URLs are not supported", await response.text())
+        self.assertIn("non-public address", await response.text())
+
+    async def test_responses_api_downloads_public_remote_attachment_urls(self):
+        class Downloader:
+            async def fetch(self, url, **options):
+                self.url = url
+                self.options = options
+                return RemoteFile(b"remote", "text/plain", "remote.txt")
+
+        downloader = Downloader()
+        client = TestClient(TestServer(create_http_app(
+            ChatService(self.backend),
+            api_key="test-key",
+            remote_file_downloader=downloader,
+        )))
+        await client.start_server()
+        try:
+            response = await client.post(
+                "/v1/responses",
+                json={
+                    "input": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "inspect"},
+                            {
+                                "type": "input_file",
+                                "file_url": "https://example.com/remote.txt",
+                            },
+                        ],
+                    }],
+                },
+                headers={"Authorization": "Bearer test-key"},
+            )
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(downloader.url, "https://example.com/remote.txt")
+        self.assertEqual(self.backend.sent[-1].upload_file[0].name, "remote.txt")
+        self.assertEqual(self.backend.sent[-1].upload_file[0].content, b"remote")
 
     async def test_responses_agent_continues_from_function_call_id_without_previous_response_id(self):
         replies = iter((

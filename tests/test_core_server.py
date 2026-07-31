@@ -58,6 +58,26 @@ class CoreServerTests(unittest.TestCase):
 
         self.assertEqual(settings.sessions_file, self.sessions_file)
         self.assertEqual(settings.control_port, 8765)
+        self.assertEqual(settings.max_attachment_bytes, 20 * 1024 * 1024)
+        self.assertEqual(settings.max_attachment_count, 8)
+        self.assertTrue(settings.remote_input_enabled)
+        self.assertEqual(settings.remote_input_timeout_seconds, 15)
+        self.assertEqual(settings.remote_input_max_redirects, 3)
+
+    def test_remote_input_settings_can_be_disabled_and_validated(self):
+        environment = {
+            **self._environment(),
+            "CHATGPTWEB_REMOTE_INPUT_ENABLED": "false",
+            "CHATGPTWEB_REMOTE_INPUT_TIMEOUT_SECONDS": "5.5",
+            "CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS": "1",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = CoreServerSettings.from_environment()
+            validate_settings(settings)
+
+        self.assertFalse(settings.remote_input_enabled)
+        self.assertEqual(settings.remote_input_timeout_seconds, 5.5)
+        self.assertEqual(settings.remote_input_max_redirects, 1)
 
     def test_check_config_exits_without_launching_runtime(self):
         environment = self._environment()
@@ -66,4 +86,3 @@ class CoreServerTests(unittest.TestCase):
             main(["--check-config"])
 
         self.assertIn("configuration is valid", output.getvalue())
-

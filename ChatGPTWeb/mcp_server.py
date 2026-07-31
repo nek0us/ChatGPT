@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List
 from .agent import AgentAnchorPolicy, AgentSafetyPolicy, AgentService, AgentState, AgentTool, AgentToolResult
 from .api import ChatStreamEvent
 from .input_files import InputFileError, InputFileLimits, input_files_from_attachments
+from .remote_files import RemoteFileDownloader, RemoteFilePolicy, resolve_remote_input_payload
 from .service import ChatRequest, ChatResult, ChatService
 
 
@@ -72,6 +73,10 @@ class McpServiceAdapter:
         agent_anchor_policy: AgentAnchorPolicy | None = None,
         max_attachment_bytes: int = 20 * 1024 * 1024,
         max_attachment_count: int = 8,
+        remote_input_enabled: bool = True,
+        remote_input_timeout_seconds: float = 15.0,
+        remote_input_max_redirects: int = 3,
+        remote_file_downloader: RemoteFileDownloader | None = None,
     ):
         self._service = service
         self._agent_safety_policy = agent_safety_policy
@@ -82,10 +87,23 @@ class McpServiceAdapter:
             max_total_bytes=max_attachment_bytes,
         )
         self._input_file_limits.validate()
+        policy = RemoteFilePolicy(
+            enabled=remote_input_enabled,
+            timeout_seconds=remote_input_timeout_seconds,
+            max_redirects=remote_input_max_redirects,
+        )
+        policy.validate()
+        self._remote_file_downloader = remote_file_downloader or RemoteFileDownloader(policy)
 
-    def _input_files(self, attachments: List[Dict[str, Any]] | None):
+    async def _input_files(self, attachments: List[Dict[str, Any]] | None):
+        payload = await resolve_remote_input_payload(
+            {"attachments": attachments},
+            mode="custom",
+            limits=self._input_file_limits,
+            downloader=self._remote_file_downloader,
+        )
         return input_files_from_attachments(
-            attachments,
+            payload.get("attachments"),
             limits=self._input_file_limits,
         )
 
@@ -110,7 +128,7 @@ class McpServiceAdapter:
                 "requires_confirmation": True,
             }
         try:
-            files = self._input_files(attachments)
+            files = await self._input_files(attachments)
         except InputFileError as error:
             return {"ok": False, "error": str(error)}
         result = await self._service.send(
@@ -168,7 +186,7 @@ class McpServiceAdapter:
             }
 
         try:
-            files = self._input_files(attachments)
+            files = await self._input_files(attachments)
         except InputFileError as error:
             return {"ok": False, "error": str(error)}
 
@@ -212,7 +230,7 @@ class McpServiceAdapter:
         """Return one agent decision; the MCP host executes requested tools itself."""
         try:
             registered = [AgentTool.from_dict(item) for item in tools]
-            files = self._input_files(attachments)
+            files = await self._input_files(attachments)
             turn = await AgentService(
                 self._service,
                 safety_policy=self._agent_safety_policy,
@@ -237,6 +255,10 @@ def create_mcp_server(
     agent_anchor_policy: AgentAnchorPolicy | None = None,
     max_attachment_bytes: int = 20 * 1024 * 1024,
     max_attachment_count: int = 8,
+    remote_input_enabled: bool = True,
+    remote_input_timeout_seconds: float = 15.0,
+    remote_input_max_redirects: int = 3,
+    remote_file_downloader: RemoteFileDownloader | None = None,
 ):
     """Create a FastMCP server without importing the optional SDK at package import time."""
     try:
@@ -253,6 +275,10 @@ def create_mcp_server(
         agent_anchor_policy=agent_anchor_policy,
         max_attachment_bytes=max_attachment_bytes,
         max_attachment_count=max_attachment_count,
+        remote_input_enabled=remote_input_enabled,
+        remote_input_timeout_seconds=remote_input_timeout_seconds,
+        remote_input_max_redirects=remote_input_max_redirects,
+        remote_file_downloader=remote_file_downloader,
     )
     server = FastMCP(
         "ChatGPTWeb",

@@ -4,6 +4,7 @@ import sys
 
 from ChatGPTWeb.api import ChatStreamEvent
 from ChatGPTWeb.mcp_server import McpServiceAdapter, create_mcp_server
+from ChatGPTWeb.remote_files import RemoteFile
 from ChatGPTWeb.service import ChatService
 
 
@@ -46,6 +47,11 @@ class _FakeBackend:
         return {"fetch_remote": fetch_remote, "access_token": "must-not-leak"}
 
 
+class _RemoteDownloader:
+    async def fetch(self, _url, **_options):
+        return RemoteFile(b"remote note", "text/plain", "remote.txt")
+
+
 class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend = _FakeBackend()
@@ -80,6 +86,22 @@ class McpServiceAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(self.backend.sent[-1].upload_file[0].name, "note.txt")
         self.assertEqual(self.backend.sent[-1].upload_file[0].content, b"hello")
+
+    async def test_confirmed_send_accepts_remote_attachments(self):
+        adapter = McpServiceAdapter(
+            ChatService(self.backend),
+            remote_file_downloader=_RemoteDownloader(),
+        )
+
+        result = await adapter.chat_send(
+            "inspect",
+            attachments=[{"url": "https://example.com/remote.txt"}],
+            confirm=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.backend.sent[-1].upload_file[0].name, "remote.txt")
+        self.assertEqual(self.backend.sent[-1].upload_file[0].content, b"remote note")
 
     async def test_confirmed_send_rejects_invalid_attachment_without_calling_backend(self):
         result = await self.adapter.chat_send(
