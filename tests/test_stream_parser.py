@@ -278,6 +278,9 @@ class _ReconcilePage:
             "text": "complete answer from the conversation node",
             "messageId": "message-final",
             "metadata": {"citations": [{"title": "Source"}]},
+            "title": "Original conversation title",
+            "createTime": 1_700_000_000,
+            "updateTime": 1_700_000_100,
         }
 
 
@@ -485,6 +488,18 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reconciled.message_id, "message-final")
         self.assertEqual(reconciled.metadata["model_slug"], "gpt-5-5")
         self.assertEqual(reconciled.metadata["citations"][0]["title"], "Source")
+        self.assertEqual(
+            reconciled.metadata["conversation_title"],
+            "Original conversation title",
+        )
+        self.assertEqual(
+            reconciled.metadata["conversation_created_at"],
+            1_700_000_000,
+        )
+        self.assertEqual(
+            reconciled.metadata["conversation_updated_at"],
+            1_700_000_100,
+        )
 
     async def test_nonstream_final_waits_for_the_settled_conversation_node(self):
         runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)

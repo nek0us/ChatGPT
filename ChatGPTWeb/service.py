@@ -166,6 +166,8 @@ class ChatService:
     @staticmethod
     def _result_from_msg_data(msg_data: MsgData) -> ChatResult:
         metadata = dict(msg_data.response_metadata)
+        if msg_data.title:
+            metadata.setdefault("conversation_title", msg_data.title)
         image_urls = list(msg_data.img_list)
         content = build_chat_content(msg_data.msg_recv, image_urls, metadata)
         return ChatResult(

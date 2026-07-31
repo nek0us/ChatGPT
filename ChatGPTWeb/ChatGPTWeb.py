@@ -3205,6 +3205,11 @@ class chatgpt:
                 msg_data.usage = event.usage.copy()
             if event.metadata:
                 msg_data.response_metadata = event.metadata.copy()
+                conversation_title = str(
+                    event.metadata.get("conversation_title") or ""
+                ).strip()
+                if conversation_title:
+                    msg_data.title = conversation_title
             if event.files:
                 msg_data.download_file = event.files.copy()
         elif event.type == "image":
@@ -3267,6 +3272,11 @@ class chatgpt:
                                     : '',
                                 messageId: message.id || messageId || '',
                                 metadata: message.metadata || {},
+                                title: typeof conversation.title === 'string'
+                                    ? conversation.title
+                                    : '',
+                                createTime: conversation.create_time || '',
+                                updateTime: conversation.update_time || '',
                             };
                         } catch (_) {
                             // Try the next browser-observed route.
@@ -3289,6 +3299,13 @@ class chatgpt:
                 metadata = best_event.metadata.copy()
                 if isinstance(response.get("metadata"), dict):
                     metadata.update(response["metadata"])
+                conversation_title = str(response.get("title") or "").strip()
+                if conversation_title:
+                    metadata["conversation_title"] = conversation_title
+                if response.get("createTime") not in (None, ""):
+                    metadata["conversation_created_at"] = response["createTime"]
+                if response.get("updateTime") not in (None, ""):
+                    metadata["conversation_updated_at"] = response["updateTime"]
                 # A mapping node may briefly lag behind the final SSE patch.
                 # Keep the longer text while always accepting the canonical
                 # node metadata, which may contain generated-file references.
@@ -3752,6 +3769,15 @@ class chatgpt:
                 res_json = await get_json_url(send_page,session,title_url_api,self.logger)
                 if "title" in res_json:
                     msg_data.title = res_json["title"]
+                    msg_data.response_metadata["conversation_title"] = msg_data.title
+                if res_json.get("create_time") not in (None, ""):
+                    msg_data.response_metadata["conversation_created_at"] = (
+                        res_json["create_time"]
+                    )
+                if res_json.get("update_time") not in (None, ""):
+                    msg_data.response_metadata["conversation_updated_at"] = (
+                        res_json["update_time"]
+                    )
                 self.logger.info(f"{session.email} {msg_data.conversation_id} will get end_msg")
                 end_msg: dict = res_json["mapping"][msg_data.next_msg_id]["message"]
                 msg = get_all_msg(end_msg)
@@ -3809,6 +3835,23 @@ class chatgpt:
             if not history["created_at"]:
                 history["created_at"] = now
             history["account"] = context_num
+            conversation_title = str(
+                msg_data.title
+                or msg_data.response_metadata.get("conversation_title")
+                or ""
+            ).strip()
+            if conversation_title:
+                history["title"] = conversation_title
+            upstream_created_at = msg_data.response_metadata.get(
+                "conversation_created_at"
+            )
+            if upstream_created_at not in (None, ""):
+                history["upstream_created_at"] = upstream_created_at
+            upstream_updated_at = msg_data.response_metadata.get(
+                "conversation_updated_at"
+            )
+            if upstream_updated_at not in (None, ""):
+                history["upstream_updated_at"] = upstream_updated_at
             message = {
                 "input": msg_data.msg_send,
                 "output": msg_data.msg_recv,

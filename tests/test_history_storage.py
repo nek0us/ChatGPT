@@ -62,16 +62,25 @@ class HistoryStorageTests(unittest.IsolatedAsyncioTestCase):
                 msg_send="question",
                 msg_recv="answer",
                 next_msg_id="message-42",
+                title="Original conversation title",
+                response_metadata={
+                    "conversation_created_at": 1_700_000_000,
+                    "conversation_updated_at": 1_700_000_100,
+                },
                 status=True,
             )
 
             await runtime.save_chat(message, "account@example.com")
             history = await runtime.show_chat_history(MsgData(conversation_id="conversation-1"))
+            stored = runtime.storage.load_conversation("conversation-1")
 
         self.assertEqual(history[0]["message_id"], "message-42")
         self.assertEqual(history[0]["next_msg_id"], "message-42")
         self.assertIsInstance(history[0]["created_at"], str)
         self.assertTrue(history[0]["created_at"])
+        self.assertEqual(stored["title"], "Original conversation title")
+        self.assertEqual(stored["upstream_created_at"], 1_700_000_000)
+        self.assertEqual(stored["upstream_updated_at"], 1_700_000_100)
 
     async def test_personas_use_the_shared_versioned_storage(self):
         with tempfile.TemporaryDirectory() as directory:
