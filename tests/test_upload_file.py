@@ -16,6 +16,11 @@ class UploadRouteTests(unittest.TestCase):
         self.assertIsNotNone(pattern.fullmatch(url))
         self.assertIsNone(pattern.fullmatch(url.replace("sig=a%2Bb", "sig=other")))
 
+    def test_uploaded_confirmation_route_accepts_current_file_id_format(self):
+        url = "https://chatgpt.com/backend-api/files/file_000000005084/uploaded"
+
+        self.assertIsNotNone(_exact_url_pattern(url).fullmatch(url))
+
     def test_blob_headers_do_not_override_signed_url_host_or_credentials(self):
         request = SimpleNamespace(
             headers={

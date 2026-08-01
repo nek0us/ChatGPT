@@ -1311,15 +1311,24 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                 header["Cookie"] = request.headers["cookie"] 
                 logger.debug(f"{session.email} will continue_ uploaded")
                 await route.continue_(method="POST", headers=header, post_data=payload)         
-            await page.route("**/backend-api/files/file-**/uploaded", route_uploaded)  
+            uploaded_url = (
+                f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded"
+            )
+            # Current file IDs use ``file_`` rather than the historical
+            # ``file-`` prefix, so the old glob silently missed this request
+            # and the navigation remained a GET (405).  Route the exact URL.
+            await page.route(_exact_url_pattern(uploaded_url), route_uploaded)
             logger.debug(f"{session.email} began uploaded")
             retry = 3
             upload_confirmed = False
             while retry != 0:
-                async with page.expect_response(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=120000) as response_info: # type: ignore
-                    await page.goto(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=60000)
+                async with page.expect_response(uploaded_url,timeout=120000) as response_info: # type: ignore
+                    await page.goto(uploaded_url,timeout=60000)
                     res_value = await response_info.value   
-                    res: dict = await res_value.json()
+                    try:
+                        res: dict = await res_value.json()
+                    except Exception:
+                        res = {"status": "invalid_response", "body": await res_value.text()}
                     if res_value.status in (200, 201) and res.get('status') == "success":
                         logger.debug(f"{session.email} uploaded ok")
                         upload_confirmed = True
