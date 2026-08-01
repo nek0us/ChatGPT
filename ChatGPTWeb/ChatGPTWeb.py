@@ -3336,7 +3336,7 @@ class chatgpt:
         page = session.page
         if not page:
             return event
-        attempts = 10 if settle else 1
+        attempts = 20 if settle else 1
         best_event = event
         for attempt in range(attempts):
             try:
@@ -3469,7 +3469,7 @@ class chatgpt:
                     files=best_event.files.copy(),
                     raw=best_event.raw,
                 )
-                if len(text) > len(event.text) or image_urls:
+                if image_urls or (not settle and len(text) > len(event.text)):
                     break
 
             if attempt + 1 < attempts:
@@ -3498,8 +3498,9 @@ class chatgpt:
         page = session.page
         if not page or not conversation_id:
             return []
-        try:
-            result = await page.evaluate(
+        for attempt in range(5):
+            try:
+                result = await page.evaluate(
                 """async ({ conversationId, accessToken }) => {
                     const headers = { accept: 'application/json' };
                     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
@@ -3530,28 +3531,32 @@ class chatgpt:
                 {
                     "conversationId": conversation_id,
                     "accessToken": session.access_token,
-                },
-            )
-        except Exception as error:
-            self.logger.debug(
-                "%s generated image bootstrap reconciliation failed: %s",
-                session.email,
-                error,
-            )
-            return []
-        if not isinstance(result, dict):
-            return []
-        if result.get("error"):
-            self.logger.warning(
-                "%s generated image bootstrap did not resolve an asset: %s",
-                session.email,
-                result["error"],
-            )
-        return [
-            value
-            for value in result.get("urls", [])
-            if isinstance(value, str) and value
-        ]
+                    },
+                )
+            except Exception as error:
+                self.logger.debug(
+                    "%s generated image bootstrap reconciliation failed: %s",
+                    session.email,
+                    error,
+                )
+                return []
+            if isinstance(result, dict):
+                urls = [
+                    value
+                    for value in result.get("urls", [])
+                    if isinstance(value, str) and value
+                ]
+                if urls:
+                    return urls
+                if result.get("error") and attempt == 4:
+                    self.logger.warning(
+                        "%s generated image bootstrap did not resolve an asset: %s",
+                        session.email,
+                        result["error"],
+                    )
+            if attempt < 4:
+                await asyncio.sleep(2)
+        return []
 
     async def send_msg(self, msg_data: MsgData, session: Session, send_status: bool = True,retry: int = 3) -> MsgData:
         """send message body function
@@ -4593,6 +4598,21 @@ class chatgpt:
                     ),
                 },
             )
+            if msg_data.request_upload_count:
+                self._record_activity(
+                    session.email,
+                    "attachment_upload_failed",
+                    "attachment request failed with its chat turn",
+                    severity="error",
+                    details={"count": msg_data.request_upload_count},
+                )
+            if IMAGE_GENERATION in msg_data.required_capabilities:
+                self._record_activity(
+                    session.email,
+                    "image_generation_failed",
+                    "image generation timed out",
+                    severity="error",
+                )
         except Exception as e:
             if not msg_data.error_info:
                 a, b, exc_traceback = sys.exc_info()
@@ -4620,6 +4640,21 @@ class chatgpt:
                     ),
                 },
             )
+            if msg_data.request_upload_count:
+                self._record_activity(
+                    session.email,
+                    "attachment_upload_failed",
+                    "attachment request failed with its chat turn",
+                    severity="error",
+                    details={"count": msg_data.request_upload_count},
+                )
+            if IMAGE_GENERATION in msg_data.required_capabilities:
+                self._record_activity(
+                    session.email,
+                    "image_generation_failed",
+                    "upstream image generation failed",
+                    severity="error",
+                )
         else:
             if not msg_data.error_info or msg_data.status:
                 response_text = msg_data.msg_raw or msg_data.msg_recv
@@ -4860,6 +4895,21 @@ class chatgpt:
                     ),
                 },
             )
+            if msg_data.request_upload_count:
+                self._record_activity(
+                    session.email,
+                    "attachment_upload_failed",
+                    "attachment request failed with its chat turn",
+                    severity="error",
+                    details={"count": msg_data.request_upload_count},
+                )
+            if IMAGE_GENERATION in msg_data.required_capabilities:
+                self._record_activity(
+                    session.email,
+                    "image_generation_failed",
+                    "upstream image generation failed",
+                    severity="error",
+                )
             structured_error = (
                 msg_data.error_list[-1]
                 if msg_data.error_list

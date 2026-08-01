@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.07.31.3";
+  const UI_VERSION = "2026.07.31.4";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
@@ -134,10 +134,21 @@
       eventChatFailed: "对话失败",
       eventAttachment: "附件上传",
       eventImageGeneration: "图片生成",
+      eventCapability: "高级能力",
       eventControl: "账户设置已更新",
       eventLogin: "登录状态已更新",
       eventRuntime: "浏览器环境已恢复",
       eventGeneric: "运维事件",
+      activityRequestAccepted: "请求已进入账户执行",
+      activityRequestAcceptedWithUploads: "请求已进入账户执行，包含 {count} 个附件",
+      activityChatCompleted: "对话完成，模型 {model}，耗时 {duration}",
+      activityChatFailed: "请求失败：{kind}",
+      activityAttachmentStarted: "开始上传 {count} 个附件",
+      activityAttachmentCompleted: "已向上游提交 {count} 个附件",
+      activityAttachmentFailed: "附件随本次请求一同失败，共 {count} 个",
+      activityImageStarted: "已请求上游生成图片",
+      activityImageCompleted: "已取得 {count} 张生成图片",
+      activityImageFailed: "上游生图结束，但没有取得可回传图片",
       invalidKey: "控制台管理密钥无效",
       forbidden: "当前密钥没有此操作权限",
       requestTimeout: "请求超时，核心可能仍在启动或恢复",
@@ -272,10 +283,21 @@
       eventChatFailed: "Chat failed",
       eventAttachment: "Attachment upload",
       eventImageGeneration: "Image generation",
+      eventCapability: "Capabilities",
       eventControl: "Account settings changed",
       eventLogin: "Login state updated",
       eventRuntime: "Browser runtime recovered",
       eventGeneric: "Operational event",
+      activityRequestAccepted: "The request was assigned to this account",
+      activityRequestAcceptedWithUploads: "The request was assigned with {count} attachment(s)",
+      activityChatCompleted: "Completed with {model} in {duration}",
+      activityChatFailed: "Request failed: {kind}",
+      activityAttachmentStarted: "Uploading {count} attachment(s)",
+      activityAttachmentCompleted: "Submitted {count} attachment(s) upstream",
+      activityAttachmentFailed: "The request failed with {count} attachment(s)",
+      activityImageStarted: "Requested upstream image generation",
+      activityImageCompleted: "Retrieved {count} generated image(s)",
+      activityImageFailed: "Image generation ended without a retrievable image",
       invalidKey: "The console administrator key is invalid",
       forbidden: "This key cannot perform the requested operation",
       requestTimeout: "The request timed out while the core was starting or recovering",
@@ -755,10 +777,53 @@
     if (name === "chat_failed") return t("eventChatFailed");
     if (name.includes("attachment_upload")) return t("eventAttachment");
     if (name.includes("image_generation")) return t("eventImageGeneration");
+    if (name.includes("capability")) return t("eventCapability");
     if (name === "account_control") return t("eventControl");
     if (name.includes("login")) return t("eventLogin");
     if (name.includes("runtime") || name.includes("context")) return t("eventRuntime");
     return name || t("eventGeneric");
+  }
+
+  function formatDuration(value) {
+    const milliseconds = Number(value || 0);
+    if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "--";
+    if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+    return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+  }
+
+  function activityDescription(item) {
+    const details = item.details && typeof item.details === "object" ? item.details : {};
+    const event = String(item.event || "");
+    const count = Number(details.count ?? details.uploads ?? 0);
+    if (event === "chat_started") {
+      return count > 0
+        ? t("activityRequestAcceptedWithUploads", { count })
+        : t("activityRequestAccepted");
+    }
+    if (event === "chat_completed") {
+      return t("activityChatCompleted", {
+        model: details.model || "--",
+        duration: formatDuration(details.duration_ms),
+      });
+    }
+    if (event === "chat_failed") {
+      return t("activityChatFailed", { kind: details.error_kind || item.message || "unknown" });
+    }
+    if (event === "attachment_upload_started") {
+      return t("activityAttachmentStarted", { count });
+    }
+    if (event === "attachment_upload_completed") {
+      return t("activityAttachmentCompleted", { count });
+    }
+    if (event === "attachment_upload_failed") {
+      return t("activityAttachmentFailed", { count });
+    }
+    if (event === "image_generation_started") return t("activityImageStarted");
+    if (event === "image_generation_completed") {
+      return t("activityImageCompleted", { count });
+    }
+    if (event === "image_generation_failed") return t("activityImageFailed");
+    return item.message || "--";
   }
 
   function renderActivity() {
@@ -787,7 +852,7 @@
       event.textContent = activityLabel(item.event);
       const detail = document.createElement("span");
       detail.className = "activity-detail";
-      detail.textContent = item.message || "--";
+      detail.textContent = activityDescription(item);
       row.append(time, account, event, detail);
       elements.activityList.append(row);
     }
