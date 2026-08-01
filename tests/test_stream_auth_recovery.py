@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
@@ -22,6 +23,44 @@ class _Logger:
 
 
 class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_empty_existing_turn_without_sse_final_uses_conversation(self):
+        message = MsgData(
+            msg_send="继续刚才的话题",
+            conversation_id="conversation-image-edit",
+            next_msg_id="previous-assistant-message",
+        )
+        parser = SimpleNamespace(
+            conversation_id="",
+            message_id="",
+            text="",
+            image_urls=[],
+            model="",
+            usage={},
+            metadata={},
+        )
+
+        event = chatgpt._stream_final_candidate(message, parser, None)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.conversation_id, "conversation-image-edit")
+        self.assertEqual(event.message_id, "")
+        self.assertEqual(event.type, "final")
+
+    def test_image_result_marks_observed_capability(self):
+        runtime = chatgpt.__new__(chatgpt)
+        message = MsgData(msg_send="继续处理上一张图")
+
+        runtime._apply_stream_event(
+            message,
+            ChatStreamEvent(
+                type="final",
+                metadata={"image_generation_pending": True},
+            ),
+        )
+
+        self.assertTrue(message.image_gen)
+        self.assertEqual(message.required_capabilities, [IMAGE_GENERATION])
+
     async def test_sentinel_health_probe_schedules_relogin_on_401(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()

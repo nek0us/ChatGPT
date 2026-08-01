@@ -74,10 +74,14 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         )
         ordinary = infer_request_capabilities("介绍一下图片生成技术", [], [])
         short_command = infer_request_capabilities("帮我画一只猫", [], [])
+        image_edit = infer_request_capabilities("那你把上面的字改成好想玩猪咪，然后发我", [], [])
+        ordinary_edit = infer_request_capabilities("把这段文字改成更自然一点", [], [])
 
         self.assertEqual(inferred, [IMAGE_UPLOAD, FILE_UPLOAD, IMAGE_GENERATION])
         self.assertEqual(ordinary, [])
         self.assertEqual(short_command, [IMAGE_GENERATION])
+        self.assertEqual(image_edit, [IMAGE_GENERATION])
+        self.assertEqual(ordinary_edit, [])
 
     async def test_new_upload_request_skips_account_with_exhausted_soft_budget(self):
         exhausted = self._session("exhausted@example.com", minutes_old=10)

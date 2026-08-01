@@ -3007,12 +3007,39 @@ class chatgpt:
                 for event in ready_events(decoder.close()):
                     self._apply_stream_event(msg_data, event)
                     yield event
+            pending_final = self._stream_final_candidate(
+                msg_data,
+                decoder.parser,
+                pending_final,
+            )
             if pending_final:
+                settle_images = (
+                    decoder.parser.image_gen
+                    or IMAGE_GENERATION in msg_data.required_capabilities
+                )
                 final_event = await self._reconcile_stream_final(
                     session,
                     pending_final,
-                    settle=decoder.parser.image_gen,
+                    settle=settle_images,
                 )
+                # A sparse stream may reveal image processing only when the
+                # conversation tree is queried. Probe every empty existing turn
+                # once, then extend the wait only when upstream confirms it.
+                if (
+                    not settle_images
+                    and final_event.metadata.get("image_generation_pending")
+                    and not final_event.image_urls
+                ):
+                    final_event = await self._reconcile_stream_final(
+                        session,
+                        final_event,
+                        settle=True,
+                    )
+                if (
+                    final_event.image_urls
+                    or final_event.metadata.get("image_generation_pending")
+                ):
+                    self._observe_image_generation(msg_data)
                 if should_emit(final_event):
                     self._apply_stream_event(msg_data, final_event)
                     yield final_event
@@ -3301,6 +3328,11 @@ class chatgpt:
             if event.image_urls:
                 msg_data.img_list = event.image_urls
                 msg_data.image_gen = True
+            if (
+                event.image_urls
+                or event.metadata.get("image_generation_pending")
+            ):
+                self._observe_image_generation(msg_data)
             if event.model:
                 msg_data.model_used = event.model
             if event.usage:
@@ -3316,7 +3348,50 @@ class chatgpt:
                 msg_data.download_file = event.files.copy()
         elif event.type == "image":
             msg_data.img_list = event.image_urls
-            msg_data.image_gen = True
+            self._observe_image_generation(msg_data)
+        elif event.type == "image_pending":
+            self._observe_image_generation(msg_data)
+
+    @staticmethod
+    def _observe_image_generation(msg_data: MsgData) -> None:
+        """Record image work from an upstream result, not only prompt hints."""
+        msg_data.image_gen = True
+        if IMAGE_GENERATION not in msg_data.required_capabilities:
+            msg_data.required_capabilities.append(IMAGE_GENERATION)
+
+    @staticmethod
+    def _stream_final_candidate(
+        msg_data: MsgData,
+        parser: Any,
+        pending_final: ChatStreamEvent | None,
+    ) -> ChatStreamEvent | None:
+        """Provide a conversation-tree fallback for image turns with sparse SSE.
+
+        Image editing occasionally finishes in the upstream conversation mapping
+        without emitting a textual or ``Processing image`` SSE event. Existing
+        conversations still have an id, so reconcile their final node instead of
+        reporting a generic empty-stream failure.
+        """
+        if pending_final:
+            return pending_final
+        conversation_id = str(
+            getattr(parser, "conversation_id", "") or msg_data.conversation_id or ""
+        )
+        if not conversation_id:
+            return None
+        return ChatStreamEvent(
+            type="final",
+            text=str(getattr(parser, "text", "") or msg_data.msg_recv or ""),
+            # ``next_msg_id`` points to the previous assistant node before an
+            # empty SSE turn. Passing it would make reconciliation read stale
+            # content instead of the new conversation current node.
+            message_id=str(getattr(parser, "message_id", "") or ""),
+            conversation_id=conversation_id,
+            image_urls=list(getattr(parser, "image_urls", []) or msg_data.img_list),
+            model=str(getattr(parser, "model", "") or msg_data.model_used or ""),
+            usage=dict(getattr(parser, "usage", {}) or msg_data.usage),
+            metadata=dict(getattr(parser, "metadata", {}) or msg_data.response_metadata),
+        )
 
     async def _reconcile_stream_final(
         self,
@@ -3360,9 +3435,16 @@ class chatgpt:
                             if (!mapping || typeof mapping !== 'object') continue;
                             const nodes = Object.values(mapping);
                             let node = messageId ? mapping[messageId] : null;
-                            if (!node || !node.message) {
+                            const isAssistantNode = (item) => Boolean(
+                                item && item.message && item.message.author
+                                && item.message.author.role === 'assistant'
+                            );
+                            if (!isAssistantNode(node) && conversation.current_node) {
+                                node = mapping[conversation.current_node] || null;
+                            }
+                            if (!isAssistantNode(node)) {
                                 node = [...nodes].reverse().find((item) =>
-                                    item && item.message && item.message.author && item.message.author.role === 'assistant'
+                                    isAssistantNode(item)
                                 );
                             }
                             const message = node && node.message;

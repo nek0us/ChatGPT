@@ -34,6 +34,20 @@ _IMAGE_GENERATION_PATTERNS = (
         r"\b(?:image|picture|illustration|poster|avatar|wallpaper|cover|logo|icon)\b",
         re.IGNORECASE,
     ),
+    # Image edits often refer to the previous turn instead of repeating "image".
+    # Keep these forms narrow so ordinary wording changes are not charged as image work.
+    re.compile(
+        r"(?:改图|修图|编辑(?:这张|这个|上一张|上面的)?(?:图|图片|图像|照片)|"
+        r"(?:把|将).{0,24}(?:这张|这个|上一张|上面的)?(?:图|图片|图像|照片|海报|头像|"
+        r"上面的字|图片里的字|图中的字).{0,20}(?:改成|改为|替换成|替换为|换成|修改为))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:edit|modify|retouch|replace)\b.{0,40}"
+        r"\b(?:image|picture|photo|poster|avatar|text)\b|"
+        r"\b(?:replace|change)\b.{0,40}\btext\b",
+        re.IGNORECASE,
+    ),
 )
 
 
