@@ -237,8 +237,10 @@ class ChatService:
                 image_urls = event.image_urls.copy()
             elif event.type == "final":
                 final_event = event
-                if event.image_urls:
-                    image_urls = event.image_urls.copy()
+                # The reconciled final event may replace an earlier private URL
+                # with a downloadable image file, so it is authoritative even
+                # when its URL list is intentionally empty.
+                image_urls = event.image_urls.copy()
             elif event.type == "error":
                 error = {
                     "kind": str(event.metadata.get("error_kind") or "stream_error"),

@@ -19,7 +19,7 @@ from aiohttp import ClientSession, web
 from playwright_firefox.stealth import Stealth
 from playwright_firefox.async_api import async_playwright, Route, Request, Page
 from typing import Any, AsyncIterator, Dict, Optional,Literal,List
-from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlsplit
 from .config import (
     Payload,
     Personality,
@@ -1029,9 +1029,19 @@ class chatgpt:
                 "model": model,
                 "duration_ms": elapsed_ms,
                 "uploads": msg_data.request_upload_count,
-                "generated_images": len(msg_data.img_list),
+                "generated_images": self._generated_image_count(msg_data),
             },
         )
+
+    @staticmethod
+    def _generated_image_count(msg_data: MsgData) -> int:
+        """Count generated images whether they are URLs or downloaded artifacts."""
+        downloaded = sum(
+            1
+            for file in msg_data.download_file
+            if str(file.mime_type or "").lower().startswith("image/")
+        )
+        return max(len(msg_data.img_list), downloaded)
 
     @staticmethod
     def _is_paid_account(session: Session) -> bool:
@@ -1224,8 +1234,9 @@ class chatgpt:
         else:
             increments[IMAGE_UPLOAD] = msg_data.request_image_upload_count
             increments[FILE_UPLOAD] = msg_data.request_file_upload_count
-        if msg_data.image_gen or msg_data.img_list:
-            increments[IMAGE_GENERATION] = max(1, len(msg_data.img_list))
+        generated_images = self._generated_image_count(msg_data)
+        if msg_data.image_gen or generated_images:
+            increments[IMAGE_GENERATION] = max(1, generated_images)
         changed = False
         upload_count = increments[IMAGE_UPLOAD] + increments[FILE_UPLOAD]
         if upload_count:
@@ -1815,6 +1826,41 @@ class chatgpt:
             return matches
         required = self._required_capabilities(msg_data)
         return required if len(required) == 1 else []
+
+    @staticmethod
+    def _is_image_generation_limit_response(value: str) -> bool:
+        """Recognize the normal-text image quota response returned by ChatGPT."""
+        text = value.lower()
+        markers = (
+            "image creation will be available again",
+            "image generation will be available again",
+            "image limit resets",
+            "instant limit resets",
+            "image creation limit",
+            "image generation limit",
+            "生图额度",
+            "图像生成额度",
+        )
+        return any(marker in text for marker in markers)
+
+    def _handle_image_generation_limit_response(
+        self,
+        session: Session,
+        msg_data: MsgData,
+        response: str,
+        *,
+        attempt: int,
+    ) -> None:
+        self._handle_upstream_rate_limit(session, msg_data, response, attempt=attempt)
+        if not msg_data.error_list:
+            msg_data.add_error(
+                kind="capability_rate_limited",
+                message="upstream image generation limit reached",
+                retryable=True,
+                attempt=attempt,
+                session_email=session.email,
+                capability=IMAGE_GENERATION,
+            )
 
     def _mark_capability_rate_limited(
         self,
@@ -2938,7 +2984,7 @@ class chatgpt:
         def should_emit(event: ChatStreamEvent) -> bool:
             if event.type != "final":
                 return True
-            if not (event.text or event.image_urls):
+            if not (event.text or event.image_urls or event.files):
                 return False
             signature = (event.text, event.message_id, event.conversation_id, tuple(event.image_urls))
             if signature in emitted_final_signatures:
@@ -3035,9 +3081,21 @@ class chatgpt:
                         final_event,
                         settle=True,
                     )
+                if self._is_image_generation_limit_response(final_event.text):
+                    self._handle_image_generation_limit_response(
+                        session,
+                        msg_data,
+                        final_event.text,
+                        attempt=attempt,
+                    )
+                    return
                 if (
                     final_event.image_urls
                     or final_event.metadata.get("image_generation_pending")
+                    or any(
+                        str(file.mime_type or "").lower().startswith("image/")
+                        for file in final_event.files
+                    )
                 ):
                     self._observe_image_generation(msg_data)
                 if should_emit(final_event):
@@ -3139,6 +3197,8 @@ class chatgpt:
         session: Session,
         reference: OutputFileReference,
         conversation_id: str,
+        *,
+        allow_image: bool = False,
     ) -> IOFile | None:
         context = session.browser_contexts
         request_context = getattr(context, "request", None) if context else None
@@ -3269,8 +3329,17 @@ class chatgpt:
                 return None
             mime_type = content_type or reference.mime_type or "application/octet-stream"
             if mime_type.startswith("image/"):
-                # Generated images already have a dedicated image result path.
-                return None
+                if not allow_image:
+                    # Generated images have a dedicated image result path.
+                    return None
+                return IOFile(
+                    content=content,
+                    name=self._output_filename_from_headers(
+                        response_headers,
+                        reference.name,
+                    ),
+                    mime_type=mime_type,
+                )
             return IOFile(
                 content=content,
                 name=self._output_filename_from_headers(
@@ -3314,6 +3383,48 @@ class chatgpt:
             total_size += len(file.content)
         return files
 
+    @staticmethod
+    def _generated_image_filename(url: str, index: int) -> str:
+        query_name = parse_qs(urlsplit(url).query).get("fn", [""])[0]
+        fallback = f"generated-image-{index}.png"
+        return safe_output_filename(query_name, fallback)
+
+    async def _download_generated_images(
+        self,
+        session: Session,
+        image_urls: typing.Iterable[str],
+        conversation_id: str,
+    ) -> tuple[List[IOFile], set[str]]:
+        """Fetch private generated-image URLs through the logged-in browser context."""
+        files: List[IOFile] = []
+        downloaded_urls: set[str] = set()
+        total_size = 0
+        for index, url in enumerate(dict.fromkeys(image_urls), start=1):
+            if not isinstance(url, str) or not self._safe_output_download_url(url):
+                continue
+            file = await self._download_output_reference(
+                session,
+                OutputFileReference(
+                    name=self._generated_image_filename(url, index),
+                    url=url,
+                    mime_type="image/png",
+                ),
+                conversation_id,
+                allow_image=True,
+            )
+            if file is None:
+                continue
+            if total_size + len(file.content) > self.output_file_max_total_size:
+                self.logger.warning(
+                    "%s generated images exceed the configured total size limit",
+                    session.email,
+                )
+                break
+            files.append(file)
+            downloaded_urls.add(url)
+            total_size += len(file.content)
+        return files, downloaded_urls
+
     def _apply_stream_event(self, msg_data: MsgData, event: ChatStreamEvent):
         if event.type == "delta" and event.text:
             msg_data.msg_recv += event.text
@@ -3328,9 +3439,15 @@ class chatgpt:
             if event.image_urls:
                 msg_data.img_list = event.image_urls
                 msg_data.image_gen = True
+            if event.files:
+                msg_data.download_file = event.files.copy()
             if (
                 event.image_urls
                 or event.metadata.get("image_generation_pending")
+                or any(
+                    str(file.mime_type or "").lower().startswith("image/")
+                    for file in event.files
+                )
             ):
                 self._observe_image_generation(msg_data)
             if event.model:
@@ -3344,8 +3461,6 @@ class chatgpt:
                 ).strip()
                 if conversation_title:
                     msg_data.title = conversation_title
-            if event.files:
-                msg_data.download_file = event.files.copy()
         elif event.type == "image":
             msg_data.img_list = event.image_urls
             self._observe_image_generation(msg_data)
@@ -3462,15 +3577,29 @@ class chatgpt:
                                     }
                                 }
                             };
+                            // Object value order is not conversation order. Restrict
+                            // rich results to the active branch so an old image cannot
+                            // be reused for the current assistant response.
+                            const branch = [];
+                            const seen = new Set();
+                            let branchId = (conversation.current_node && mapping[conversation.current_node])
+                                ? conversation.current_node
+                                : (node && node.id) || messageId;
+                            while (branchId && mapping[branchId] && !seen.has(branchId)) {
+                                seen.add(branchId);
+                                branch.push(mapping[branchId]);
+                                branchId = mapping[branchId].parent;
+                            }
+                            branch.reverse();
                             let latestUserIndex = -1;
-                            for (let index = nodes.length - 1; index >= 0; index -= 1) {
-                                const candidate = nodes[index] && nodes[index].message;
+                            for (let index = branch.length - 1; index >= 0; index -= 1) {
+                                const candidate = branch[index] && branch[index].message;
                                 if (candidate && candidate.author && candidate.author.role === 'user') {
                                     latestUserIndex = index;
                                     break;
                                 }
                             }
-                            for (const candidateNode of nodes.slice(latestUserIndex + 1)) {
+                            for (const candidateNode of branch.slice(latestUserIndex + 1)) {
                                 const candidate = candidateNode && candidateNode.message;
                                 if (!candidate) continue;
                                 const candidateMetadata = candidate.metadata || {};
@@ -3521,13 +3650,15 @@ class chatgpt:
                     metadata["conversation_created_at"] = response["createTime"]
                 if response.get("updateTime") not in (None, ""):
                     metadata["conversation_updated_at"] = response["updateTime"]
-                image_urls = best_event.image_urls.copy()
+                image_urls: list[str] = []
                 for image_url in response.get("imageUrls", []):
                     if isinstance(image_url, str) and image_url and image_url not in image_urls:
                         image_urls.append(image_url)
                 if response.get("imagePending") and not image_urls:
                     metadata["image_generation_pending"] = True
                 elif image_urls:
+                    metadata.pop("image_generation_pending", None)
+                else:
                     metadata.pop("image_generation_pending", None)
                 # A mapping node may briefly lag behind the final SSE patch.
                 # Keep the longer text while always accepting the canonical
@@ -3556,13 +3687,33 @@ class chatgpt:
 
             if attempt + 1 < attempts:
                 await asyncio.sleep(1.5 if settle else 0.6)
-        if settle and not best_event.image_urls:
+        if (
+            settle
+            and not best_event.image_urls
+            and best_event.metadata.get("image_generation_pending")
+        ):
             best_event.image_urls = await self._generated_image_urls_from_bootstrap(
                 session,
                 best_event.conversation_id,
             )
         if best_event.image_urls:
             best_event.metadata.pop("image_generation_pending", None)
+            generated_images, downloaded_urls = await self._download_generated_images(
+                session,
+                best_event.image_urls,
+                best_event.conversation_id,
+            )
+            if generated_images:
+                existing = {(file.name, file.content) for file in best_event.files}
+                best_event.files.extend(
+                    file
+                    for file in generated_images
+                    if (file.name, file.content) not in existing
+                )
+                best_event.image_urls = [
+                    url for url in best_event.image_urls if url not in downloaded_urls
+                ]
+                best_event.metadata["generated_image_count"] = len(generated_images)
         if not best_event.files:
             best_event.files = await self._download_output_files(
                 session,
@@ -4110,6 +4261,22 @@ class chatgpt:
             if msg_data.upload_file:
                 msg_data.upload_file.clear()
         if msg_data.status:
+            if msg_data.img_list:
+                generated_images, downloaded_urls = await self._download_generated_images(
+                    session,
+                    msg_data.img_list,
+                    msg_data.conversation_id,
+                )
+                if generated_images:
+                    existing = {(file.name, file.content) for file in msg_data.download_file}
+                    msg_data.download_file.extend(
+                        file
+                        for file in generated_images
+                        if (file.name, file.content) not in existing
+                    )
+                    msg_data.img_list = [
+                        url for url in msg_data.img_list if url not in downloaded_urls
+                    ]
             if not msg_data.download_file:
                 msg_data.download_file = await self._download_output_files(
                     session,
@@ -4603,7 +4770,22 @@ class chatgpt:
             msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
             if (
                 IMAGE_GENERATION in msg_data.required_capabilities
-                and not msg_data.img_list
+                and self._is_image_generation_limit_response(msg_data.msg_recv)
+            ):
+                self._handle_image_generation_limit_response(
+                    session,
+                    msg_data,
+                    msg_data.msg_recv,
+                    attempt=1,
+                )
+            if any(
+                error.get("kind") == "capability_rate_limited"
+                for error in msg_data.error_list
+            ):
+                raise RuntimeError(msg_data.error_list[-1]["message"])
+            if (
+                IMAGE_GENERATION in msg_data.required_capabilities
+                and not self._generated_image_count(msg_data)
             ):
                 msg_data.add_error(
                     kind="image_generation_no_result",
@@ -4653,9 +4835,9 @@ class chatgpt:
                 self._record_activity(
                     session.email,
                     "image_generation_completed",
-                    f"{len(msg_data.img_list)} image(s)",
+                    f"{self._generated_image_count(msg_data)} image(s)",
                     details={
-                        "count": len(msg_data.img_list),
+                        "count": self._generated_image_count(msg_data),
                         "duration_ms": duration_ms,
                     },
                 )
@@ -4902,9 +5084,14 @@ class chatgpt:
                         )
                     raise
 
+            if any(
+                error.get("kind") == "capability_rate_limited"
+                for error in msg_data.error_list
+            ):
+                raise RuntimeError(msg_data.error_list[-1]["message"])
             if (
                 IMAGE_GENERATION in msg_data.required_capabilities
-                and not msg_data.img_list
+                and not self._generated_image_count(msg_data)
             ):
                 msg_data.add_error(
                     kind="image_generation_no_result",
@@ -4942,12 +5129,13 @@ class chatgpt:
                         details={"count": msg_data.request_upload_count},
                     )
                 if IMAGE_GENERATION in msg_data.required_capabilities:
-                    if msg_data.img_list:
+                    generated_images = self._generated_image_count(msg_data)
+                    if generated_images:
                         self._record_activity(
                             session.email,
                             "image_generation_completed",
-                            f"{len(msg_data.img_list)} image(s) returned",
-                            details={"count": len(msg_data.img_list)},
+                            f"{generated_images} image(s) returned",
+                            details={"count": generated_images},
                         )
                     else:
                         self._record_activity(

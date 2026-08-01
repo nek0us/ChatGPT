@@ -47,6 +47,7 @@ class ImageReconciliationTests(unittest.IsolatedAsyncioTestCase):
         runtime = object.__new__(chatgpt)
         runtime.logger = _Logger()
         runtime._generated_image_urls_from_bootstrap = AsyncMock(return_value=[])
+        runtime._download_generated_images = AsyncMock(return_value=([], set()))
         session = SimpleNamespace(
             page=page,
             access_token="token",
@@ -100,3 +101,53 @@ class ImageReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, ["https://files.example/generated.png"])
         self.assertEqual(page.calls, 3)
+
+    async def test_private_generated_url_is_returned_as_an_image_file(self):
+        private_url = (
+            "https://chatgpt.com/backend-api/estuary/content"
+            "?id=file_123&fn=generated.png"
+        )
+        page = _SequencePage([{
+            "text": "Image ready.",
+            "messageId": "assistant-1",
+            "metadata": {},
+            "imageUrls": [private_url],
+            "imagePending": False,
+        }])
+        runtime = object.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._download_generated_images = AsyncMock(return_value=(
+            [IOFile(content=b"png", name="generated.png", mime_type="image/png")],
+            {private_url},
+        ))
+        runtime._download_output_files = AsyncMock(return_value=[])
+        session = SimpleNamespace(
+            page=page,
+            access_token="token",
+            email="account@example.com",
+        )
+
+        result = await runtime._reconcile_stream_final(
+            session,
+            ChatStreamEvent(
+                type="final",
+                conversation_id="conversation-1",
+                text="",
+            ),
+            settle=True,
+        )
+
+        self.assertEqual(result.image_urls, [])
+        self.assertEqual(result.files[0].content, b"png")
+        self.assertEqual(result.metadata["generated_image_count"], 1)
+        runtime._download_generated_images.assert_awaited_once_with(
+            session,
+            [private_url],
+            "conversation-1",
+        )
+
+    def test_image_limit_text_is_not_treated_as_a_generated_image(self):
+        self.assertTrue(chatgpt._is_image_generation_limit_response(
+            "Image creation will be available again when your Instant limit resets."
+        ))
+        self.assertFalse(chatgpt._is_image_generation_limit_response("Image ready."))
