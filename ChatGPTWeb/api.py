@@ -32,6 +32,45 @@ class MockResponse:
         return self.data
 
 
+class AttachmentUploadError(RuntimeError):
+    """The upstream accepted a file registration but not the actual upload."""
+
+
+def _exact_url_pattern(url: str) -> re.Pattern[str]:
+    """Match one signed upload URL without interpreting its query as a glob."""
+    return re.compile(r"^" + re.escape(url) + r"$")
+
+
+def _blob_upload_headers(request: Request, file: IOFile) -> Dict[str, str]:
+    """Keep browser headers, but do not leak ChatGPT-origin credentials to Blob.
+
+    The signed URL determines its own host and authorization.  Overriding either
+    with the old hard-coded headers invalidates Azure's signature on newer upload
+    hosts such as ``sdmntprjapaneast.oaiusercontent.com``.
+    """
+    forbidden = {
+        "content-length",
+        "content-type",
+        "cookie",
+        "host",
+        "x-ms-blob-type",
+        "x-ms-version",
+    }
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in forbidden
+    }
+    headers.update(
+        {
+            "Content-Type": file.mime_type or "application/octet-stream",
+            "x-ms-blob-type": "BlockBlob",
+            "x-ms-version": "2020-04-08",
+        }
+    )
+    return headers
+
+
 @dataclass
 class ChatStreamEvent:
     type: str
@@ -1215,30 +1254,8 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                 await route.continue_(method="POST", headers=header, post_data=payload)         
             await page.route("**/backend-api/files", route_files)  
             
-            async def route_put(route: Route, request: Request):
-                logger.debug(f"{session.email} begin create put cookie and header")
-                header_put = {}
-                header_put['Accept'] = "application/json, text/plain, */*"
-                header_put['Host'] = "files.oaiusercontent.com"
-                header_put['Accept-Language'] = "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-                header_put['Accept-Encoding'] = "gzip, deflate"
-                header_put['Referer'] = "https://chatgpt.com/"
-                header_put['x-ms-blob-type'] = "BlockBlob"
-                header_put['x-ms-version'] = "2020-04-08"
-                header_put['Content-Length'] = str(file.size)
-                header_put['Content-Type'] = file.mime_type
-                header_put['Origin'] = "https://chatgpt.com"
-                header_put['Connection'] = "keep-alive"
-                header_put['Sec-Fetch-Dest'] = 'empty'
-                header_put['Sec-Fetch-Mode'] = 'cors'
-                header_put['Sec-Fetch-Site'] = 'same-origin'
-                header_put["User-Agent"] = request.headers["user-agent"]
-                header_put["Cookie"] = request.headers["cookie"] 
-                logger.debug(f"{session.email} will continue_ put")
-                await route.continue_(method="PUT", headers=header_put, post_data=file.content)
-            await page.route("**/file-**", route_put)  
-            
             retry = 3
+            put_succeeded = False
             while retry != 0:
                 
                 logger.debug(f"{session.email} begin upload")
@@ -1255,17 +1272,36 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
                         retry -= 1
                         continue
                 logger.debug(f"{session.email} begin put")
+
+                async def route_put(route: Route, request: Request):
+                    logger.debug(f"{session.email} continue signed blob upload")
+                    await route.continue_(
+                        method="PUT",
+                        headers=_blob_upload_headers(request, file),
+                        post_data=file.content,
+                    )
+
+                # The signed URL ends with ``/files/<id>/raw``.  The old
+                # ``**/file-**`` glob never matched it, leaving this navigation
+                # as an unauthorized GET.  Match this exact, short-lived URL.
+                await page.route(_exact_url_pattern(file.upload_url), route_put)
             
                 async with page.expect_response(file.upload_url,timeout=120000) as response_info: # type: ignore
                     await page.goto(file.upload_url,timeout=60000) # type: ignore
                     res_value = await response_info.value   
                     if res_value.status in (200,201):
                         logger.debug(f"{session.email} put ok")
+                        put_succeeded = True
                         break
                     else:
                         logger.debug(f"{session.email} put error,retry:{retry},status:{res_value.status} {res_value.status_text},{await res_value.text()}")
                         retry -= 1
                         await asyncio.sleep(1)
+
+            if not put_succeeded:
+                raise AttachmentUploadError(
+                    f"signed upload was rejected for attachment {file.name!r}"
+                )
 
             async def route_uploaded(route: Route, request: Request):
                 logger.debug(f"{session.email} begin create uploaded cookie and header")
@@ -1278,22 +1314,37 @@ async def upload_file(msg_data: MsgData,session: Session,logger) -> MsgData:
             await page.route("**/backend-api/files/file-**/uploaded", route_uploaded)  
             logger.debug(f"{session.email} began uploaded")
             retry = 3
+            upload_confirmed = False
             while retry != 0:
                 async with page.expect_response(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=120000) as response_info: # type: ignore
                     await page.goto(f"https://chatgpt.com/backend-api/files/{file.file_id}/uploaded",timeout=60000)
                     res_value = await response_info.value   
                     res: dict = await res_value.json()
-                    if res['status'] == "success":
+                    if res_value.status in (200, 201) and res.get('status') == "success":
                         logger.debug(f"{session.email} uploaded ok")
+                        upload_confirmed = True
                         break
                     else:
                         logger.debug(f"{session.email} uploaded faid,retry:{retry},https://chatgpt.com/backend-api/files/{file.file_id}/uploaded {res_value.status} {res_value.status_text} {res}")
                         retry -= 1
+            if not upload_confirmed:
+                raise AttachmentUploadError(
+                    f"attachment {file.name!r} was not confirmed by the upstream"
+                )
     except Exception as e:
+        if not isinstance(e, AttachmentUploadError):
+            e = AttachmentUploadError(f"attachment upload failed: {e}")
+        msg_data.add_error(
+            kind="attachment_upload_failed",
+            message=str(e),
+            retryable=True,
+            session_email=session.email,
+        )
         logger.warning(f"upload file error:{e}")
+        raise e
     finally:
         await page.close()
-        return msg_data
+    return msg_data
     
 async def save_screen(save_screen_status: bool, path: str,page: Page):
     if save_screen_status:
