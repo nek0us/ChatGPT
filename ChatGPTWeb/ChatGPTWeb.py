@@ -3609,8 +3609,23 @@ class chatgpt:
                                     const assistantNode = [...afterUser].reverse().find(assistant);
                                     const imageUrls = [];
                                     let imagePending = false;
+                                    const addImageParts = (message) => {
+                                        const parts = message && message.content && message.content.parts;
+                                        if (!Array.isArray(parts)) return;
+                                        for (const part of parts) {
+                                            if (!part || part.content_type !== 'image_asset_pointer') continue;
+                                            const pointer = part.asset_pointer;
+                                            if (typeof pointer !== 'string') continue;
+                                            const match = pointer.match(/^(?:sediment|file-service):[/][/](file_[A-Za-z0-9_-]+)$/);
+                                            if (!match) continue;
+                                            const url = `https://chatgpt.com/backend-api/files/download/${encodeURIComponent(match[1])}`
+                                                + `?conversation_id=${encodeURIComponent(conversationId)}&inline=false`;
+                                            if (!imageUrls.includes(url)) imageUrls.push(url);
+                                        }
+                                    };
                                     for (const node of afterUser) {
-                                        const metadata = node && node.message && node.message.metadata || {};
+                                        const candidateMessage = node && node.message;
+                                        const metadata = candidateMessage && candidateMessage.metadata || {};
                                         const results = metadata.image_results;
                                         if (Array.isArray(results)) {
                                             for (const image of results) {
@@ -3618,6 +3633,7 @@ class chatgpt:
                                                 if (typeof url === 'string' && url && !imageUrls.includes(url)) imageUrls.push(url);
                                             }
                                         }
+                                        addImageParts(candidateMessage);
                                         if (metadata.ui_card_title === 'Processing image') imagePending = true;
                                     }
                                     const message = assistantNode && assistantNode.message;
@@ -3728,6 +3744,20 @@ class chatgpt:
                                     }
                                 }
                             };
+                            const addImageParts = (candidate) => {
+                                const candidateParts = candidate && candidate.content && candidate.content.parts;
+                                if (!Array.isArray(candidateParts)) return;
+                                for (const part of candidateParts) {
+                                    if (!part || part.content_type !== 'image_asset_pointer') continue;
+                                    const pointer = part.asset_pointer;
+                                    if (typeof pointer !== 'string') continue;
+                                    const match = pointer.match(/^(?:sediment|file-service):[/][/](file_[A-Za-z0-9_-]+)$/);
+                                    if (!match) continue;
+                                    const url = `https://chatgpt.com/backend-api/files/download/${encodeURIComponent(match[1])}`
+                                        + `?conversation_id=${encodeURIComponent(conversationId)}&inline=false`;
+                                    if (!imageUrls.includes(url)) imageUrls.push(url);
+                                }
+                            };
                             // Object value order is not conversation order. Restrict
                             // rich results to the active branch so an old image cannot
                             // be reused for the current assistant response.
@@ -3755,6 +3785,7 @@ class chatgpt:
                                 if (!candidate) continue;
                                 const candidateMetadata = candidate.metadata || {};
                                 addImageResults(candidateMetadata.image_results);
+                                addImageParts(candidate);
                                 if (candidateMetadata.ui_card_title === 'Processing image') {
                                     imagePending = true;
                                 }
@@ -4732,6 +4763,7 @@ class chatgpt:
                     required_capabilities,
                     conversation=True,
                 )
+                self.logger.warning(msg_data.error_info)
                 return None
             wait_ready_seconds = 0
             while session.status != Status.Ready.value:

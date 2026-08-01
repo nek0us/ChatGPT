@@ -176,6 +176,38 @@ class ChatStreamParserTests(unittest.TestCase):
         self.assertEqual(final.image_urls, ["https://images.example/generated.png"])
         self.assertTrue(final.metadata["image_generation_pending"])
 
+    def test_tool_image_asset_pointer_becomes_authenticated_download_url(self):
+        parser = ChatStreamParser()
+        parser.feed({"conversation_id": "conversation-current"})
+        events = parser.feed({
+            "message": {
+                "author": {"role": "tool"},
+                "content": {
+                    "content_type": "multimodal_text",
+                    "parts": [{
+                        "content_type": "image_asset_pointer",
+                        "asset_pointer": "sediment://file_00000000abc123",
+                        "mime_type": "image/png",
+                    }],
+                },
+                "metadata": {"image_gen_title": "Generated image"},
+            },
+        })
+
+        self.assertEqual([event.type for event in events], ["image_pending"])
+        final = parser.final_event()
+        self.assertEqual(
+            final.image_urls,
+            [
+                "https://chatgpt.com/backend-api/files/download/"
+                "file_00000000abc123?conversation_id=conversation-current&inline=false"
+            ],
+        )
+        self.assertEqual(
+            final.metadata["generated_image_file_ids"],
+            ["file_00000000abc123"],
+        )
+
 
 class _FakeBackend:
     def __init__(self):

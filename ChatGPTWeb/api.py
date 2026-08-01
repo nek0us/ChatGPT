@@ -5,7 +5,7 @@ import uuid
 import json
 import base64
 import asyncio
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -219,6 +219,10 @@ class ChatStreamParser:
                 events.extend(self._handle_image_results(image_results, raw))
 
         content = message.get("content", {})
+        if role == "tool" and isinstance(content, dict):
+            parts = content.get("parts")
+            if isinstance(parts, list):
+                events.extend(self._handle_image_asset_parts(parts, raw))
         if role == "assistant" and isinstance(content, dict):
             parts = content.get("parts")
             if parts and isinstance(parts[0], str):
@@ -229,6 +233,38 @@ class ChatStreamParser:
                 events.extend(self._merge_full_text(parts[0], raw))
 
         return events
+
+    def _handle_image_asset_parts(
+        self,
+        parts: List[Any],
+        raw: Dict[str, Any],
+    ) -> List[ChatStreamEvent]:
+        """Record current image-tool file pointers until the conversation id arrives."""
+        file_ids = self.metadata.setdefault("generated_image_file_ids", [])
+        changed = False
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("content_type") != "image_asset_pointer":
+                continue
+            pointer = part.get("asset_pointer")
+            if not isinstance(pointer, str):
+                continue
+            match = re.fullmatch(
+                r"(?:sediment|file-service)://(file_[A-Za-z0-9_-]+)",
+                pointer,
+            )
+            if not match:
+                continue
+            file_id = match.group(1)
+            if file_id not in file_ids:
+                file_ids.append(file_id)
+                changed = True
+        if not changed:
+            return []
+        self.image_gen = True
+        self.metadata["image_generation_pending"] = True
+        return [ChatStreamEvent(type="image_pending", raw=raw)]
 
     def _handle_image_results(self, value: List[Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         for image in value:
@@ -312,12 +348,27 @@ class ChatStreamParser:
         return events
 
     def final_event(self, raw: Optional[Dict[str, Any]] = None) -> ChatStreamEvent:
+        image_urls = self.image_urls.copy()
+        if self.conversation_id:
+            for file_id in self.metadata.get("generated_image_file_ids", []):
+                if not isinstance(file_id, str) or not re.fullmatch(
+                    r"file_[A-Za-z0-9_-]+",
+                    file_id,
+                ):
+                    continue
+                url = (
+                    "https://chatgpt.com/backend-api/files/download/"
+                    f"{quote(file_id, safe='')}?conversation_id="
+                    f"{quote(self.conversation_id, safe='')}&inline=false"
+                )
+                if url not in image_urls:
+                    image_urls.append(url)
         return ChatStreamEvent(
             type="final",
             text=self.text,
             message_id=self.message_id,
             conversation_id=self.conversation_id,
-            image_urls=self.image_urls.copy(),
+            image_urls=image_urls,
             model=self.model,
             usage=self.usage.copy(),
             metadata=self.metadata.copy(),

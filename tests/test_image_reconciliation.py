@@ -27,6 +27,43 @@ class _SequencePage:
 
 
 class ImageReconciliationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_tool_image_pointer_is_recovered_from_active_branch(self):
+        page = _SequencePage([{
+            "text": "",
+            "messageId": "assistant-final",
+            "metadata": {},
+            "imageUrls": [
+                "https://chatgpt.com/backend-api/files/download/"
+                "file_00000000abc123?conversation_id=conversation-1&inline=false"
+            ],
+            "imagePending": False,
+        }])
+        runtime = object.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._download_generated_images = AsyncMock(return_value=(
+            [IOFile(content=b"png", name="generated.png", mime_type="image/png")],
+            {
+                "https://chatgpt.com/backend-api/files/download/"
+                "file_00000000abc123?conversation_id=conversation-1&inline=false"
+            },
+        ))
+        runtime._download_output_files = AsyncMock(return_value=[])
+        session = SimpleNamespace(
+            page=page,
+            access_token="token",
+            email="account@example.com",
+        )
+
+        result = await runtime._reconcile_stream_final(
+            session,
+            ChatStreamEvent(type="final", conversation_id="conversation-1"),
+            settle=True,
+        )
+
+        self.assertEqual(result.image_urls, [])
+        self.assertEqual(result.files[0].content, b"png")
+        self.assertEqual(result.metadata["generated_image_count"], 1)
+
     async def test_settling_does_not_stop_at_text_before_image_asset(self):
         page = _SequencePage([
             {
