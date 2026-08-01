@@ -2692,9 +2692,15 @@ class chatgpt:
                 return text;
             };
             const streamResponse = async (response) => {
+                let streamTail = "";
+                const remember = (text) => {
+                    streamTail = (streamTail + text).slice(-65536);
+                };
                 if (!response.body) {
-                    await emit({ type: "chunk", text: await response.text() });
-                    await emit({ type: "done" });
+                    const text = await response.text();
+                    remember(text);
+                    await emit({ type: "chunk", text });
+                    await emit({ type: "done", tail: streamTail });
                     return;
                 }
                 const reader = response.body.getReader();
@@ -2706,14 +2712,16 @@ class chatgpt:
                     }
                     const text = decoder.decode(item.value, { stream: true });
                     if (text) {
+                        remember(text);
                         await emit({ type: "chunk", text });
                     }
                 }
                 const tail = decoder.decode();
                 if (tail) {
+                    remember(tail);
                     await emit({ type: "chunk", text: tail });
                 }
-                await emit({ type: "done" });
+                await emit({ type: "done", tail: streamTail });
             };
             const fetchWithTimeout = async (url, init, timeoutMs, controller = null) => {
                 const activeController = controller || new AbortController();
@@ -2975,6 +2983,7 @@ class chatgpt:
         done = False
         emitted_final_signatures = set()
         pending_final: ChatStreamEvent | None = None
+        stream_tail = ""
         loop = asyncio.get_running_loop()
         last_content_event_at = loop.time()
         last_status_event_at = last_content_event_at
@@ -3041,6 +3050,7 @@ class chatgpt:
                     continue
                 if payload.get("type") == "done":
                     done = True
+                    stream_tail = str(payload.get("tail") or "")
                     for event in ready_events(decoder.close()):
                         self._apply_stream_event(msg_data, event)
                         yield event
@@ -3058,6 +3068,12 @@ class chatgpt:
                 decoder.parser,
                 pending_final,
             )
+            if not pending_final:
+                pending_final = await self._recover_new_stream_final(
+                    session,
+                    msg_data,
+                    stream_tail,
+                )
             if pending_final:
                 settle_images = (
                     decoder.parser.image_gen
@@ -3507,6 +3523,141 @@ class chatgpt:
             usage=dict(getattr(parser, "usage", {}) or msg_data.usage),
             metadata=dict(getattr(parser, "metadata", {}) or msg_data.response_metadata),
         )
+
+    async def _recover_new_stream_final(
+        self,
+        session: Session,
+        msg_data: MsgData,
+        stream_tail: str = "",
+    ) -> ChatStreamEvent | None:
+        """Recover a just-created conversation when its SSE body has no usable node.
+
+        Some rich turns, especially image creation, can close their SSE response
+        before exposing a normal assistant patch.  New conversations have no
+        known id to reconcile, but their client-generated user message id is in
+        the request payload and can identify the newest conversation safely.
+        """
+        if msg_data.conversation_id:
+            return None
+        try:
+            payload = json.loads(msg_data.post_data or self._build_conversation_payload(msg_data))
+            messages = payload.get("messages") if isinstance(payload, dict) else []
+            user_message_id = str(messages[0].get("id") or "") if messages else ""
+        except (TypeError, ValueError, AttributeError):
+            user_message_id = ""
+        page = session.page
+        if not page or not user_message_id:
+            return None
+        if stream_tail:
+            self.logger.debug(
+                f"{session.email} received an unparsed stream for a new conversation; "
+                f"recovering by client message id {user_message_id}"
+            )
+        for attempt in range(6):
+            try:
+                response = await page.evaluate(
+                    """async ({ messageId, accessToken }) => {
+                        const headers = { accept: 'application/json' };
+                        if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+                        const listPaths = [
+                            '/backend-api/conversations?offset=0&limit=20&order=updated',
+                            '/api/backend-api/conversations?offset=0&limit=20&order=updated',
+                        ];
+                        const detailPaths = (id) => [
+                            `/backend-api/conversation/${encodeURIComponent(id)}`,
+                            `/api/backend-api/conversation/${encodeURIComponent(id)}`,
+                        ];
+                        const assistant = (node) => Boolean(node && node.message && node.message.author
+                            && node.message.author.role === 'assistant');
+                        for (const listPath of listPaths) {
+                            try {
+                                const listResponse = await fetch(listPath, { credentials: 'include', headers });
+                                if (!listResponse.ok) continue;
+                                const listed = await listResponse.json();
+                                const items = Array.isArray(listed && listed.items)
+                                    ? listed.items : (Array.isArray(listed) ? listed : []);
+                                for (const item of items) {
+                                    const conversationId = item && (item.id || item.conversation_id);
+                                    if (typeof conversationId !== 'string' || !conversationId) continue;
+                                    let conversation = null;
+                                    for (const detailPath of detailPaths(conversationId)) {
+                                        try {
+                                            const detailResponse = await fetch(detailPath, { credentials: 'include', headers });
+                                            if (detailResponse.ok) {
+                                                conversation = await detailResponse.json();
+                                                break;
+                                            }
+                                        } catch (_) {}
+                                    }
+                                    const mapping = conversation && conversation.mapping;
+                                    if (!mapping || typeof mapping !== 'object') continue;
+                                    const nodes = Object.values(mapping);
+                                    const userNode = nodes.find((node) => node && node.message && node.message.id === messageId);
+                                    if (!userNode) continue;
+                                    const branch = [];
+                                    const seen = new Set();
+                                    let branchId = conversation.current_node;
+                                    while (branchId && mapping[branchId] && !seen.has(branchId)) {
+                                        seen.add(branchId);
+                                        branch.push(mapping[branchId]);
+                                        branchId = mapping[branchId].parent;
+                                    }
+                                    branch.reverse();
+                                    const userIndex = branch.findIndex((node) => node === userNode
+                                        || (node && node.message && node.message.id === messageId));
+                                    const afterUser = userIndex >= 0 ? branch.slice(userIndex + 1) : [];
+                                    const assistantNode = [...afterUser].reverse().find(assistant);
+                                    const imageUrls = [];
+                                    let imagePending = false;
+                                    for (const node of afterUser) {
+                                        const metadata = node && node.message && node.message.metadata || {};
+                                        const results = metadata.image_results;
+                                        if (Array.isArray(results)) {
+                                            for (const image of results) {
+                                                const url = image && (image.content_url || image.download_url || image.url);
+                                                if (typeof url === 'string' && url && !imageUrls.includes(url)) imageUrls.push(url);
+                                            }
+                                        }
+                                        if (metadata.ui_card_title === 'Processing image') imagePending = true;
+                                    }
+                                    const message = assistantNode && assistantNode.message;
+                                    const parts = message && message.content && message.content.parts;
+                                    return {
+                                        conversationId,
+                                        messageId: message && message.id || '',
+                                        text: Array.isArray(parts) && typeof parts[0] === 'string' ? parts[0] : '',
+                                        imageUrls,
+                                        imagePending,
+                                        metadata: message && message.metadata || {},
+                                    };
+                                }
+                            } catch (_) {}
+                        }
+                        return null;
+                    }""",
+                    {"messageId": user_message_id, "accessToken": session.access_token},
+                )
+            except Exception as error:
+                self.logger.debug(f"{session.email} new conversation recovery was unavailable: {error}")
+                return None
+            if isinstance(response, dict) and response.get("conversationId"):
+                metadata = dict(response.get("metadata") or {})
+                if response.get("imagePending") and not response.get("imageUrls"):
+                    metadata["image_generation_pending"] = True
+                return ChatStreamEvent(
+                    type="final",
+                    text=str(response.get("text") or ""),
+                    conversation_id=str(response["conversationId"]),
+                    message_id=str(response.get("messageId") or ""),
+                    image_urls=[
+                        str(url) for url in response.get("imageUrls", [])
+                        if isinstance(url, str) and url
+                    ],
+                    metadata=metadata,
+                )
+            if attempt + 1 < 6:
+                await asyncio.sleep(0.8)
+        return None
 
     async def _reconcile_stream_final(
         self,

@@ -20,6 +20,10 @@ _IMAGE_GENERATION_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
+        r"(?:生成|画|绘制|设计|制作|创建|做).{0,24}(?:表情包|自画像|肖像|meme)",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"(?:^|[，。！？,;:\s])(?:请|帮我|给我|替我)?"
         r"(?:画|绘制)(?:一下|一个|一张|一幅|些|个|张|幅|只)?",
         re.IGNORECASE,

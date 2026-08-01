@@ -304,6 +304,43 @@ class _SilentPage:
         return {"ok": True}
 
 
+class _EmptyStreamWithRecoverPage:
+    def __init__(self):
+        self.binding = None
+        self.user_message_id = ""
+
+    async def expose_binding(self, _name, callback):
+        self.binding = callback
+
+    async def evaluate(self, _script, argument=None):
+        if isinstance(argument, dict) and argument.get("streamId"):
+            payload = json.loads(argument["payload"])
+            self.user_message_id = payload["messages"][0]["id"]
+            self.binding(None, {"type": "meta", "status": 200})
+            self.binding(None, {"type": "done", "tail": "data: unsupported-rich-turn"})
+            return {"ok": True}
+        if isinstance(argument, dict) and argument.get("messageId"):
+            if argument["messageId"] != self.user_message_id:
+                return None
+            return {
+                "conversationId": "conversation-recovered",
+                "messageId": "message-recovered",
+                "text": "image request accepted",
+                "imageUrls": [],
+                "imagePending": False,
+                "metadata": {"model_slug": "gpt-5-5-mini"},
+            }
+        if isinstance(argument, dict) and argument.get("conversationId"):
+            return {
+                "text": "image request accepted",
+                "messageId": "message-recovered",
+                "metadata": {"model_slug": "gpt-5-5-mini"},
+                "imageUrls": [],
+                "imagePending": False,
+            }
+        return True
+
+
 class _ReconcilePage:
     async def evaluate(self, _script, argument=None):
         if not isinstance(argument, dict) or "conversationId" not in argument:
@@ -503,6 +540,21 @@ class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no upstream chunks", error.text)
         with self.assertRaises(TimeoutError):
             await anext(stream)
+
+    async def test_empty_new_conversation_stream_recovers_by_user_message_id(self):
+        runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
+        runtime.logger = _Logger()
+        page = _EmptyStreamWithRecoverPage()
+        session = Session(email="recover@example.com", access_token="token", page=page)
+        data = MsgData(msg_send="draw a portrait meme")
+
+        events = [event async for event in runtime._stream_msg_by_browser_fetch(data, session)]
+
+        final = events[-1]
+        self.assertEqual(final.type, "final")
+        self.assertEqual(final.conversation_id, "conversation-recovered")
+        self.assertEqual(final.message_id, "message-recovered")
+        self.assertEqual(final.text, "image request accepted")
 
     async def test_stream_final_reconciles_from_the_conversation_node(self):
         runtime = _CoreStreamRuntime.__new__(_CoreStreamRuntime)
