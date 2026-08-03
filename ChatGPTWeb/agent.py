@@ -437,6 +437,7 @@ class AgentService:
         client_id: str = "",
         request_priority: int = 100,
         enforce_client_ownership: bool = False,
+        conversation_project: str = "",
     ):
         self._service = service
         self._safety_policy = safety_policy or AgentSafetyPolicy()
@@ -444,6 +445,7 @@ class AgentService:
         self._client_id = client_id
         self._request_priority = request_priority
         self._enforce_client_ownership = enforce_client_ownership
+        self._conversation_project = conversation_project.strip()
         self._anchors = _anchor_registry_for(service)
 
     @staticmethod
@@ -570,7 +572,10 @@ class AgentService:
         # Protocol roots can retain task-independent model context. Keep them
         # private to the API client that created them.
         namespace = self._client_id or "local"
-        return (f"{namespace}:{kind}:{_AGENT_ANCHOR_PROTOCOL_VERSION}", model or "auto")
+        return (
+            f"{namespace}:{self._conversation_project}:{kind}:{_AGENT_ANCHOR_PROTOCOL_VERSION}",
+            model or "auto",
+        )
 
     async def _get_anchor(
         self,
@@ -590,6 +595,7 @@ class AgentService:
                 client_id=self._client_id,
                 request_priority=self._request_priority,
                 enforce_client_ownership=self._enforce_client_ownership,
+                conversation_project=self._conversation_project,
             ))
             if not result.ok or not result.conversation_id or not result.message_id:
                 return None
@@ -627,6 +633,7 @@ class AgentService:
             client_id=self._client_id,
             request_priority=self._request_priority,
             enforce_client_ownership=self._enforce_client_ownership,
+            conversation_project=self._conversation_project,
         )
         result = await self._service.send(request)
         self._anchors.remember_owner(result.conversation_id, result.account)
@@ -747,6 +754,7 @@ class AgentService:
             client_id=self._client_id,
             request_priority=self._request_priority,
             enforce_client_ownership=self._enforce_client_ownership,
+            conversation_project=self._conversation_project,
         ))
         self._anchors.remember_owner(result.conversation_id, result.account)
         decision = parse_agent_decision(result.text, registered) if result.ok else None
@@ -770,6 +778,7 @@ class AgentService:
                 client_id=self._client_id,
                 request_priority=self._request_priority,
                 enforce_client_ownership=self._enforce_client_ownership,
+                conversation_project=self._conversation_project,
             ))
             self._anchors.remember_owner(repair.conversation_id, repair.account)
             if repair.ok:

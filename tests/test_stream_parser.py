@@ -1106,7 +1106,9 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         key_headers = {"Authorization": f"Bearer {(await created.json())['secret']}"}
         capabilities = await self.client.get("/v1/bot/capabilities", headers=key_headers)
         chat = await self.client.post(
-            "/v1/bot/chat", json={"prompt": "bot turn"}, headers=key_headers,
+            "/v1/bot/chat",
+            json={"prompt": "bot turn", "conversation_project": "Bot chats"},
+            headers=key_headers,
         )
         chat_request = self.backend.sent[-1]
         responses = await self.client.post(
@@ -1147,6 +1149,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await chat.json())["ok"])
         self.assertEqual(chat_request.client_id.split(":", 1)[0], "api")
         self.assertEqual(chat_request.request_priority, 10)
+        self.assertEqual(chat_request.conversation_project, "Bot chats")
         self.assertEqual(self.backend.sent[-1].request_priority, 20)
         self.assertEqual(history.status, 200)
         self.assertEqual(denied.status, 403)

@@ -47,6 +47,9 @@ class ChatRequest:
     enforce_client_ownership: bool = False
     operation: ConversationOperation = ConversationOperation.SEND
     reference: str = ""
+    # A ChatGPT Project name used only while creating a new physical conversation.
+    # The backend resolves it per account; existing conversations keep their owner.
+    conversation_project: str = ""
 
     def to_msg_data(self) -> MsgData:
         msg_data = MsgData(
@@ -66,6 +69,7 @@ class ChatRequest:
             client_id=self.client_id,
             request_priority=max(0, self.request_priority),
             enforce_client_ownership=self.enforce_client_ownership,
+            conversation_project=self.conversation_project.strip(),
         )
         if self.operation is ConversationOperation.REWIND:
             msg_data.msg_send = self.reference

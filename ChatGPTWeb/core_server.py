@@ -78,6 +78,7 @@ class CoreServerSettings:
     free_upload_daily_limit: int = 2
     free_image_generation_daily_limit: int = 2
     capability_rate_limit_cooldown_seconds: int = 24 * 60 * 60
+    project_auto_create: bool = False
 
     @classmethod
     def from_environment(cls) -> "CoreServerSettings":
@@ -134,6 +135,7 @@ class CoreServerSettings:
                     str(24 * 60 * 60),
                 )
             ),
+            project_auto_create=_env_enabled("CHATGPTWEB_PROJECT_AUTO_CREATE", False),
         )
 
 
@@ -216,6 +218,7 @@ def create_core_application(settings: CoreServerSettings) -> web.Application:
         capability_rate_limit_cooldown_seconds=(
             settings.capability_rate_limit_cooldown_seconds
         ),
+        project_auto_create=settings.project_auto_create,
     )
     app = create_http_app(
         ChatService(runtime),

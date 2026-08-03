@@ -27,6 +27,7 @@ class RuntimeStorage:
         self.index_path = self.conversations_dir / "index.json"
         self.personas_path = self.root / "personas.json"
         self.api_keys_path = self.root / "api_keys.json"
+        self.projects_path = self.root / "projects.json"
         self.ensure()
 
     def ensure(self) -> None:
@@ -39,6 +40,8 @@ class RuntimeStorage:
             self.write_json_atomic(self.personas_path, {"version": _SCHEMA_VERSION, "personas": []})
         if not self.api_keys_path.exists():
             self.write_json_atomic(self.api_keys_path, {"version": 1, "keys": []})
+        if not self.projects_path.exists():
+            self.write_json_atomic(self.projects_path, {"version": 1, "accounts": {}})
 
     @staticmethod
     def write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
@@ -167,6 +170,39 @@ class RuntimeStorage:
         index["conversations"][conversation_id] = entry
         self.write_json_atomic(self.index_path, index)
         return True
+
+    def _projects(self) -> Dict[str, Any]:
+        fallback = {"version": 1, "accounts": {}}
+        value = self.read_json(self.projects_path, fallback)
+        if value.get("version") != 1 or not isinstance(value.get("accounts"), dict):
+            return fallback
+        return value
+
+    def project_binding(self, account: str, name: str) -> str:
+        """Return a best-effort cached ChatGPT Project ID for one account/name."""
+        if not account or not name:
+            return ""
+        accounts = self._projects()["accounts"]
+        entry = accounts.get(self._key(account), {})
+        projects = entry.get("projects", {}) if isinstance(entry, dict) else {}
+        value = projects.get(name, {}) if isinstance(projects, dict) else {}
+        return str(value.get("id", "")) if isinstance(value, dict) else ""
+
+    def bind_project(self, account: str, name: str, project_id: str) -> None:
+        """Persist a resolved project per ChatGPT account without credentials."""
+        if not account or not name or not project_id:
+            return
+        data = self._projects()
+        accounts = data["accounts"]
+        account_key = self._key(account)
+        entry = accounts.get(account_key, {})
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        projects = entry.get("projects", {})
+        projects = dict(projects) if isinstance(projects, dict) else {}
+        projects[name] = {"id": project_id, "updated_at": datetime.now().isoformat()}
+        entry["projects"] = projects
+        accounts[account_key] = entry
+        self.write_json_atomic(self.projects_path, data)
 
     def conversation_count(self, account: str) -> int:
         return sum(

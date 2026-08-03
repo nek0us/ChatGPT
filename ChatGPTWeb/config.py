@@ -473,6 +473,14 @@ class MsgData(BaseModel):
     last_id: str = Field("", description="最后消息ID")
     last_wss: str = Field("", description="最后WebSocket地址")
     title: str = Field("", description="conversation title")
+    conversation_project: str = Field(
+        "",
+        description="optional ChatGPT Project name for a newly created conversation",
+    )
+    conversation_project_id: str = Field(
+        "",
+        description="resolved upstream project identifier for the current request",
+    )
     image_gen: bool = Field(False, description="image generation")
     required_capabilities: List[str] = Field(
         default_factory=list,
@@ -632,7 +640,7 @@ class MsgData(BaseModel):
 class Payload():
         
     @staticmethod
-    def new_payload(prompt: str, gpt_model: str = Field(default_factory=get_first_model,description="used gpt model"), files: Optional[List[IOFile]] = None, search: bool = False) -> str:
+    def new_payload(prompt: str, gpt_model: str = Field(default_factory=get_first_model,description="used gpt model"), files: Optional[List[IOFile]] = None, search: bool = False, conversation_project_id: str = "") -> str:
         create_time = time.time()
         files = files or []
         is_image = any(files.content_type == "image_asset_pointer" for files in files)
@@ -652,9 +660,10 @@ class Payload():
                 "screen_width": 2048,
                 "app_name": "chatgpt.com"
             },
-            "conversation_mode": {
-                "kind": "primary_assistant"
-            },
+            "conversation_mode": (
+                {"kind": "gizmo_interaction", "gizmo_id": conversation_project_id}
+                if conversation_project_id else {"kind": "primary_assistant"}
+            ),
             # "client_reported_search_source": "conversation_composer_web_icon",
             "enable_message_followups": True,
             "force_use_search": search,

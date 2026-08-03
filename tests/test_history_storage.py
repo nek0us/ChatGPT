@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
-from ChatGPTWeb.config import MsgData, Personality
+from ChatGPTWeb.config import MsgData, Payload, Personality
 from ChatGPTWeb.storage import RuntimeStorage
 
 
@@ -18,6 +18,28 @@ def _storage_runtime(path: Path):
 
 
 class HistoryStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_bindings_persist_per_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = RuntimeStorage(Path(directory))
+            storage.bind_project("first@example.com", "Bot chats", "gizmo-first")
+            storage.bind_project("second@example.com", "Bot chats", "gizmo-second")
+            reopened = RuntimeStorage(Path(directory))
+
+            self.assertEqual(reopened.project_binding("first@example.com", "Bot chats"), "gizmo-first")
+            self.assertEqual(reopened.project_binding("second@example.com", "Bot chats"), "gizmo-second")
+
+    async def test_new_payload_uses_project_mode_only_when_resolved(self):
+        root_payload = json.loads(Payload.new_payload("hello", gpt_model="auto"))
+        project_payload = json.loads(
+            Payload.new_payload("hello", gpt_model="auto", conversation_project_id="gizmo-project")
+        )
+
+        self.assertEqual(root_payload["conversation_mode"], {"kind": "primary_assistant"})
+        self.assertEqual(
+            project_payload["conversation_mode"],
+            {"kind": "gizmo_interaction", "gizmo_id": "gizmo-project"},
+        )
+
     async def test_concurrent_saves_preserve_all_messages_and_map_entry(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = _storage_runtime(Path(directory))

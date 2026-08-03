@@ -242,12 +242,22 @@ chat = chatgpt(
     control_host="127.0.0.1",
     control_port=8765,
     control_api_key="local-only-secret",
+    # Opt-in: create a missing ChatGPT Project for a named new conversation.
+    project_auto_create=False,
 )
 ```
 
 The dashboard is disabled by default and closes with `await chat.close()`. It can submit/cancel a pending verification, manually disable or re-enable an account, explicitly retry a failed credential login, and refresh observed plan information from the authenticated browser page. Re-enabling only removes the local operator hold; `Retry login` is the separate action that schedules a new browser login and can produce an OTP challenge. The account table also shows conversation count, runtime recovery/login diagnostics, model usage observed during the current process, and a distinct chat-quota cooldown state. It projects safe operational states such as verification pending, rejected credentials, provider security checks, login cooldowns, browser bridge failures, runtime recovery, and session reauthentication. The dashboard deliberately does not display upstream page text, cookies, or raw browser errors. When an upstream response includes a retry delay, that delay is used; otherwise `chat_rate_limit_cooldown_seconds` is an estimate. Observed usage is not a remaining ChatGPT quota value. `least_recently_used` is the default new-conversation policy. Set `account_selection_strategy="usage_balanced"` to first choose the account with fewer new-conversation reservations inside `account_selection_window_seconds`, then break equal counts by idle time and a random tie-breaker. This affects new conversations only: an existing `conversation_id` always stays with its owner account. The rolling reservation counters are process-local scheduling signals, not upstream quota measurements. Recent Activity is a bounded in-memory, credential-free diagnostic feed and is cleared when the runtime stops.
 
 The same loopback listener also exposes the OpenAI-compatible `/v1` endpoints. The control key is an administrator key. In the **API Client Keys** section, create a revocable client key for OpenCode or another local consumer without restarting the runtime. The raw `cwk_...` value is shown only when created or rotated; only its digest is persisted in `storage_dir/api_keys.json`. A default client key has `chat` scope, which permits only `/v1/models` and `/v1/chat/completions`; it cannot inspect accounts, submit verification, control login, or manage other keys. Client keys have an independent in-process concurrency limit. Keep `control_host` on loopback unless you place the service behind an authenticated local proxy.
+
+### ChatGPT Projects
+
+`ChatRequest(conversation_project="...")` can place a **new physical conversation** into a named ChatGPT Project. Project routing is disabled unless a caller supplies a name; existing conversations are never moved or reassigned. The runtime resolves the Project separately for each selected ChatGPT account and stores only the account-scoped Project ID mapping in `storage_dir/projects.json`.
+
+Projects are a ChatGPT web-product feature rather than a documented public API, so routing is deliberately best-effort: an unavailable page, an unknown Project, or an upstream change falls back to an ordinary root conversation and does not fail the chat. Set `project_auto_create=True` for an embedded runtime, or `CHATGPTWEB_PROJECT_AUTO_CREATE=true` for `ChatGPTWeb.core_server`, to create a missing named Project. Keep automatic creation off when you want the web UI to be the source of truth.
+
+Be intentional with project names. ChatGPT Projects can carry project-level memory, instructions, and files, so putting unrelated users or roles into one Project may influence later answers. A caller should normally use separate Projects for separate tenants, personas, or task classes.
 
 ### Local Console
 
@@ -264,7 +274,12 @@ from ChatGPTWeb import ChatRequest, ChatService, chatgpt
 runtime = chatgpt(sessions=sessions, plugin=True)
 service = ChatService(runtime)
 
-result = await service.send(ChatRequest(prompt="hello", model="auto"))
+result = await service.send(ChatRequest(
+    prompt="hello",
+    model="auto",
+    # Used only if this request creates a new physical conversation.
+    conversation_project="Support bot chats",
+))
 print(result.text)
 print(result.content.raw_markdown)
 print(result.content.plain_text)

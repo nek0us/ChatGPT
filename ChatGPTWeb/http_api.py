@@ -265,6 +265,10 @@ def _bot_chat_request_from_payload(
     if not isinstance(reference, str):
         raise web.HTTPBadRequest(text="bot reference must be a string")
     request.reference = reference
+    project = payload.get("conversation_project", "")
+    if not isinstance(project, str):
+        raise web.HTTPBadRequest(text="bot conversation_project must be a string")
+    request.conversation_project = project.strip()
     if request.operation is ConversationOperation.START_PERSONA:
         persona_name = request.prompt.strip()
         if not persona_name:
@@ -1409,6 +1413,12 @@ def create_http_app(
             max_attachment_count=max_attachment_count,
         )
         bot_responses = request.path == "/v1/bot/responses"
+        conversation_project = ""
+        if bot_responses:
+            project_value = payload.get("conversation_project", "")
+            if not isinstance(project_value, str):
+                raise web.HTTPBadRequest(text="bot conversation_project must be a string")
+            conversation_project = project_value.strip()
         discard_response_cursors()
         client_id = client_identity(request)
         previous_response_id = payload.get("previous_response_id") or ""
@@ -1466,6 +1476,7 @@ def create_http_app(
                 client_id=client_id,
                 request_priority=20 if bot_responses else 120,
                 enforce_client_ownership=True,
+                conversation_project=conversation_project,
             ).turn(
                 task,
                 tools,
@@ -1511,6 +1522,7 @@ def create_http_app(
                 client_id=client_id,
                 request_priority=10 if bot_responses else 100,
                 enforce_client_ownership=True,
+                conversation_project=conversation_project,
             )
             result = await service.send(chat_request)
             response_object = _response_payload(

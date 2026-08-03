@@ -122,6 +122,7 @@ class chatgpt:
                  output_file_max_size: int = 20 * 1024 * 1024,
                  output_file_max_total_size: int = 40 * 1024 * 1024,
                  output_file_max_count: int = 8,
+                 project_auto_create: bool = False,
                
                  ) -> None:
         """
@@ -221,6 +222,7 @@ class chatgpt:
         self.output_file_max_size = output_file_max_size
         self.output_file_max_total_size = output_file_max_total_size
         self.output_file_max_count = output_file_max_count
+        self.project_auto_create = bool(project_auto_create)
         if control_port is not None and not 0 <= control_port <= 65535:
             raise ValueError("control_port must be between 0 and 65535")
         self.control_host = control_host
@@ -2173,6 +2175,7 @@ class chatgpt:
                 gpt_model=msg_data.gpt_model,
                 files=msg_data.upload_file,
                 search=msg_data.web_search,
+                conversation_project_id=msg_data.conversation_project_id,
             )
         return Payload.old_payload(
             msg_data.msg_send,
@@ -2182,6 +2185,111 @@ class chatgpt:
             files=msg_data.upload_file,
             search=msg_data.web_search,
         )
+
+    async def _resolve_conversation_project(self, msg_data: MsgData, session: Session) -> None:
+        """Resolve a configured ChatGPT Project without making it a chat dependency.
+
+        ChatGPT Projects are a web product rather than a documented public API.
+        Keep the undocumented bridge narrowly scoped to *new* conversations and
+        let every lookup or creation failure fall back to the normal root list.
+        """
+        if msg_data.conversation_id or msg_data.conversation_project_id:
+            return
+        name = msg_data.conversation_project.strip()
+        if not name:
+            return
+        if len(name) > 120:
+            self.logger.warning("%s ignored an overlong ChatGPT Project name", session.email)
+            return
+        page = session.page
+        if not page or page.is_closed() or not session.access_token:
+            self.logger.warning("%s cannot resolve ChatGPT Project %r: page is unavailable", session.email, name)
+            return
+
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(
+                    """async ({ accessToken, deviceId, name, autoCreate }) => {
+                        const headers = {
+                            "Authorization": `Bearer ${accessToken}`,
+                            "Content-Type": "application/json",
+                        };
+                        if (deviceId) headers["oai-device-id"] = deviceId;
+                        const request = async (url, options = {}) => {
+                            const response = await fetch(url, {
+                                credentials: "include",
+                                ...options,
+                                headers: { ...headers, ...(options.headers || {}) },
+                            });
+                            const text = await response.text();
+                            let body = null;
+                            try { body = text ? JSON.parse(text) : null; } catch (_) {}
+                            return { ok: response.ok, status: response.status, body, text: text.slice(0, 240) };
+                        };
+                        const findProject = (body) => {
+                            const items = Array.isArray(body?.items) ? body.items : [];
+                            for (const item of items) {
+                                const gizmo = item?.gizmo?.gizmo || item?.gizmo || item;
+                                const displayName = gizmo?.display?.name || gizmo?.name;
+                                if (displayName === name && typeof gizmo?.id === "string" && gizmo.id) return gizmo.id;
+                            }
+                            return "";
+                        };
+                        const listed = await request("/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&owned_only=true", { method: "GET" });
+                        let projectId = listed.ok ? findProject(listed.body) : "";
+                        if (projectId || !autoCreate) {
+                            return { projectId, created: false, status: listed.status, detail: listed.ok ? "" : listed.text };
+                        }
+                        const created = await request("/backend-api/gizmos/snorlax/upsert", {
+                            method: "POST",
+                            body: JSON.stringify({
+                                instructions: "",
+                                display: { name, description: "", prompt_starters: [] },
+                                tools: [],
+                                files: [],
+                                training_disabled: false,
+                                sharing: [{ type: "private", capabilities: {
+                                    can_read: true, can_view_config: false, can_write: false,
+                                    can_delete: false, can_export: false, can_share: false,
+                                }}],
+                            }),
+                        });
+                        const createdGizmo = created.body?.gizmo?.gizmo || created.body?.gizmo || created.body;
+                        projectId = typeof createdGizmo?.id === "string" ? createdGizmo.id : "";
+                        if (!projectId && created.ok) {
+                            const refreshed = await request("/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&owned_only=true", { method: "GET" });
+                            projectId = refreshed.ok ? findProject(refreshed.body) : "";
+                        }
+                        return { projectId, created: Boolean(projectId && created.ok), status: created.status, detail: created.ok ? "" : created.text };
+                    }""",
+                    {
+                        "accessToken": session.access_token,
+                        "deviceId": session.device_id,
+                        "name": name,
+                        "autoCreate": self.project_auto_create,
+                    },
+                ),
+                timeout=20,
+            )
+        except Exception as error:
+            self.logger.warning("%s ChatGPT Project %r lookup failed; using root: %s", session.email, name, error)
+            self._record_activity(session.email, "project_routing_failed", f"{name}: lookup failed", severity="warning")
+            return
+
+        if not isinstance(result, dict) or not isinstance(result.get("projectId"), str) or not result["projectId"]:
+            detail = str(result.get("detail") or result.get("status") or "not found") if isinstance(result, dict) else "invalid response"
+            self.logger.warning("%s ChatGPT Project %r unavailable; using root: %s", session.email, name, detail)
+            self._record_activity(session.email, "project_routing_failed", f"{name}: {detail}", severity="warning")
+            return
+
+        project_id = result["projectId"]
+        self.storage.bind_project(session.email, name, project_id)
+        msg_data.conversation_project_id = project_id
+        msg_data.response_metadata["conversation_project"] = name
+        msg_data.response_metadata["conversation_project_id"] = project_id
+        activity = "project_created" if result.get("created") else "project_routed"
+        self._record_activity(session.email, activity, name)
+        self.logger.info("%s routed new conversation to ChatGPT Project %r", session.email, name)
 
     def _local_model_catalog(self) -> Dict[str, typing.Any]:
         return {
@@ -2869,6 +2977,7 @@ class chatgpt:
         if not page:
             raise RuntimeError("session page is not ready")
 
+        await self._resolve_conversation_project(msg_data, session)
         if msg_data.upload_file:
             self.logger.debug(f"{session.email} browser fetch path will upload file first")
             await upload_file(msg_data=msg_data, session=session, logger=self.logger)
@@ -2948,6 +3057,7 @@ class chatgpt:
         if not page:
             raise RuntimeError("session page is not ready")
 
+        await self._resolve_conversation_project(msg_data, session)
         if msg_data.upload_file:
             self.logger.debug(f"{session.email} browser stream path will upload file first")
             await upload_file(msg_data=msg_data, session=session, logger=self.logger)
@@ -4257,9 +4367,10 @@ class chatgpt:
                     if msg_data.upload_file:
                         self.logger.debug(f"{session.email} upload file")
                         await upload_file(msg_data=msg_data,session=session,logger=self.logger)
+                    await self._resolve_conversation_project(msg_data, session)
                     if not msg_data.conversation_id:
                         self.logger.debug(f"{session.email} msg is new conversation")
-                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
+                        data = Payload.new_payload(msg_data.msg_send,gpt_model=msg_data.gpt_model,files=msg_data.upload_file,conversation_project_id=msg_data.conversation_project_id)
                     else:
                         self.logger.debug(f"{session.email} is old conversation,id: {msg_data.conversation_id}")
                         data = Payload.old_payload(msg_data.msg_send,msg_data.conversation_id,msg_data.p_msg_id,gpt_model=msg_data.gpt_model,files=msg_data.upload_file)
