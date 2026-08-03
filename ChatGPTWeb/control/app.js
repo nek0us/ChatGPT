@@ -1,12 +1,14 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.07.31.4";
+  const UI_VERSION = "2026.08.03.1";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
   const REFRESH_INTERVAL_MS = 5000;
   const REQUEST_TIMEOUT_MS = 15000;
+  const RECONNECT_INITIAL_DELAY_MS = 1000;
+  const RECONNECT_MAX_DELAY_MS = 30000;
 
   const translations = {
     zh: {
@@ -18,6 +20,7 @@
       logs: "运行日志",
       notConnected: "尚未连接",
       connecting: "正在连接",
+      reconnecting: "核心暂不可达，正在重连",
       refreshing: "正在刷新",
       connected: "连接正常",
       connectionFailed: "连接失败",
@@ -167,6 +170,7 @@
       logs: "Runtime logs",
       notConnected: "Not connected",
       connecting: "Connecting",
+      reconnecting: "Core is unavailable, reconnecting",
       refreshing: "Refreshing",
       connected: "Connected",
       connectionFailed: "Connection failed",
@@ -335,6 +339,8 @@
     submitting: new Set(),
     lastUpdated: null,
     accountFilter: "",
+    reconnectTimer: null,
+    reconnectAttempts: 0,
   };
 
   const elements = {};
@@ -456,6 +462,33 @@
 
   function currentKey() {
     return elements.adminKey.value.trim();
+  }
+
+  function clearReconnectTimer() {
+    if (state.reconnectTimer !== null) {
+      window.clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+  }
+
+  function shouldReconnect(error) {
+    if (!currentKey()) return false;
+    const status = Number(error?.status || 0);
+    return status === 0 || status === 408 || status === 429 || status >= 500;
+  }
+
+  function scheduleReconnect(error) {
+    if (!shouldReconnect(error) || state.reconnectTimer !== null) return;
+    const delay = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_INITIAL_DELAY_MS * (2 ** state.reconnectAttempts),
+    );
+    state.reconnectAttempts += 1;
+    setConnection("loading", "reconnecting");
+    state.reconnectTimer = window.setTimeout(() => {
+      state.reconnectTimer = null;
+      refreshAll(true);
+    }, delay);
   }
 
   async function api(path, options = {}) {
@@ -1091,6 +1124,8 @@
     try {
       state.status = normalizeStatus(await api("/v1/account/status"));
       state.connected = true;
+      clearReconnectTimer();
+      state.reconnectAttempts = 0;
       sessionStorage.setItem(STORAGE_KEY, currentKey());
       setConnection("ready", "connected");
       const optional = await Promise.allSettled([
@@ -1112,7 +1147,13 @@
       state.connected = false;
       setConnection("error", "connectionFailed");
       setNotice(error.message, "error");
-      if (error.status === 401) sessionStorage.removeItem(STORAGE_KEY);
+      if (error.status === 401 || error.status === 403) {
+        clearReconnectTimer();
+        state.reconnectAttempts = 0;
+        if (error.status === 401) sessionStorage.removeItem(STORAGE_KEY);
+      } else {
+        scheduleReconnect(error);
+      }
     } finally {
       state.refreshing = false;
       elements.refresh.disabled = false;
@@ -1235,6 +1276,8 @@
         setConnection("idle", "notConnected");
         state.connected = false;
       }
+      clearReconnectTimer();
+      state.reconnectAttempts = 0;
     });
     elements.adminKey.addEventListener("keydown", (event) => {
       if (event.key === "Escape") elements.adminKey.blur();
@@ -1245,6 +1288,8 @@
       elements.toggleKey.textContent = t(visible ? "show" : "hide");
     });
     elements.disconnect.addEventListener("click", () => {
+      clearReconnectTimer();
+      state.reconnectAttempts = 0;
       sessionStorage.removeItem(STORAGE_KEY);
       elements.adminKey.value = "";
       resetData();
@@ -1260,6 +1305,12 @@
     elements.refreshLogs.addEventListener("click", refreshLogs);
     elements.logLines.addEventListener("change", refreshLogs);
     window.addEventListener("hashchange", () => activateView(location.hash.slice(1), false));
+    window.addEventListener("online", () => {
+      if (!state.connected && currentKey()) {
+        clearReconnectTimer();
+        refreshAll(true);
+      }
+    });
   }
 
   function showFatal(error) {
@@ -1277,7 +1328,12 @@
     activateView(state.view, false);
     refreshAll(true);
     window.setInterval(() => {
-      if (state.connected && document.visibilityState === "visible") refreshAll(false);
+      if (document.visibilityState !== "visible") return;
+      if (state.connected) {
+        refreshAll(false);
+      } else if (currentKey() && state.reconnectTimer === null) {
+        refreshAll(false);
+      }
     }, REFRESH_INTERVAL_MS);
   }
 

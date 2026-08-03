@@ -1251,6 +1251,8 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/control/app.js?v=", body)
         self.assertIn("chatgptweb-control-key-v2", javascript)
         self.assertNotIn("chatgptweb-control-key'", javascript)
+        self.assertIn("scheduleReconnect", javascript)
+        self.assertIn("RECONNECT_INITIAL_DELAY_MS", javascript)
         self.assertNotIn("test-key", body)
         self.assertEqual(protected.status, 401)
         self.assertEqual(authorized.status, 200)
