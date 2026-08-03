@@ -495,6 +495,31 @@ class MsgData(BaseModel):
         description="internal monotonic timestamp used for runtime diagnostics",
         exclude=True,
     )
+    request_queued_at: float = Field(
+        0,
+        description="internal monotonic timestamp captured before shared request admission",
+        exclude=True,
+    )
+    request_admission_ms: int = Field(
+        0,
+        description="internal scheduler and session-selection duration",
+        exclude=True,
+    )
+    request_bridge_preflight_ms: int = Field(
+        0,
+        description="internal browser bridge readiness-check duration",
+        exclude=True,
+    )
+    request_bridge_rebuild_count: int = Field(
+        0,
+        description="internal count of proactive browser bridge rebuilds",
+        exclude=True,
+    )
+    request_first_content_at: float = Field(
+        0,
+        description="internal monotonic timestamp of the first upstream content event",
+        exclude=True,
+    )
     request_upload_count: int = Field(
         0,
         description="internal attachment count retained after upload buffers are released",

@@ -162,6 +162,16 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         load_page.assert_not_awaited()
 
+    async def test_keep_alive_does_not_navigate_during_an_active_chat(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        session = Session(email="busy@example.com", status=Status.Working.value)
+
+        with patch("ChatGPTWeb.ChatGPTWeb.retry_keep_alive", AsyncMock()) as refresh:
+            await runtime.__keep_alive__(session)
+
+        refresh.assert_not_awaited()
+
     async def test_keep_alive_yields_when_controlled_login_starts_during_delay(self):
         runtime = chatgpt.__new__(chatgpt)
         runtime.logger = _Logger()
@@ -251,7 +261,9 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         runtime.logger = _Logger()
         session = Session(email="refresh@example.com", status=Status.Ready.value, login_state=True)
         runtime._prepare_chat_session = AsyncMock(return_value=session)
+        runtime._stream_bridge_is_ready = AsyncMock(return_value=True)
         runtime._recover_unready_stream_bridge = AsyncMock(return_value=True)
+        runtime._record_activity = MagicMock()
         runtime._record_usage = lambda *_args: None
         attempts = []
 
@@ -273,6 +285,37 @@ class StreamAuthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, [1, 2])
         runtime._recover_unready_stream_bridge.assert_awaited_once_with(session)
         self.assertEqual(data.error_list, [])
+
+    async def test_preflight_warms_a_stale_bridge_before_the_transport(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._record_activity = MagicMock()
+        runtime._stream_bridge_is_ready = AsyncMock(return_value=False)
+        runtime._recover_unready_stream_bridge = AsyncMock(return_value=True)
+        session = Session(email="refresh@example.com", status=Status.Ready.value)
+        data = MsgData(msg_send="hello")
+
+        await runtime._preflight_stream_bridge(session, data)
+
+        runtime._recover_unready_stream_bridge.assert_awaited_once_with(session)
+        runtime._record_activity.assert_called_once()
+        self.assertEqual(data.request_bridge_rebuild_count, 1)
+        self.assertGreaterEqual(data.request_bridge_preflight_ms, 0)
+
+    async def test_preflight_keeps_a_ready_bridge_untouched(self):
+        runtime = chatgpt.__new__(chatgpt)
+        runtime.logger = _Logger()
+        runtime._record_activity = MagicMock()
+        runtime._stream_bridge_is_ready = AsyncMock(return_value=True)
+        runtime._recover_unready_stream_bridge = AsyncMock()
+        session = Session(email="refresh@example.com", status=Status.Ready.value)
+        data = MsgData(msg_send="hello")
+
+        await runtime._preflight_stream_bridge(session, data)
+
+        runtime._recover_unready_stream_bridge.assert_not_awaited()
+        runtime._record_activity.assert_not_called()
+        self.assertEqual(data.request_bridge_rebuild_count, 0)
 
     async def test_unrecoverable_expired_session_schedules_login_and_exposes_a_typed_error(self):
         runtime = chatgpt.__new__(chatgpt)

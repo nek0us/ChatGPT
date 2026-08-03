@@ -731,6 +731,12 @@ class chatgpt:
             # drawer midway through the first attempt.
             self.logger.debug(f"{session.email} keep-alive skipped while controlled login is in progress")
             return
+        if session.status == Status.Working.value:
+            # The stream bridge lives on the same Playwright page as the
+            # request. A concurrent keep-alive navigation can invalidate its
+            # Sentinel providers midway through a chat turn.
+            self.logger.debug(f"{session.email} keep-alive skipped while a chat request is active")
+            return
         if session.is_login_disabled():
             self.logger.debug(
                 f"{session.email} keep-alive skipped, status:{session.status}, "
@@ -759,7 +765,10 @@ class chatgpt:
         if controlled_login and not controlled_login.done():
             self.logger.debug(f"{session.email} keep-alive yielded to controlled login after delay")
             return
-        if session.status == Status.Stop.value or session.is_login_disabled():
+        if (
+            session.status in (Status.Stop.value, Status.Working.value)
+            or session.is_login_disabled()
+        ):
             self.logger.debug(
                 f"{session.email} keep-alive skipped after delay, status:{session.status}, "
                 f"failure:{session.login_failure_kind}"
@@ -1020,6 +1029,10 @@ class chatgpt:
             max(0, int((time.monotonic() - msg_data.request_started_at) * 1000))
             if msg_data.request_started_at else 0
         )
+        first_content_ms = (
+            max(0, int((msg_data.request_first_content_at - msg_data.request_started_at) * 1000))
+            if msg_data.request_first_content_at and msg_data.request_started_at else 0
+        )
         self._record_activity(
             session.email,
             "chat_completed",
@@ -1030,9 +1043,20 @@ class chatgpt:
             details={
                 "model": model,
                 "duration_ms": elapsed_ms,
+                "admission_ms": msg_data.request_admission_ms,
+                "bridge_preflight_ms": msg_data.request_bridge_preflight_ms,
+                "bridge_rebuilds": msg_data.request_bridge_rebuild_count,
+                "first_content_ms": first_content_ms,
                 "uploads": msg_data.request_upload_count,
                 "generated_images": self._generated_image_count(msg_data),
             },
+        )
+        self.logger.info(
+            f"chat timing account={session.email} total={elapsed_ms}ms "
+            f"admission={msg_data.request_admission_ms}ms "
+            f"bridge_preflight={msg_data.request_bridge_preflight_ms}ms "
+            f"first_content={first_content_ms}ms "
+            f"bridge_rebuilds={msg_data.request_bridge_rebuild_count}"
         )
 
     @staticmethod
@@ -1974,6 +1998,61 @@ class chatgpt:
             self.logger.warning(f"{session.email} stream bridge warm-up failed: {error}")
             return False
         return True
+
+    async def _stream_bridge_is_ready(self, session: Session) -> bool:
+        """Check injected stream helpers without making an upstream request."""
+        page = session.page
+        if not page or page.is_closed():
+            return False
+        try:
+            return bool(
+                await page.evaluate(
+                    """
+                    () => {
+                        const chat = window._chatp;
+                        const providers = [
+                            window._chatp_old,
+                            window._proof,
+                            window._proof && window._proof.Z,
+                        ];
+                        return typeof chat === "function" && providers.some(
+                            (provider) => provider && typeof provider.getEnforcementToken === "function",
+                        );
+                    }
+                    """
+                )
+            )
+        except Exception as error:
+            self.logger.debug(f"{session.email} stream bridge readiness check failed: {error}")
+            return False
+
+    async def _preflight_stream_bridge(self, session: Session, msg_data: MsgData) -> None:
+        """Warm a stale bridge before a user request reaches the stream transport."""
+        started_at = time.monotonic()
+        if await self._stream_bridge_is_ready(session):
+            msg_data.request_bridge_preflight_ms = max(
+                0, int((time.monotonic() - started_at) * 1000)
+            )
+            return
+
+        warmed = await self._recover_unready_stream_bridge(session)
+        msg_data.request_bridge_preflight_ms = max(
+            0, int((time.monotonic() - started_at) * 1000)
+        )
+        if not warmed:
+            return
+
+        msg_data.request_bridge_rebuild_count += 1
+        self._record_activity(
+            session.email,
+            "stream_bridge_warmed",
+            "proactively rebuilt the browser stream bridge",
+            details={"duration_ms": msg_data.request_bridge_preflight_ms},
+        )
+        self.logger.info(
+            f"{session.email} proactively warmed stream bridge in "
+            f"{msg_data.request_bridge_preflight_ms}ms"
+        )
 
     async def _probe_stream_authorization(self, session: Session, *, force: bool = False) -> bool:
         """Check the same Sentinel gate used by streams without sending a chat request.
@@ -4995,6 +5074,8 @@ class chatgpt:
 
     async def continue_chat(self, msg_data: MsgData) -> MsgData:
         """Queue a buffered request before entering the browser/account runtime."""
+        if not msg_data.request_queued_at:
+            msg_data.request_queued_at = time.monotonic()
         lease = await self._acquire_request_lease(msg_data)
         if not lease:
             return msg_data
@@ -5020,6 +5101,10 @@ class chatgpt:
             return msg_data
 
         msg_data.request_started_at = time.monotonic()
+        msg_data.request_admission_ms = max(
+            0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
+        ) if msg_data.request_queued_at else 0
+        await self._preflight_stream_bridge(session, msg_data)
         msg_data.request_upload_count = len(msg_data.upload_file)
         msg_data.request_image_upload_count = sum(
             1
@@ -5227,6 +5312,8 @@ class chatgpt:
 
     async def continue_chat_stream(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
         """Queue a streaming request and retain its lease until the stream closes."""
+        if not msg_data.request_queued_at:
+            msg_data.request_queued_at = time.monotonic()
         lease = await self._acquire_request_lease(msg_data)
         if not lease:
             yield ChatStreamEvent(
@@ -5270,6 +5357,10 @@ class chatgpt:
         context_num = session.email
         msg_data.from_email = session.email
         msg_data.request_started_at = time.monotonic()
+        msg_data.request_admission_ms = max(
+            0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
+        ) if msg_data.request_queued_at else 0
+        await self._preflight_stream_bridge(session, msg_data)
         msg_data.request_upload_count = len(msg_data.upload_file)
         msg_data.request_image_upload_count = sum(
             1
@@ -5335,6 +5426,8 @@ class chatgpt:
                             continue
                         if event.type in {"delta", "image", "image_pending", "final"}:
                             emitted_content = True
+                            if not msg_data.request_first_content_at:
+                                msg_data.request_first_content_at = time.monotonic()
                         yield event
                     break
                 except Exception as error:
