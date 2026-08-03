@@ -4166,11 +4166,22 @@ class chatgpt:
         """send message body function
         发送消息处理函数"""
         max_attempts = max(1, retry)
+        initial_error_count = len(msg_data.error_list)
+        initial_error_info = msg_data.error_info
         for attempt in range(1, max_attempts + 1):
             if attempt > 1:
                 self.logger.debug(f"resend attempt {attempt}/{max_attempts}")
             try:
-                return await self._send_msg_once(msg_data, session, send_status=send_status, attempt=attempt)
+                result = await self._send_msg_once(
+                    msg_data, session, send_status=send_status, attempt=attempt
+                )
+                if result.status:
+                    # Browser routes may record a transient provider/download error
+                    # before a later fallback or retry returns a complete answer.
+                    # Those errors describe a discarded attempt, not this result.
+                    del result.error_list[initial_error_count:]
+                    result.error_info = initial_error_info
+                return result
             except Exception as e:
                 retryable = self._is_retryable_send_error(e, session)
                 if not retryable:

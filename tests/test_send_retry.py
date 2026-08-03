@@ -39,7 +39,8 @@ class SendRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, [1, 2])
         self.assertTrue(result.status)
         self.assertEqual(result.msg_recv, "recovered")
-        self.assertFalse(any(error["kind"] == "send_retry_max" for error in result.error_list))
+        self.assertEqual(result.error_list, [])
+        self.assertEqual(result.error_info, "")
 
     async def test_retryable_failure_records_limit_only_after_last_attempt(self):
         attempts = []
