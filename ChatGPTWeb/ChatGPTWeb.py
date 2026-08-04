@@ -1042,6 +1042,7 @@ class chatgpt:
             ),
             details={
                 "model": model,
+                **self._request_activity_details(msg_data),
                 "duration_ms": elapsed_ms,
                 "admission_ms": msg_data.request_admission_ms,
                 "bridge_preflight_ms": msg_data.request_bridge_preflight_ms,
@@ -1058,6 +1059,23 @@ class chatgpt:
             f"first_content={first_content_ms}ms "
             f"bridge_rebuilds={msg_data.request_bridge_rebuild_count}"
         )
+
+    def _request_activity_details(self, msg_data: MsgData) -> Dict[str, object]:
+        """Attach a safe, human-readable caller label to request diagnostics."""
+        client_id = str(msg_data.client_id or "")
+        if client_id == "nonebot-plugin-gpt":
+            source = "NoneBot plugin"
+        elif client_id == "api:admin":
+            source = "API administrator"
+        elif client_id.startswith("api:"):
+            key_id = client_id.removeprefix("api:")
+            label = self.api_key_store.label_for(key_id) if getattr(self, "api_key_store", None) else ""
+            source = f"API key: {label}" if label else "API key"
+        elif client_id:
+            source = client_id[:80]
+        else:
+            source = "Local runtime"
+        return {"source": source}
 
     @staticmethod
     def _generated_image_count(msg_data: MsgData) -> int:
@@ -5107,7 +5125,10 @@ class chatgpt:
                 "chat_failed",
                 f"request rejected: {error.get('kind') or 'session_unavailable'}",
                 severity="error",
-                details={"error_kind": str(error.get("kind") or "session_unavailable")},
+                details={
+                    "error_kind": str(error.get("kind") or "session_unavailable"),
+                    **self._request_activity_details(msg_data),
+                },
             )
             return msg_data
 
@@ -5141,6 +5162,7 @@ class chatgpt:
             details={
                 "uploads": msg_data.request_upload_count,
                 "new_conversation": not bool(msg_data.conversation_id),
+                **self._request_activity_details(msg_data),
             },
         )
         if msg_data.request_upload_count:
@@ -5148,13 +5170,14 @@ class chatgpt:
                 session.email,
                 "attachment_upload_started",
                 f"{msg_data.request_upload_count} attachment(s)",
-                details={"count": msg_data.request_upload_count},
+                details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
             )
         if IMAGE_GENERATION in msg_data.required_capabilities:
             self._record_activity(
                 session.email,
                 "image_generation_started",
                 "image generation requested",
+                details=self._request_activity_details(msg_data),
             )
         try:
             msg_data = await asyncio.wait_for(self.send_msg(msg_data, session), timeout=180)
@@ -5219,6 +5242,7 @@ class chatgpt:
                     details={
                         "count": msg_data.request_upload_count,
                         "duration_ms": duration_ms,
+                        **self._request_activity_details(msg_data),
                     },
                 )
             if IMAGE_GENERATION in msg_data.required_capabilities:
@@ -5229,6 +5253,7 @@ class chatgpt:
                     details={
                         "count": self._generated_image_count(msg_data),
                         "duration_ms": duration_ms,
+                        **self._request_activity_details(msg_data),
                     },
                 )
         except TimeoutError:
@@ -5250,6 +5275,7 @@ class chatgpt:
                         0,
                         int((time.monotonic() - msg_data.request_started_at) * 1000),
                     ),
+                    **self._request_activity_details(msg_data),
                 },
             )
             if msg_data.request_upload_count:
@@ -5258,7 +5284,7 @@ class chatgpt:
                     "attachment_upload_failed",
                     "attachment request failed with its chat turn",
                     severity="error",
-                    details={"count": msg_data.request_upload_count},
+                    details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
                 )
             if IMAGE_GENERATION in msg_data.required_capabilities:
                 self._record_activity(
@@ -5266,6 +5292,7 @@ class chatgpt:
                     "image_generation_failed",
                     "image generation timed out",
                     severity="error",
+                    details=self._request_activity_details(msg_data),
                 )
         except Exception as e:
             if not msg_data.error_info:
@@ -5292,6 +5319,7 @@ class chatgpt:
                         0,
                         int((time.monotonic() - msg_data.request_started_at) * 1000),
                     ),
+                    **self._request_activity_details(msg_data),
                 },
             )
             if msg_data.request_upload_count:
@@ -5300,7 +5328,7 @@ class chatgpt:
                     "attachment_upload_failed",
                     "attachment request failed with its chat turn",
                     severity="error",
-                    details={"count": msg_data.request_upload_count},
+                    details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
                 )
             if IMAGE_GENERATION in msg_data.required_capabilities:
                 self._record_activity(
@@ -5308,6 +5336,7 @@ class chatgpt:
                     "image_generation_failed",
                     "upstream image generation failed",
                     severity="error",
+                    details=self._request_activity_details(msg_data),
                 )
         else:
             if not msg_data.error_info or msg_data.status:
@@ -5349,7 +5378,10 @@ class chatgpt:
                 "chat_failed",
                 f"request rejected: {error.get('kind') or 'session_unavailable'}",
                 severity="error",
-                details={"error_kind": str(error.get("kind") or "session_unavailable")},
+                details={
+                    "error_kind": str(error.get("kind") or "session_unavailable"),
+                    **self._request_activity_details(msg_data),
+                },
             )
             yield ChatStreamEvent(
                 type="error",
@@ -5397,6 +5429,7 @@ class chatgpt:
             details={
                 "uploads": msg_data.request_upload_count,
                 "new_conversation": not bool(msg_data.conversation_id),
+                **self._request_activity_details(msg_data),
             },
         )
         if msg_data.request_upload_count:
@@ -5404,13 +5437,14 @@ class chatgpt:
                 session.email,
                 "attachment_upload_started",
                 f"{msg_data.request_upload_count} attachment(s)",
-                details={"count": msg_data.request_upload_count},
+                details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
             )
         if IMAGE_GENERATION in msg_data.required_capabilities:
             self._record_activity(
                 session.email,
                 "image_generation_started",
                 "image generation requested",
+                details=self._request_activity_details(msg_data),
             )
         self.logger.debug(f"session {session.email} begin stream work")
         stream_attempt = 1
@@ -5524,7 +5558,7 @@ class chatgpt:
                         session.email,
                         "attachment_upload_completed",
                         f"{msg_data.request_upload_count} attachment(s) delivered",
-                        details={"count": msg_data.request_upload_count},
+                        details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
                     )
                 if IMAGE_GENERATION in msg_data.required_capabilities:
                     generated_images = self._generated_image_count(msg_data)
@@ -5533,7 +5567,7 @@ class chatgpt:
                             session.email,
                             "image_generation_completed",
                             f"{generated_images} image(s) returned",
-                            details={"count": generated_images},
+                            details={"count": generated_images, **self._request_activity_details(msg_data)},
                         )
                     else:
                         self._record_activity(
@@ -5541,6 +5575,7 @@ class chatgpt:
                             "image_generation_failed",
                             "upstream completed without a generated image",
                             severity="error",
+                            details=self._request_activity_details(msg_data),
                         )
         except Exception as e:
             if not msg_data.error_info:
@@ -5561,6 +5596,7 @@ class chatgpt:
                         max(0, int((time.monotonic() - msg_data.request_started_at) * 1000))
                         if msg_data.request_started_at else 0
                     ),
+                    **self._request_activity_details(msg_data),
                 },
             )
             if msg_data.request_upload_count:
@@ -5569,7 +5605,7 @@ class chatgpt:
                     "attachment_upload_failed",
                     "attachment request failed with its chat turn",
                     severity="error",
-                    details={"count": msg_data.request_upload_count},
+                    details={"count": msg_data.request_upload_count, **self._request_activity_details(msg_data)},
                 )
             if IMAGE_GENERATION in msg_data.required_capabilities:
                 self._record_activity(
@@ -5577,6 +5613,7 @@ class chatgpt:
                     "image_generation_failed",
                     "upstream image generation failed",
                     severity="error",
+                    details=self._request_activity_details(msg_data),
                 )
             structured_error = (
                 msg_data.error_list[-1]

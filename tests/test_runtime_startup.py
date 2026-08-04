@@ -11,6 +11,7 @@ from aiohttp import ClientSession
 
 from ChatGPTWeb.ChatGPTWeb import chatgpt
 from ChatGPTWeb.api import flush_page
+from ChatGPTWeb.api_keys import ApiKeyStore
 from ChatGPTWeb.config import MsgData, Session, Status
 from ChatGPTWeb.storage import RuntimeStorage
 from ChatGPTWeb.verification import VerificationBroker, VerificationCancelledError
@@ -443,6 +444,16 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(activity["events"]), 200)
         self.assertEqual(activity["events"][0]["message"], "event 204")
+
+    async def test_request_activity_uses_dynamic_key_label_without_secret(self):
+        runtime = self._runtime()
+        runtime.api_key_store = ApiKeyStore(runtime.storage)
+        metadata, secret = runtime.api_key_store.create(label="OpenCode workstation")
+
+        details = runtime._request_activity_details(MsgData(client_id=f"api:{metadata['id']}"))
+
+        self.assertEqual(details["source"], "API key: OpenCode workstation")
+        self.assertNotIn(secret, str(details))
 
     async def test_billing_plan_refresh_updates_only_explicit_plan_evidence(self):
         runtime = self._runtime()

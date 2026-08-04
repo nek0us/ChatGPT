@@ -116,6 +116,15 @@ class ApiKeyStore:
                 continue
         return records
 
+    def label_for(self, key_id: str) -> str:
+        """Return an administrator-provided label without exposing any secret."""
+        for record in self._load()["keys"]:
+            if not isinstance(record, dict) or record.get("id") != key_id:
+                continue
+            label = record.get("label")
+            return label if isinstance(label, str) else ""
+        return ""
+
     def authenticate(self, secret: str) -> dict[str, Any] | None:
         if not secret:
             return None

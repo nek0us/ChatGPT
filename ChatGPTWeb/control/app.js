@@ -152,6 +152,7 @@
       activityImageStarted: "已请求上游生成图片",
       activityImageCompleted: "已取得 {count} 张生成图片",
       activityImageFailed: "上游生图结束，但没有取得可回传图片",
+      activitySource: "来源：{source}",
       invalidKey: "控制台管理密钥无效",
       forbidden: "当前密钥没有此操作权限",
       requestTimeout: "请求超时，核心可能仍在启动或恢复",
@@ -302,6 +303,7 @@
       activityImageStarted: "Requested upstream image generation",
       activityImageCompleted: "Retrieved {count} generated image(s)",
       activityImageFailed: "Image generation ended without a retrievable image",
+      activitySource: "Source: {source}",
       invalidKey: "The console administrator key is invalid",
       forbidden: "This key cannot perform the requested operation",
       requestTimeout: "The request timed out while the core was starting or recovering",
@@ -885,7 +887,9 @@
       event.textContent = activityLabel(item.event);
       const detail = document.createElement("span");
       detail.className = "activity-detail";
-      detail.textContent = activityDescription(item);
+      const details = item.details && typeof item.details === "object" ? item.details : {};
+      const source = typeof details.source === "string" ? details.source : "";
+      detail.textContent = `${activityDescription(item)}${source ? ` · ${t("activitySource", { source })}` : ""}`;
       row.append(time, account, event, detail);
       elements.activityList.append(row);
     }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib.resources import files
 
 
-CONTROL_UI_VERSION = "2026.08.03.1"
+CONTROL_UI_VERSION = "2026.08.04.1"
 _ASSET_PACKAGE = "ChatGPTWeb.control"
 _ASSETS = {
     "index.html": "text/html; charset=utf-8",
