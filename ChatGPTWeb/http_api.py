@@ -1856,11 +1856,35 @@ def create_http_app(
         if not isinstance(previous_response_id, str):
             raise web.HTTPBadRequest(text="previous_response_id must be a string")
         function_output_call_id = _response_function_call_output_id(payload)
-        cursor = response_cursors.get(previous_response_id) if previous_response_id else None
-        if cursor is None and function_output_call_id:
+        previous_cursor = (
+            response_cursors.get(previous_response_id)
+            if previous_response_id
+            else None
+        )
+        session_cursor = (
+            response_session_cursors.get(session_key)
+            if session_key is not None
+            else None
+        )
+        if function_output_call_id:
+            # A function result belongs to its exact planner cursor. OpenCode
+            # may also send the previous visible response id, which can point
+            # at an ordinary presentation turn from the same session.
             cursor = response_call_cursors.get(function_output_call_id)
-        if cursor is None and session_key is not None:
-            cursor = response_session_cursors.get(session_key)
+            if cursor is None and (
+                previous_cursor is not None
+                and previous_cursor.tool_call_id == function_output_call_id
+            ):
+                cursor = previous_cursor
+            if cursor is None and (
+                session_cursor is not None
+                and session_cursor.tool_call_id == function_output_call_id
+            ):
+                cursor = session_cursor
+            if cursor is None:
+                raise web.HTTPNotFound(text="function call was not found or has expired")
+        else:
+            cursor = previous_cursor or session_cursor
         if previous_response_id and cursor is None:
             raise web.HTTPNotFound(text="previous response was not found or has expired")
         if cursor is not None and cursor.client_id != client_id:

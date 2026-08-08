@@ -70,6 +70,35 @@ def _enum_tools():
     )]
 
 
+def _file_locator_tools():
+    return [AgentTool(
+        "glob",
+        "Find files matching a glob pattern under the current host workspace.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    ), AgentTool(
+        "read",
+        "Read a local file selected by its exact host path.",
+        {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string"},
+                "offset": {"type": "integer"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["filePath"],
+            "additionalProperties": False,
+        },
+    )]
+
+
 class AgentDecisionTests(unittest.TestCase):
     def test_visual_task_protocol_forbids_product_native_tools(self):
         prompt = AgentService._initial_prompt("create a visual card", _tools())
@@ -246,7 +275,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         repair = backend.requests[-1]
         self.assertIn("A final answer is forbidden", repair.msg_send)
         self.assertIn("Current registered tools JSON", repair.msg_send)
-        self.assertIn("requires at least one registered tool call", repair.msg_send)
+        self.assertNotIn("I checked the file", repair.msg_send)
         self.assertEqual(repair.conversation_id, "agent-conversation")
         self.assertEqual(repair.p_msg_id, "message-3")
 
@@ -266,7 +295,102 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.decision.kind, "error")
         self.assertIn("JSON", result.decision.error)
+        self.assertNotIn("Please upload it", backend.requests[-1].msg_send)
         self.assertEqual(backend.requests[-1].p_msg_id, "message-3")
+
+    async def test_required_file_task_falls_back_to_a_registered_read_only_locator(self):
+        backend = _Backend([
+            "I cannot access files on your computer.",
+            "Please upload the local file first.",
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "解释一下当前用户下载文件夹的 requirements.txt 文件内容",
+            _file_locator_tools(),
+            allow_plain_final=True,
+            require_tool_call=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        self.assertEqual(result.decision.tool, "glob")
+        self.assertEqual(result.decision.arguments, {"pattern": "**/requirements.txt"})
+        self.assertEqual(len(backend.requests), 4)
+
+    async def test_required_write_task_never_uses_the_read_only_locator_fallback(self):
+        backend = _Backend([
+            "I cannot create that local file.",
+            "Please create it yourself.",
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "create requirements.txt in the current directory",
+            _file_locator_tools(),
+            allow_plain_final=True,
+            require_tool_call=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "error")
+
+    async def test_locator_result_advances_to_registered_read_after_model_refusal(self):
+        task = "Explain the requirements.txt file in the current user's Downloads folder"
+        backend = _Backend([
+            '{"type":"final","answer":"I found paths but cannot read local files."}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "",
+            _file_locator_tools(),
+            state=AgentState(
+                conversation_id="agent-conversation",
+                parent_message_id="message-4",
+                task=task,
+            ),
+            tool_result=AgentToolResult(
+                "glob",
+                "\n".join([
+                    "C:\\Users\\nekous\\Downloads\\antibot\\backend\\requirements.txt",
+                    "C:\\Users\\nekous\\Downloads\\test\\backend\\requirements.txt",
+                    "C:\\Users\\nekous\\Downloads\\requirements.txt",
+                ]),
+            ),
+            continue_existing=True,
+            allow_plain_final=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        self.assertEqual(result.decision.tool, "read")
+        self.assertEqual(
+            result.decision.arguments,
+            {"filePath": "C:\\Users\\nekous\\Downloads\\requirements.txt"},
+        )
+
+    async def test_locator_result_does_not_guess_between_ambiguous_paths(self):
+        task = "Explain the contents of requirements.txt"
+        backend = _Backend([
+            '{"type":"final","answer":"Several matching files were found."}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "",
+            _file_locator_tools(),
+            state=AgentState(
+                conversation_id="agent-conversation",
+                parent_message_id="message-4",
+                task=task,
+            ),
+            tool_result=AgentToolResult(
+                "glob",
+                "C:\\first\\requirements.txt\nC:\\second\\requirements.txt",
+            ),
+            continue_existing=True,
+            allow_plain_final=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "final")
 
     async def test_invalid_enum_is_repaired_with_the_allowed_values(self):
         backend = _Backend([

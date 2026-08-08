@@ -75,6 +75,17 @@ def _response_function_call(body: bytes) -> dict[str, object]:
     raise AssertionError("response did not contain a function call")
 
 
+def _response_id(body: bytes) -> str:
+    for part in [item + b"\n\n" for item in body.split(b"\n\n") if item]:
+        event, payload = _event_payload(part)
+        if event != "response.created" or not isinstance(payload, dict):
+            continue
+        response = payload.get("response")
+        if isinstance(response, dict) and isinstance(response.get("id"), str):
+            return str(response["id"])
+    raise AssertionError("response did not contain a response id")
+
+
 def _chat_deltas(body: bytes) -> str:
     output: list[str] = []
     for part in [item + b"\n\n" for item in body.split(b"\n\n") if item]:
@@ -466,6 +477,77 @@ class PlannerIsolatedAgentHTTPTests(unittest.IsolatedAsyncioTestCase):
         repair = self.backend.planner_requests[-1]
         self.assertIn("Current registered tools JSON", repair.msg_send)
         self.assertNotEqual(repair.p_msg_id, "planner-message-1")
+
+    async def test_opencode_can_switch_from_plain_dialogue_to_a_host_tool(self):
+        headers = {
+            **self.headers,
+            "User-Agent": "opencode/1.18.15 ai-sdk/provider-utils/4.0.38",
+            "X-Session-Id": "ses_plain_then_tool",
+        }
+        ordinary_response_ids: list[str] = []
+        for prompt in ("Explain the number 41", "Explain the number 42"):
+            response = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5-5-mini",
+                    "stream": True,
+                    "input": [{"role": "user", "content": prompt}],
+                    "tools": [self.tool],
+                },
+                headers=headers,
+            )
+            body = await response.read()
+            self.assertEqual(response.status, 200)
+            ordinary_response_ids.append(_response_id(body))
+
+        file_response = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-5-5-mini",
+                "stream": True,
+                "input": [{"role": "user", "content": "Read README.md"}],
+                "tools": [self.tool],
+            },
+            headers=headers,
+        )
+        body = await file_response.read()
+        function_call = _response_function_call(body)
+
+        self.assertEqual(file_response.status, 200)
+        self.assertEqual(function_call["name"], "workspace.read_text")
+        self.assertEqual(json.loads(str(function_call["arguments"])), {"path": "README.md"})
+        continuation = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-5-5-mini",
+                "stream": True,
+                # OpenCode can retain the latest visible response id while
+                # returning a function result for a newer planner response.
+                "previous_response_id": ordinary_response_ids[-1],
+                "input": [{
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": "README contents from the host",
+                }],
+                "tools": [self.tool],
+            },
+            headers=headers,
+        )
+        continuation_body = await continuation.read()
+        text, terminal = _response_deltas(continuation_body)
+
+        self.assertEqual(continuation.status, 200)
+        self.assertEqual(terminal, "response.completed")
+        self.assertEqual(text, LONG_ANSWER)
+        self.assertEqual(self.backend.planner_calls, 2)
+        self.assertEqual(self.backend.render_calls, 3)
+        self.assertIn("Agent task data follows.", self.backend.planner_requests[0].msg_send)
+        self.assertNotIn("Explain the number 41", self.backend.planner_requests[0].msg_send)
+        self.assertNotIn("Explain the number 42", self.backend.planner_requests[0].msg_send)
+        self.assertIn(
+            "The host has executed the previous tool call",
+            self.backend.planner_requests[-1].msg_send,
+        )
 
     async def test_opencode_title_accepts_developer_instruction_shape(self):
         response = await self.client.post(
