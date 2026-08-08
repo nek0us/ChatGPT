@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
 from ChatGPTWeb.verification import (
     VerificationBroker,
@@ -186,6 +187,7 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
             verification_broker=broker,
         )
         auth.login_page = page
+        auth._wait_for_openai_verification_result = AsyncMock(return_value="authenticated")
         task = asyncio.create_task(auth._submit_openai_verification_code())
         for _ in range(10):
             snapshot = await broker.snapshot()
@@ -196,9 +198,10 @@ class VerificationBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.fail("OpenAI auth did not request verification")
 
         self.assertTrue(await broker.submit(snapshot[0]["id"], "123456"))
-        await task
+        self.assertEqual(await task, "authenticated")
         self.assertEqual(page.otp.value, "123456")
         self.assertEqual(page.keyboard.presses, ["Enter"])
+        auth._wait_for_openai_verification_result.assert_awaited_once()
 
     async def test_auth_timeout_allows_the_full_verification_window(self):
         auth = AsyncAuth0(

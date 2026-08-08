@@ -276,6 +276,17 @@ class _DuplicatePasswordChoicePage(_OpenAIEmailVerificationPage):
         ])
 
 
+class _DuplicateVerificationInputPage(_OpenAIEmailVerificationPage):
+    def __init__(self):
+        super().__init__(code_count=0)
+        self.hidden_code = _VisibilityLocator(False)
+        self.visible_code = _VisibilityLocator(True)
+        self.code = _ChoiceCollection([
+            self.hidden_code,
+            self.visible_code,
+        ])
+
+
 class _SignedOutChatHomepage:
     url = "https://chatgpt.com/"
 
@@ -289,6 +300,11 @@ class _SignedOutChatHomepage:
 class _SignedInChatHomepage(_SignedOutChatHomepage):
     def locator(self, selector):
         return _Locator(1 if selector == "img[alt='User']" else 0)
+
+
+class _SessionAuthenticatedHomepage(_SignedOutChatHomepage):
+    async def evaluate(self, _script):
+        return {"accessToken": "token"}
 
 
 class _PopupInfo:
@@ -438,6 +454,35 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_verification_accepts_session_without_legacy_account_controls(self):
+        page = _SessionAuthenticatedHomepage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        state = await auth._wait_for_openai_verification_result(timeout=1000)
+
+        self.assertEqual(state, "authenticated")
+
+    async def test_openai_rejected_verification_code_reports_the_actual_failure(self):
+        page = _OpenAIEmailVerificationPage(code_count=1)
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth.get_login_error_details = AsyncMock(return_value="The code has expired")
+
+        with self.assertRaisesRegex(Error, "verification code was rejected or expired"):
+            await auth._wait_for_openai_verification_result(timeout=1)
+
+    async def test_openai_login_ignores_hidden_duplicate_verification_inputs(self):
+        page = _DuplicateVerificationInputPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        field = await auth._wait_for_openai_verification_input(timeout=1000)
+
+        self.assertIs(field, page.visible_code)
+        self.assertFalse(page.hidden_code.waited)
+        self.assertTrue(page.visible_code.waited)
+
     async def test_openai_login_ignores_hidden_duplicate_password_choices(self):
         page = _DuplicatePasswordChoicePage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)

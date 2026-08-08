@@ -321,20 +321,27 @@ class AsyncAuth0:
                 blocked_message = await self._openai_account_block_message()
                 if blocked_message:
                     raise Error("OpenAI login error", 1, blocked_message)
-                token = await self.login_page.evaluate(
-                    """async () => {
-                        const response = await fetch('/api/auth/session', {credentials: 'include'});
-                        if (!response.ok) return {};
-                        return await response.json();
-                    }"""
-                )
-                if isinstance(token, dict) and isinstance(token.get("accessToken"), str):
-                    return token["accessToken"]
+                access_token = await self._current_page_session_access_token()
+                if access_token:
+                    return access_token
                 await asyncio.sleep(1)
         except Error:
             raise
         except Exception as error:
             self.logger.debug(f"{self.email_address} existing session probe did not complete: {error}")
+        return None
+
+    async def _current_page_session_access_token(self) -> str | None:
+        """Read the same-origin ChatGPT session without navigating the page."""
+        token = await self.login_page.evaluate(
+            """async () => {
+                const response = await fetch('/api/auth/session', {credentials: 'include'});
+                if (!response.ok) return {};
+                return await response.json();
+            }"""
+        )
+        if isinstance(token, dict) and isinstance(token.get("accessToken"), str):
+            return token["accessToken"]
         return None
 
     async def _clear_chatgpt_login_cookies(self) -> None:
@@ -684,8 +691,7 @@ class AsyncAuth0:
             await password_choice.click()
             state = await self._wait_for_openai_password_form()
         if state == "otp":
-            await self._submit_openai_verification_code()
-            return
+            return await self._submit_openai_verification_code()
         if state == "password":
             password_input = self.login_page.locator("input[type='password']")
             self.logger.debug(f"{self.email_address} openai login,will set password")
@@ -709,8 +715,7 @@ class AsyncAuth0:
                 )
                 return await self._restart_openai_login_for_otp(details)
             if state == "otp":
-                await self._submit_openai_verification_code()
-                return
+                return await self._submit_openai_verification_code()
             if state == "authenticated":
                 return
         if state == "authenticated":
@@ -962,9 +967,8 @@ class AsyncAuth0:
                     password_choice = await self._visible_openai_password_choice()
                     if prefer_password and password_choice is not None:
                         return "password_choice"
-                    otp = self._openai_verification_input()
-                    if await otp.count() > 0:
-                        await otp.wait_for(state="visible", timeout=1000)
+                    otp = await self._visible_openai_verification_input()
+                    if otp is not None:
                         return "otp"
                     # Some current deployments expose an unlabelled Code input.
                     # A generic field is safe only on this exact, known page.
@@ -974,8 +978,8 @@ class AsyncAuth0:
                         return "otp"
                     await asyncio.sleep(0.25)
                     continue
-                otp = self._openai_verification_input()
-                if await otp.count() > 0:
+                otp = await self._visible_openai_verification_input()
+                if otp is not None:
                     return "otp"
                 password = self.login_page.locator("input[type='password']")
                 if allow_password and await password.count() > 0:
@@ -1065,7 +1069,20 @@ class AsyncAuth0:
         return self.login_page.locator(
             "input[autocomplete='one-time-code'], input[name='code'], input#code, "
             "input[inputmode='numeric']"
-        ).first
+        )
+
+    async def _visible_openai_verification_input(self):
+        """Return the visible OTP field, ignoring duplicate hidden templates."""
+        fields = self._openai_verification_input()
+        for index in range(await fields.count()):
+            nth = getattr(fields, "nth", None)
+            candidate = nth(index) if callable(nth) else fields.first
+            try:
+                await candidate.wait_for(state="visible", timeout=250)
+                return candidate
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _is_openai_email_verification_url(url: str) -> bool:
@@ -1079,10 +1096,9 @@ class AsyncAuth0:
         """Wait for the Code field on the known OpenAI email-verification page."""
         deadline = asyncio.get_running_loop().time() + timeout / 1000
         while asyncio.get_running_loop().time() < deadline:
-            verification_input = self._openai_verification_input()
             try:
-                if await verification_input.count() > 0:
-                    await verification_input.wait_for(state="visible", timeout=1000)
+                verification_input = await self._visible_openai_verification_input()
+                if verification_input is not None:
                     return verification_input
                 # This page currently has a single plain text Code field in
                 # some deployments, without a stable id/name/autocomplete.
@@ -1097,7 +1113,7 @@ class AsyncAuth0:
             await asyncio.sleep(0.25)
         raise Error("OpenAI login error", 1, "OpenAI verification input did not become ready before timeout")
 
-    async def _submit_openai_verification_code(self) -> None:
+    async def _submit_openai_verification_code(self) -> str:
         """Wait for an operator-supplied OTP without writing it to disk."""
         if not self.verification_broker:
             raise Error(
@@ -1117,7 +1133,44 @@ class AsyncAuth0:
         verification_input = await self._wait_for_openai_verification_input()
         await verification_input.fill(code)
         await self._submit_openai_continue(verification_input, stage="verification code")
-        await asyncio.sleep(1)
+        return await self._wait_for_openai_verification_result()
+
+    async def _wait_for_openai_verification_result(self, timeout: int = 15000) -> str:
+        """Require an accepted OTP to leave the verification page."""
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            url = getattr(self.login_page, "url", "")
+            if self.is_microsoft_identity_url(url):
+                return "microsoft"
+            if self.is_chat_app_url(url):
+                try:
+                    if await self._current_page_session_access_token():
+                        return "authenticated"
+                except Exception as error:
+                    self.logger.debug(
+                        f"{self.email_address} waiting for verified ChatGPT session: {error}"
+                    )
+                for selector in (
+                    "img[alt='User']",
+                    "img[alt='Profile image']",
+                    "button[data-testid='account-menu-button']",
+                ):
+                    if await self.login_page.locator(selector).count() > 0:
+                        return "authenticated"
+            await asyncio.sleep(0.25)
+
+        details = await self.get_login_error_details()
+        if self._is_openai_email_verification_url(getattr(self.login_page, "url", "")):
+            raise Error(
+                "OpenAI login error",
+                1,
+                "OpenAI verification code was rejected or expired\n" + details,
+            )
+        raise Error(
+            "OpenAI login error",
+            1,
+            "OpenAI verification did not complete the login redirect\n" + details,
+        )
     
     async def google_login(self, page: Page | None = None):
         """Complete the current OpenAI OAuth redirect without opening a second Google page."""
