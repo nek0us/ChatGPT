@@ -40,6 +40,32 @@ class _Locator:
         return self
 
 
+class _VisibilityLocator(_Locator):
+    def __init__(self, visible):
+        super().__init__(1)
+        self.visible = visible
+
+    async def wait_for(self, **_kwargs):
+        if not self.visible:
+            raise TimeoutError("hidden")
+        self.waited = True
+
+
+class _ChoiceCollection:
+    def __init__(self, choices):
+        self.choices = choices
+
+    async def count(self):
+        return len(self.choices)
+
+    def nth(self, index):
+        return self.choices[index]
+
+    @property
+    def first(self):
+        return self.choices[0]
+
+
 class _Keyboard:
     def __init__(self):
         self.presses = []
@@ -239,6 +265,17 @@ class _OpenAIEmailVerificationPage:
         return self.password_choice
 
 
+class _DuplicatePasswordChoicePage(_OpenAIEmailVerificationPage):
+    def __init__(self):
+        super().__init__(code_count=0)
+        self.hidden_choice = _VisibilityLocator(False)
+        self.visible_choice = _VisibilityLocator(True)
+        self.password_choice = _ChoiceCollection([
+            self.hidden_choice,
+            self.visible_choice,
+        ])
+
+
 class _SignedOutChatHomepage:
     url = "https://chatgpt.com/"
 
@@ -379,6 +416,16 @@ class _SessionTokenContext:
         self.cookies = AsyncMock(return_value=[])
 
 
+class _CookieContext:
+    def __init__(self, cookies):
+        self._cookies = cookies
+        self.clear_cookies = AsyncMock()
+        self.add_cookies = AsyncMock()
+
+    async def cookies(self):
+        return self._cookies
+
+
 class _Logger:
     def debug(self, _message):
         pass
@@ -391,6 +438,76 @@ class _Logger:
 
 
 class GoogleLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_login_ignores_hidden_duplicate_password_choices(self):
+        page = _DuplicatePasswordChoicePage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+
+        state = await auth._wait_for_openai_login_state(timeout=1000, prefer_password=True)
+
+        self.assertEqual(state, "password_choice")
+        self.assertFalse(page.hidden_choice.waited)
+        self.assertTrue(page.visible_choice.waited)
+
+    async def test_fresh_login_clears_rejected_app_and_openai_provider_sessions(self):
+        cookies = [
+            {"name": "__Secure-next-auth.session-token.0", "domain": "chatgpt.com"},
+            {"name": "oai-client-auth-info", "domain": ".auth.openai.com"},
+            {"name": "unified_session_manifest", "domain": ".auth.openai.com"},
+            {"name": "usc_example", "domain": ".auth.openai.com"},
+            {"name": "cf_clearance", "domain": ".auth.openai.com"},
+            {"name": "oai-client-auth-info", "domain": ".chatgpt.com"},
+            {"name": "oai-did", "domain": ".chatgpt.com"},
+        ]
+        context = _CookieContext(cookies)
+        auth = AsyncAuth0("account@example.com", "password", None, _Logger(), context)
+
+        await auth._clear_chatgpt_login_cookies()
+
+        context.clear_cookies.assert_awaited_once()
+        context.add_cookies.assert_awaited_once_with([
+            {"name": "cf_clearance", "domain": ".auth.openai.com"},
+            {"name": "oai-client-auth-info", "domain": ".chatgpt.com"},
+            {"name": "oai-did", "domain": ".chatgpt.com"},
+        ])
+
+    async def test_microsoft_fresh_login_keeps_openai_provider_session_cookies(self):
+        cookies = [
+            {"name": "unified_session_manifest", "domain": ".auth.openai.com"},
+            {"name": "usc_example", "domain": ".auth.openai.com"},
+        ]
+        context = _CookieContext(cookies)
+        auth = AsyncAuth0(
+            "account@example.com",
+            "password",
+            None,
+            _Logger(),
+            context,
+            mode="microsoft",
+        )
+
+        await auth._clear_chatgpt_login_cookies()
+
+        context.clear_cookies.assert_not_awaited()
+        context.add_cookies.assert_not_awaited()
+
+    async def test_unknown_openai_authorization_retries_once_with_fresh_provider_session(self):
+        page = _OpenAIEmailPage()
+        auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)
+        auth.login_page = page
+        auth._wait_for_openai_initial_email_input = AsyncMock(return_value=page.email)
+        auth._submit_openai_continue = AsyncMock()
+        auth._wait_for_openai_login_state = AsyncMock(side_effect=["unknown", "authenticated"])
+        auth._clear_chatgpt_login_cookies = AsyncMock()
+        auth.goto_chatgpt_home = AsyncMock()
+        auth.wait_for_login_surface = AsyncMock(return_value=True)
+
+        await auth.openai_code_password_login()
+
+        auth._clear_chatgpt_login_cookies.assert_awaited_once()
+        auth.goto_chatgpt_home.assert_awaited_once()
+        self.assertEqual(auth._wait_for_openai_login_state.await_count, 2)
+
     async def test_openai_initial_email_waits_for_and_returns_visible_field(self):
         page = _OpenAIEmailPage()
         auth = AsyncAuth0("account@example.com", "password", page, _Logger(), browser_contexts=None)

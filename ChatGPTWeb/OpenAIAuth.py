@@ -57,6 +57,7 @@ class AsyncAuth0:
         self.verification_broker = verification_broker
         self.prefer_openai_otp = prefer_openai_otp
         self.force_fresh_login = force_fresh_login
+        self._openai_provider_recovery_attempted = False
 
         self.access_token = None
         self.last_error_details = ""
@@ -337,23 +338,34 @@ class AsyncAuth0:
         return None
 
     async def _clear_chatgpt_login_cookies(self) -> None:
-        """Drop only the stale NextAuth session, preserving the browser profile."""
+        """Drop rejected app and provider sessions while preserving device state."""
         cookies = await self.browser_contexts.cookies()
+        session_prefixes = (
+            "__Secure-next-auth.session-token",
+            "next-auth.session-token",
+            "__Secure-authjs.session-token",
+            "authjs.session-token",
+        )
+
+        def is_rejected_login_cookie(cookie: dict) -> bool:
+            name = cookie.get("name", "")
+            domain = cookie.get("domain", "").lstrip(".").lower()
+            if name.startswith(session_prefixes):
+                return True
+            return self.mode == "openai" and domain == "auth.openai.com" and (
+                name == "oai-client-auth-info"
+                or name == "unified_session_manifest"
+                or name.startswith("usc_")
+            )
+
         retained = [
             cookie
             for cookie in cookies
-            if not cookie.get("name", "").startswith(
-                (
-                    "__Secure-next-auth.session-token",
-                    "next-auth.session-token",
-                    "__Secure-authjs.session-token",
-                    "authjs.session-token",
-                )
-            )
+            if not is_rejected_login_cookie(cookie)
         ]
         if len(retained) == len(cookies):
             self.logger.debug(
-                f"{self.email_address} fresh login found no known ChatGPT session cookie; "
+                f"{self.email_address} fresh login found no known rejected login cookie; "
                 "preserving the restored browser profile"
             )
             return
@@ -361,7 +373,8 @@ class AsyncAuth0:
         if retained:
             await self.browser_contexts.add_cookies(retained)
         self.logger.info(
-            f"{self.email_address} cleared the rejected ChatGPT login cookie before a fresh login"
+            f"{self.email_address} cleared {len(cookies) - len(retained)} rejected "
+            "ChatGPT/OpenAI login cookies before a fresh login"
         )
 
     async def _click_chatgpt_login_entry(self) -> bool:
@@ -661,7 +674,14 @@ class AsyncAuth0:
             return "microsoft"
         if state == "password_choice":
             self.logger.debug(f"{self.email_address} openai login,will continue with password")
-            await self.login_page.get_by_text("Continue with password", exact=True).click()
+            password_choice = await self._visible_openai_password_choice()
+            if password_choice is None:
+                raise Error(
+                    "OpenAI login error",
+                    1,
+                    "OpenAI password choice disappeared before it could be selected",
+                )
+            await password_choice.click()
             state = await self._wait_for_openai_password_form()
         if state == "otp":
             await self._submit_openai_verification_code()
@@ -695,6 +715,23 @@ class AsyncAuth0:
                 return
         if state == "authenticated":
             return
+        if (
+            self.mode == "openai"
+            and state in {"guest", "unknown"}
+            and not self._openai_provider_recovery_attempted
+        ):
+            self._openai_provider_recovery_attempted = True
+            self.logger.warning(
+                f"{self.email_address} OpenAI authorization returned without a ChatGPT session; "
+                "clearing the rejected provider session and retrying once"
+            )
+            await self._clear_chatgpt_login_cookies()
+            await self.goto_chatgpt_home()
+            login_surface_detected = await self.wait_for_login_surface()
+            if not login_surface_detected and await self._click_chatgpt_login_entry():
+                login_surface_detected = await self.wait_for_login_surface(timeout=30000)
+            if login_surface_detected:
+                return await self.openai_code_password_login(prefer_password=prefer_password)
         await self.save_screen(path=f"{self.email_address}_openai_login_unknown", page=self.login_page)
         details = await self.get_login_error_details()
         raise Error("OpenAI login error", 1, f"OpenAI login state was not recognized\n{details}")
@@ -922,9 +959,8 @@ class AsyncAuth0:
                 if self.is_microsoft_identity_url(url):
                     return "microsoft"
                 if self._is_openai_email_verification_url(url):
-                    password_choice = self.login_page.get_by_text("Continue with password", exact=True)
-                    if prefer_password and await password_choice.count() > 0:
-                        await password_choice.wait_for(state="visible", timeout=1000)
+                    password_choice = await self._visible_openai_password_choice()
+                    if prefer_password and password_choice is not None:
                         return "password_choice"
                     otp = self._openai_verification_input()
                     if await otp.count() > 0:
@@ -944,7 +980,7 @@ class AsyncAuth0:
                 password = self.login_page.locator("input[type='password']")
                 if allow_password and await password.count() > 0:
                     return "password"
-                if await self.login_page.get_by_text("Continue with password", exact=True).count() > 0:
+                if await self._visible_openai_password_choice() is not None:
                     return "password_choice"
                 if urllib.parse.urlsplit(url).netloc.lower() == "auth.openai.com":
                     if "/log-in" in urllib.parse.urlsplit(url).path:
@@ -982,6 +1018,19 @@ class AsyncAuth0:
                     raise
             await asyncio.sleep(0.25)
         return "unknown"
+
+    async def _visible_openai_password_choice(self):
+        """Return the visible password link, ignoring duplicate hidden templates."""
+        choices = self.login_page.get_by_text("Continue with password", exact=True)
+        for index in range(await choices.count()):
+            nth = getattr(choices, "nth", None)
+            candidate = nth(index) if callable(nth) else choices.first
+            try:
+                await candidate.wait_for(state="visible", timeout=250)
+                return candidate
+            except Exception:
+                continue
+        return None
 
     async def _wait_for_openai_password_form(self, timeout: int = 30000) -> str:
         """Wait for the password page after selecting it from email verification.
@@ -1383,6 +1432,14 @@ class AsyncAuth0:
         if access_token:
             self.logger.debug(f"{self.email_address} read access token through the in-page session fetch")
             return access_token
+        if self.mode == "openai" and not self._openai_provider_recovery_attempted:
+            self._openai_provider_recovery_attempted = True
+            self.logger.warning(
+                f"{self.email_address} OpenAI callback completed without a usable ChatGPT session; "
+                "clearing the rejected provider session and retrying once"
+            )
+            await self._clear_chatgpt_login_cookies()
+            return await self.normal_begin(logger, retry=0)
         self.logger.warning(f"{self.email_address} login completed without a usable browser session token")
         return None
 
