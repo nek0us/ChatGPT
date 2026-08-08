@@ -63,6 +63,21 @@ class CoreServerTests(unittest.TestCase):
         self.assertTrue(settings.remote_input_enabled)
         self.assertEqual(settings.remote_input_timeout_seconds, 15)
         self.assertEqual(settings.remote_input_max_redirects, 3)
+        self.assertEqual(settings.free_image_generation_window_limit, 3)
+        self.assertEqual(
+            settings.free_image_generation_window_seconds,
+            5 * 60 * 60,
+        )
+
+    def test_legacy_daily_image_limit_configures_the_rolling_window(self):
+        environment = {
+            **self._environment(),
+            "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT": "4",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = CoreServerSettings.from_environment()
+
+        self.assertEqual(settings.free_image_generation_window_limit, 4)
 
     def test_remote_input_settings_can_be_disabled_and_validated(self):
         environment = {

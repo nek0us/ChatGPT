@@ -233,6 +233,10 @@ class RuntimeStorage:
             "chat_rate_limit_source": session.chat_rate_limit_source,
             "capability_usage_day": session.capability_usage_day,
             "capability_usage": dict(session.capability_usage),
+            "capability_usage_events": {
+                capability: [timestamp(value) for value in values]
+                for capability, values in session.capability_usage_events.items()
+            },
             "capability_limited_until": {
                 capability: timestamp(limited_until)
                 for capability, limited_until in session.capability_limited_until.items()

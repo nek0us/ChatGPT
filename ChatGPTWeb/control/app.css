@@ -635,10 +635,6 @@ select {
   box-shadow: 0 5px 16px rgba(29, 44, 68, 0.04);
 }
 
-.account-table {
-  max-height: none;
-}
-
 table {
   width: 100%;
   min-width: 1050px;

@@ -76,7 +76,8 @@ class CoreServerSettings:
     remote_input_max_redirects: int
     capability_quota_enabled: bool = True
     free_upload_daily_limit: int = 2
-    free_image_generation_daily_limit: int = 2
+    free_image_generation_window_limit: int = 3
+    free_image_generation_window_seconds: int = 5 * 60 * 60
     capability_rate_limit_cooldown_seconds: int = 24 * 60 * 60
     project_auto_create: bool = False
 
@@ -92,6 +93,10 @@ class CoreServerSettings:
         runtime_log_path = os.getenv("CHATGPTWEB_RUNTIME_LOG_PATH", "").strip()
         if not runtime_log_path:
             runtime_log_path = str(storage_dir / "runtime.log")
+        legacy_image_limit = os.getenv(
+            "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT",
+            "",
+        ).strip()
         return cls(
             sessions_file=sessions_file,
             storage_dir=storage_dir,
@@ -123,10 +128,16 @@ class CoreServerSettings:
             free_upload_daily_limit=int(
                 os.getenv("CHATGPTWEB_FREE_UPLOAD_DAILY_LIMIT", "2")
             ),
-            free_image_generation_daily_limit=int(
+            free_image_generation_window_limit=int(
                 os.getenv(
-                    "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT",
-                    "2",
+                    "CHATGPTWEB_FREE_IMAGE_GENERATION_WINDOW_LIMIT",
+                    legacy_image_limit or "3",
+                )
+            ),
+            free_image_generation_window_seconds=int(
+                os.getenv(
+                    "CHATGPTWEB_FREE_IMAGE_GENERATION_WINDOW_SECONDS",
+                    str(5 * 60 * 60),
                 )
             ),
             capability_rate_limit_cooldown_seconds=int(
@@ -187,9 +198,13 @@ def validate_settings(settings: CoreServerSettings) -> None:
         raise ValueError("CHATGPTWEB_REMOTE_INPUT_MAX_REDIRECTS must be between 0 and 10")
     if not 0 <= settings.free_upload_daily_limit <= 1000:
         raise ValueError("CHATGPTWEB_FREE_UPLOAD_DAILY_LIMIT must be between 0 and 1000")
-    if not 0 <= settings.free_image_generation_daily_limit <= 1000:
+    if not 0 <= settings.free_image_generation_window_limit <= 1000:
         raise ValueError(
-            "CHATGPTWEB_FREE_IMAGE_GENERATION_DAILY_LIMIT must be between 0 and 1000"
+            "CHATGPTWEB_FREE_IMAGE_GENERATION_WINDOW_LIMIT must be between 0 and 1000"
+        )
+    if not 60 <= settings.free_image_generation_window_seconds <= 24 * 60 * 60:
+        raise ValueError(
+            "CHATGPTWEB_FREE_IMAGE_GENERATION_WINDOW_SECONDS must be between 60 and 86400"
         )
     if not 60 <= settings.capability_rate_limit_cooldown_seconds <= 7 * 24 * 60 * 60:
         raise ValueError(
@@ -212,8 +227,11 @@ def create_core_application(settings: CoreServerSettings) -> web.Application:
         control_log_path=settings.runtime_log_path,
         capability_quota_enabled=settings.capability_quota_enabled,
         free_upload_daily_limit=settings.free_upload_daily_limit,
-        free_image_generation_daily_limit=(
-            settings.free_image_generation_daily_limit
+        free_image_generation_window_limit=(
+            settings.free_image_generation_window_limit
+        ),
+        free_image_generation_window_seconds=(
+            settings.free_image_generation_window_seconds
         ),
         capability_rate_limit_cooldown_seconds=(
             settings.capability_rate_limit_cooldown_seconds

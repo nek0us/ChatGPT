@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.08.09.1";
+  const UI_VERSION = "2026.08.09.2";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
@@ -123,6 +123,7 @@
       imageUploads: "图片",
       fileUploads: "文件",
       imageGeneration: "生图",
+      imageGenerationWindow: "生图（最近 {hours} 小时）",
       observeOnly: "仅统计",
       capabilityCooling: "上游冷却",
       requestCount: "{count} 次请求",
@@ -339,6 +340,7 @@
       imageUploads: "images",
       fileUploads: "files",
       imageGeneration: "image generation",
+      imageGenerationWindow: "image generation (last {hours}h)",
       observeOnly: "observe only",
       capabilityCooling: "upstream cooldown",
       requestCount: "{count} request(s)",
@@ -887,10 +889,14 @@
     const uploadUsed = Number(quota.upload_total || 0);
     const generationLimit = Number(imageGeneration.limit || 0);
     const generationUsed = Number(imageGeneration.budget_used || 0);
+    const generationWindowHours = Number(imageGeneration.window_seconds || 0) / 3600;
+    const generationLabel = generationWindowHours
+      ? t("imageGenerationWindow", { hours: generationWindowHours })
+      : t("imageGeneration");
     const lines = [
       `${t("capabilityUsage")}:`,
       `${t("uploadBudget")}: ${uploadUsed}/${uploadLimit || t("observeOnly")} (${t("imageUploads")} ${Number(imageUpload.used || 0)}, ${t("fileUploads")} ${Number(fileUpload.used || 0)})`,
-      `${t("imageGeneration")}: ${generationUsed}/${generationLimit || t("observeOnly")}`,
+      `${generationLabel}: ${generationUsed}/${generationLimit || t("observeOnly")}`,
     ];
     const cooling = [imageUpload, fileUpload, imageGeneration]
       .filter((value) => value.limit_reason === "upstream")

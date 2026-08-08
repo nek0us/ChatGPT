@@ -156,6 +156,7 @@ class Session:
     chat_rate_limit_error: str = ""
     capability_usage_day: str = ""
     capability_usage: Dict[str, int] = field(default_factory=dict)
+    capability_usage_events: Dict[str, List[datetime.datetime]] = field(default_factory=dict)
     capability_limited_until: Dict[str, datetime.datetime] = field(default_factory=dict)
     capability_limit_source: Dict[str, str] = field(default_factory=dict)
     capability_limit_error: Dict[str, str] = field(default_factory=dict)

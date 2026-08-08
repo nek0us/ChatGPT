@@ -41,7 +41,8 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.ready_timeout = 1
         self.runtime.capability_quota_enabled = True
         self.runtime.free_upload_daily_limit = 2
-        self.runtime.free_image_generation_daily_limit = 2
+        self.runtime.free_image_generation_window_limit = 3
+        self.runtime.free_image_generation_window_seconds = 5 * 60 * 60
         self.runtime.capability_rate_limit_cooldown_seconds = 86400
         self.runtime.account_selection_strategy = "least_recently_used"
         self.runtime.account_selection_window_seconds = 3600
@@ -156,6 +157,10 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.capability_usage[FILE_UPLOAD], 1)
         self.assertEqual(session.capability_usage[IMAGE_GENERATION], 1)
         self.assertEqual(stored["capability_usage"]["upload_total"], 1)
+        self.assertEqual(
+            len(stored["capability_usage_events"][IMAGE_GENERATION]),
+            1,
+        )
 
         restored = restore_session_state(
             Session(email=session.email),
@@ -164,6 +169,63 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(restored.capability_usage[FILE_UPLOAD], 1)
         self.assertEqual(restored.capability_usage[IMAGE_GENERATION], 1)
+        self.assertEqual(
+            len(restored.capability_usage_events[IMAGE_GENERATION]),
+            1,
+        )
+
+    def test_image_generation_uses_a_rolling_five_hour_window(self):
+        session = self._session("rolling@example.com")
+        now = datetime.now()
+        session.capability_usage_events[IMAGE_GENERATION] = [
+            now - timedelta(hours=4),
+            now - timedelta(hours=2),
+            now - timedelta(minutes=5),
+        ]
+
+        available, retry_after, reason = self.runtime._capability_availability(
+            session,
+            IMAGE_GENERATION,
+        )
+
+        self.assertFalse(available)
+        self.assertEqual(reason, "local_rolling_budget")
+        self.assertGreater(retry_after, 59 * 60)
+        self.assertLessEqual(retry_after, 61 * 60)
+
+    def test_expired_image_generation_event_releases_one_slot(self):
+        session = self._session("released@example.com")
+        now = datetime.now()
+        session.capability_usage_events[IMAGE_GENERATION] = [
+            now - timedelta(hours=5, seconds=1),
+            now - timedelta(hours=2),
+            now - timedelta(minutes=5),
+        ]
+
+        available, retry_after, reason = self.runtime._capability_availability(
+            session,
+            IMAGE_GENERATION,
+        )
+
+        self.assertTrue(available)
+        self.assertEqual(retry_after, 0)
+        self.assertEqual(reason, "")
+        self.assertEqual(
+            len(session.capability_usage_events[IMAGE_GENERATION]),
+            2,
+        )
+
+    def test_failed_image_generation_does_not_consume_the_window(self):
+        session = self._session("failed@example.com")
+        data = MsgData(
+            status=False,
+            msg_send="generate an image",
+            image_gen=True,
+        )
+
+        self.runtime._record_capability_usage(session, data)
+
+        self.assertNotIn(IMAGE_GENERATION, session.capability_usage_events)
 
     def test_upstream_upload_limit_cools_the_shared_upload_capabilities(self):
         session = self._session("limited@example.com")
@@ -190,8 +252,12 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         session.capability_usage.update({
             "upload_total": 1,
             IMAGE_UPLOAD: 1,
-            IMAGE_GENERATION: 2,
+            IMAGE_GENERATION: 3,
         })
+        session.capability_usage_events[IMAGE_GENERATION] = [
+            datetime.now() - timedelta(minutes=value)
+            for value in (30, 20, 10)
+        ]
         self.runtime.Sessions = [session]
 
         account = (await self.runtime.token_status())["accounts"][0]
@@ -200,5 +266,9 @@ class CapabilityQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["capability_quota"]["upload_total"], 1)
         self.assertEqual(
             account["capability_quota"][IMAGE_GENERATION]["limit_reason"],
-            "local_soft_budget",
+            "local_rolling_budget",
+        )
+        self.assertEqual(
+            account["capability_quota"][IMAGE_GENERATION]["window_seconds"],
+            5 * 60 * 60,
         )

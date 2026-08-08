@@ -1253,6 +1253,21 @@ def restore_session_state(session: Session, storage: RuntimeStorage, logger):
                 for capability, count in saved_usage.items()
                 if isinstance(count, int) and not isinstance(count, bool)
             }
+        saved_usage_events = record.get("capability_usage_events", {})
+        if isinstance(saved_usage_events, dict):
+            for capability, values in saved_usage_events.items():
+                if not isinstance(values, list):
+                    continue
+                restored_events = []
+                for value in values:
+                    if not isinstance(value, str) or not value:
+                        continue
+                    try:
+                        restored_events.append(datetime.fromisoformat(value))
+                    except ValueError:
+                        continue
+                if restored_events:
+                    session.capability_usage_events[str(capability)] = restored_events
         saved_capability_sources = record.get("capability_limit_source", {})
         if isinstance(saved_capability_sources, dict):
             session.capability_limit_source = {

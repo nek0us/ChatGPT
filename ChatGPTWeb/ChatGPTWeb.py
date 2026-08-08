@@ -111,7 +111,9 @@ class chatgpt:
                  chat_rate_limit_cooldown_seconds: int = 5 * 60 * 60,
                  capability_quota_enabled: bool = True,
                  free_upload_daily_limit: int = 2,
-                 free_image_generation_daily_limit: int = 2,
+                 free_image_generation_daily_limit: int | None = None,
+                 free_image_generation_window_limit: int | None = None,
+                 free_image_generation_window_seconds: int = 5 * 60 * 60,
                  capability_rate_limit_cooldown_seconds: int = 24 * 60 * 60,
                  account_selection_strategy: Literal["least_recently_used", "usage_balanced"] = "least_recently_used",
                  account_selection_window_seconds: int = 5 * 60 * 60,
@@ -185,9 +187,23 @@ class chatgpt:
         self.chat_rate_limit_cooldown_seconds = chat_rate_limit_cooldown_seconds
         if not 0 <= free_upload_daily_limit <= 1000:
             raise ValueError("free_upload_daily_limit must be between 0 and 1000")
-        if not 0 <= free_image_generation_daily_limit <= 1000:
+        if (
+            free_image_generation_daily_limit is not None
+            and not 0 <= free_image_generation_daily_limit <= 1000
+        ):
             raise ValueError(
                 "free_image_generation_daily_limit must be between 0 and 1000"
+            )
+        if (
+            free_image_generation_window_limit is not None
+            and not 0 <= free_image_generation_window_limit <= 1000
+        ):
+            raise ValueError(
+                "free_image_generation_window_limit must be between 0 and 1000"
+            )
+        if not 60 <= free_image_generation_window_seconds <= 24 * 60 * 60:
+            raise ValueError(
+                "free_image_generation_window_seconds must be between 60 and 86400"
             )
         if not 60 <= capability_rate_limit_cooldown_seconds <= 7 * 24 * 60 * 60:
             raise ValueError(
@@ -195,7 +211,17 @@ class chatgpt:
             )
         self.capability_quota_enabled = bool(capability_quota_enabled)
         self.free_upload_daily_limit = free_upload_daily_limit
-        self.free_image_generation_daily_limit = free_image_generation_daily_limit
+        image_window_limit = (
+            free_image_generation_window_limit
+            if free_image_generation_window_limit is not None
+            else free_image_generation_daily_limit
+            if free_image_generation_daily_limit is not None
+            else 3
+        )
+        self.free_image_generation_window_limit = image_window_limit
+        self.free_image_generation_window_seconds = free_image_generation_window_seconds
+        # Retain the old attribute for adapters that still inspect it.
+        self.free_image_generation_daily_limit = image_window_limit
         self.capability_rate_limit_cooldown_seconds = (
             capability_rate_limit_cooldown_seconds
         )
@@ -1144,8 +1170,41 @@ class chatgpt:
         if capability in {IMAGE_UPLOAD, FILE_UPLOAD}:
             return getattr(self, "free_upload_daily_limit", 0)
         if capability == IMAGE_GENERATION:
-            return getattr(self, "free_image_generation_daily_limit", 0)
+            return int(getattr(
+                self,
+                "free_image_generation_window_limit",
+                getattr(self, "free_image_generation_daily_limit", 0),
+            ))
         return 0
+
+    def _image_generation_usage_window_seconds(self) -> int:
+        return int(getattr(
+            self,
+            "free_image_generation_window_seconds",
+            5 * 60 * 60,
+        ))
+
+    def _rolling_capability_events(
+        self,
+        session: Session,
+        capability: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[datetime]:
+        current = now or datetime.now()
+        cutoff = current - timedelta(
+            seconds=self._image_generation_usage_window_seconds()
+        )
+        events = sorted(
+            value
+            for value in session.capability_usage_events.get(capability, [])
+            if isinstance(value, datetime) and cutoff < value <= current
+        )
+        if events:
+            session.capability_usage_events[capability] = events
+        else:
+            session.capability_usage_events.pop(capability, None)
+        return events
 
     @staticmethod
     def _capability_usage_key(capability: str) -> str:
@@ -1175,6 +1234,21 @@ class chatgpt:
         limit = self._capability_soft_limit(capability)
         if limit <= 0:
             return True, 0, ""
+        if capability == IMAGE_GENERATION:
+            now = datetime.now()
+            events = self._rolling_capability_events(
+                session,
+                capability,
+                now=now,
+            )
+            if len(events) < limit:
+                return True, 0, ""
+            retry_after = int((
+                events[0]
+                + timedelta(seconds=self._image_generation_usage_window_seconds())
+                - now
+            ).total_seconds()) + 1
+            return False, max(1, retry_after), "local_rolling_budget"
         used = int(session.capability_usage.get(
             self._capability_usage_key(capability),
             0,
@@ -1260,12 +1334,22 @@ class chatgpt:
             limit = 0 if self._is_paid_account(session) else self._capability_soft_limit(
                 capability
             )
+            rolling_events = (
+                self._rolling_capability_events(session, capability)
+                if capability == IMAGE_GENERATION
+                else []
+            )
+            budget_used = (
+                len(rolling_events)
+                if capability == IMAGE_GENERATION
+                else int(session.capability_usage.get(usage_key, 0))
+            )
             result[capability] = {
                 "used": int(session.capability_usage.get(capability, 0)),
-                "budget_used": int(session.capability_usage.get(usage_key, 0)),
+                "budget_used": budget_used,
                 "limit": limit,
                 "remaining": (
-                    max(0, limit - int(session.capability_usage.get(usage_key, 0)))
+                    max(0, limit - budget_used)
                     if limit > 0 else None
                 ),
                 "available": available,
@@ -1278,6 +1362,10 @@ class chatgpt:
                 ),
                 "source": session.capability_limit_source.get(capability, ""),
             }
+            if capability == IMAGE_GENERATION:
+                result[capability]["window_seconds"] = (
+                    self._image_generation_usage_window_seconds()
+                )
         return result
 
     def _record_capability_usage(
@@ -1321,6 +1409,10 @@ class chatgpt:
             session.capability_usage[capability] = (
                 int(session.capability_usage.get(capability, 0)) + count
             )
+            if capability == IMAGE_GENERATION:
+                events = self._rolling_capability_events(session, capability)
+                events.extend(datetime.now() for _ in range(count))
+                session.capability_usage_events[capability] = events
             changed = True
         msg_data.capability_usage_recorded = True
         if changed:
@@ -1994,15 +2086,21 @@ class chatgpt:
         capabilities: typing.Iterable[str],
         error: Exception | str,
     ) -> None:
+        capability_list = list(dict.fromkeys(capabilities))
         upstream_cooldown = self._upstream_rate_limit_cooldown_seconds(error)
-        cooldown_seconds = upstream_cooldown or getattr(
-            self,
-            "capability_rate_limit_cooldown_seconds",
-            24 * 60 * 60,
+        configured_cooldown = (
+            self._image_generation_usage_window_seconds()
+            if capability_list == [IMAGE_GENERATION]
+            else getattr(
+                self,
+                "capability_rate_limit_cooldown_seconds",
+                24 * 60 * 60,
+            )
         )
+        cooldown_seconds = upstream_cooldown or configured_cooldown
         source = "upstream_retry_hint" if upstream_cooldown else "configured_cooldown"
         marked: list[str] = []
-        for capability in capabilities:
+        for capability in capability_list:
             session.mark_capability_rate_limited(
                 capability,
                 str(error),
@@ -6191,8 +6289,14 @@ class chatgpt:
                 "free_upload_daily_limit": int(
                     getattr(self, "free_upload_daily_limit", 0)
                 ),
+                "free_image_generation_window_limit": int(
+                    getattr(self, "free_image_generation_window_limit", 0)
+                ),
                 "free_image_generation_daily_limit": int(
-                    getattr(self, "free_image_generation_daily_limit", 0)
+                    getattr(self, "free_image_generation_window_limit", 0)
+                ),
+                "free_image_generation_window_seconds": int(
+                    getattr(self, "free_image_generation_window_seconds", 5 * 60 * 60)
                 ),
                 "upstream_fallback_cooldown_seconds": int(
                     getattr(
