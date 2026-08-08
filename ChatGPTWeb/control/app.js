@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const UI_VERSION = "2026.08.03.1";
+  const UI_VERSION = "2026.08.09.1";
   const STORAGE_KEY = "chatgptweb-control-key-v2";
   const LANGUAGE_KEY = "chatgptweb-control-language";
   const VIEW_KEY = "chatgptweb-control-view";
@@ -13,8 +13,13 @@
   const translations = {
     zh: {
       console: "运维控制台",
-      operations: "OPERATIONS",
+      consoleNavigation: "控制台导航",
+      languageSelector: "语言",
+      accountMetrics: "账户汇总",
+      accountQuickIndex: "账户快速索引",
+      operations: "运维管理",
       overview: "运行概览",
+      activity: "最近活动",
       verification: "登录验证",
       access: "访问密钥",
       logs: "运行日志",
@@ -37,8 +42,8 @@
       accountsRegistered: "已注册到当前核心",
       availableAccounts: "当前可用",
       readyForRequests: "可接受新请求",
-      attentionAccounts: "需要处理",
-      loginOrRecovery: "登录、验证或恢复中",
+      attentionAccounts: "需人工处理",
+      loginOrRecovery: "验证、凭据或账号异常",
       activeSessions: "逻辑会话",
       retainedSessions: "核心保留的会话",
       accounts: "账户",
@@ -51,11 +56,17 @@
       actions: "操作",
       connectToLoad: "连接后加载数据",
       noAccounts: "当前核心没有配置账户",
-      accountSummary: "{ready} 个可用，共 {total} 个",
+      accountSummary: "{ready} 可用 · {working} 处理中 · {recovering} 恢复中 · {attention} 需处理 · 共 {total}",
       searchAccounts: "搜索或定位账户",
       visibleAccounts: "显示 {visible} / {total}",
       recentActivity: "最近活动",
       activitySubtitle: "聊天、附件、登录与运行状态",
+      activityPageSubtitle: "查看请求、附件、登录和浏览器恢复事件",
+      viewAllActivity: "查看全部",
+      activityLevel: "等级",
+      allLevels: "全部",
+      warningsAndErrors: "警告及错误",
+      errorsOnly: "仅错误",
       noActivity: "当前进程还没有请求或运维事件",
       verificationSubtitle: "处理等待中的邮箱验证码与账户验证",
       pendingCount: "{count} 项等待处理",
@@ -87,6 +98,12 @@
       keyRotated: "客户端密钥已轮换",
       keyRevoked: "客户端密钥已吊销",
       logsSubtitle: "核心启动、登录与恢复日志",
+      logLevel: "最低等级",
+      levelDebug: "调试",
+      levelInfo: "信息",
+      levelWarning: "警告",
+      levelError: "错误",
+      followLogs: "自动跟随",
       lines: "行数",
       refreshLogs: "刷新日志",
       logUnavailable: "当前核心没有配置运行日志文件",
@@ -124,6 +141,34 @@
       sourceUnavailable: "来源不可用",
       loginReady: "可用",
       loginNotReady: "未就绪",
+      stateReady: "账户已准备好接收新请求。",
+      stateChatInProgress: "账户正在处理一项对话请求。",
+      stateLoginRecoveryRunning: "受控登录恢复正在运行。",
+      stateVerificationPending: "正在等待提交服务商验证码。",
+      stateChatQuotaCooldown: "新对话等待预计额度恢复。",
+      stateReauthenticationRequired: "浏览器授权已失效，需要重新登录。",
+      stateAccountUnavailable: "上游账户不可用，需要先在上游恢复。",
+      stateCredentialsRejected: "配置的登录凭据被拒绝，需要更新。",
+      stateVerificationRequired: "服务商要求先完成验证。",
+      stateProviderSecurityCheck: "服务商触发安全检查，请等待后重试。",
+      stateProviderLoginCooldown: "登录尝试正在冷却，请按提示等待。",
+      stateBrowserBridgeUnavailable: "浏览器请求桥未就绪，核心将自动恢复。",
+      stateBrowserPageStartupFailed: "浏览器页面启动失败，请检查运行环境。",
+      stateLoginTransportFailure: "网络或浏览器异常中断了登录。",
+      stateLoginUnrecognized: "当前登录页面状态无法识别，需要检查诊断。",
+      stateLoginStarting: "浏览器登录流程正在启动。",
+      stateManuallyDisabled: "账户已被管理员停用。",
+      stateRuntimeNotReady: "账户运行环境尚未就绪。",
+      stateBrowserRuntimeRecoveryNeeded: "浏览器页面或上下文已关闭，正在等待恢复。",
+      stateLoginRecoveryPending: "账户正在等待下一次登录恢复。",
+      stateNotInitialized: "账户尚未完成浏览器初始化。",
+      failureAccountLocked: "账户不可用",
+      failureNeedVerification: "需要验证",
+      failureRiskBlocked: "安全检查",
+      failureRateLimited: "登录冷却",
+      failureTransient: "临时异常",
+      failureBadCredentials: "凭据错误",
+      failureUnknown: "未知异常",
       secondsRemaining: "剩余约 {count} 秒",
       minutesRemaining: "剩余约 {count} 分钟",
       enable: "启用",
@@ -142,6 +187,7 @@
       eventControl: "账户设置已更新",
       eventLogin: "登录状态已更新",
       eventRuntime: "浏览器环境已恢复",
+      eventProject: "会话归档",
       eventGeneric: "运维事件",
       activityRequestAccepted: "请求已进入账户执行",
       activityRequestAcceptedWithUploads: "请求已进入账户执行，包含 {count} 个附件",
@@ -157,6 +203,20 @@
       activityImageStarted: "已请求上游生成图片",
       activityImageCompleted: "已取得 {count} 张生成图片",
       activityImageFailed: "上游生图结束，但没有取得可回传图片",
+      activityAccountControl: "账户控制设置已更新",
+      activityLoginRetryCancelled: "受控登录恢复已取消",
+      activityLoginRetryFailed: "受控登录恢复失败，请查看账户诊断",
+      activityLoginRetryFinished: "受控登录恢复已结束",
+      activityRuntimeClosed: "浏览器运行环境意外关闭",
+      activityRuntimeRecovered: "浏览器运行环境已重建",
+      activityProjectRoutingFailed: "对话归档项目定位失败",
+      activityLoginRetryStarted: "已开始受控登录恢复",
+      activityStreamBridgeWarmed: "浏览器请求桥已预热",
+      activityCapabilityRecorded: "已更新高级能力使用统计",
+      activityCapabilityRateLimited: "高级能力进入上游冷却",
+      activityChatRateLimited: "聊天额度进入等待恢复状态",
+      activityProjectCreated: "已创建会话归档项目",
+      activityProjectRouted: "会话已归入指定项目",
       activitySource: "来源：{source}",
       invalidKey: "控制台管理密钥无效",
       forbidden: "当前密钥没有此操作权限",
@@ -169,8 +229,13 @@
     },
     en: {
       console: "Operations console",
+      consoleNavigation: "Console navigation",
+      languageSelector: "Language",
+      accountMetrics: "Account summary",
+      accountQuickIndex: "Account quick index",
       operations: "OPERATIONS",
       overview: "Overview",
+      activity: "Activity",
       verification: "Verification",
       access: "API keys",
       logs: "Runtime logs",
@@ -193,8 +258,8 @@
       accountsRegistered: "Registered with this core",
       availableAccounts: "Available",
       readyForRequests: "Ready for new requests",
-      attentionAccounts: "Attention",
-      loginOrRecovery: "Login, verification, or recovery",
+      attentionAccounts: "Action required",
+      loginOrRecovery: "Verification, credentials, or account issues",
       activeSessions: "Sessions",
       retainedSessions: "Retained by the core",
       accounts: "Accounts",
@@ -207,11 +272,17 @@
       actions: "Actions",
       connectToLoad: "Connect to load data",
       noAccounts: "No accounts are configured",
-      accountSummary: "{ready} available of {total}",
+      accountSummary: "{ready} ready · {working} working · {recovering} recovering · {attention} action required · {total} total",
       searchAccounts: "Search or locate an account",
       visibleAccounts: "Showing {visible} / {total}",
       recentActivity: "Recent activity",
       activitySubtitle: "Chat, attachment, login, and runtime events",
+      activityPageSubtitle: "Inspect requests, attachments, login, and browser recovery events",
+      viewAllActivity: "View all",
+      activityLevel: "Level",
+      allLevels: "All",
+      warningsAndErrors: "Warnings and errors",
+      errorsOnly: "Errors only",
       noActivity: "No request or operational events in this process",
       verificationSubtitle: "Handle pending email codes and account checks",
       pendingCount: "{count} pending",
@@ -243,6 +314,12 @@
       keyRotated: "Client key rotated",
       keyRevoked: "Client key revoked",
       logsSubtitle: "Core startup, login, and recovery logs",
+      logLevel: "Minimum level",
+      levelDebug: "Debug",
+      levelInfo: "Info",
+      levelWarning: "Warning",
+      levelError: "Error",
+      followLogs: "Follow output",
       lines: "Lines",
       refreshLogs: "Refresh logs",
       logUnavailable: "No runtime log file is configured",
@@ -280,6 +357,34 @@
       sourceUnavailable: "unavailable",
       loginReady: "ready",
       loginNotReady: "not ready",
+      stateReady: "The account is ready for new work.",
+      stateChatInProgress: "The account is serving a chat request.",
+      stateLoginRecoveryRunning: "Controlled login recovery is running.",
+      stateVerificationPending: "A provider verification code is awaiting submission.",
+      stateChatQuotaCooldown: "New chats are waiting for the estimated quota reset.",
+      stateReauthenticationRequired: "Browser authorization expired and requires a fresh sign-in.",
+      stateAccountUnavailable: "The upstream account must be restored before retrying.",
+      stateCredentialsRejected: "The configured credentials were rejected and must be updated.",
+      stateVerificationRequired: "The provider requires verification before continuing.",
+      stateProviderSecurityCheck: "The provider requested a security check; wait before retrying.",
+      stateProviderLoginCooldown: "Login attempts are cooling down; wait before retrying.",
+      stateBrowserBridgeUnavailable: "The browser request bridge is unavailable and will recover automatically.",
+      stateBrowserPageStartupFailed: "The browser page failed to start; inspect the runtime.",
+      stateLoginTransportFailure: "A browser or network failure interrupted login.",
+      stateLoginUnrecognized: "The provider login state was not recognized; inspect diagnostics.",
+      stateLoginStarting: "The browser sign-in flow is starting.",
+      stateManuallyDisabled: "The account was disabled by an operator.",
+      stateRuntimeNotReady: "The account runtime is not ready.",
+      stateBrowserRuntimeRecoveryNeeded: "The browser page or context closed and is awaiting recovery.",
+      stateLoginRecoveryPending: "The account is waiting for its next login recovery.",
+      stateNotInitialized: "The account has not completed browser initialization.",
+      failureAccountLocked: "account unavailable",
+      failureNeedVerification: "verification required",
+      failureRiskBlocked: "security check",
+      failureRateLimited: "login cooldown",
+      failureTransient: "temporary failure",
+      failureBadCredentials: "credentials rejected",
+      failureUnknown: "unknown failure",
       secondsRemaining: "about {count}s",
       minutesRemaining: "about {count}m",
       enable: "Enable",
@@ -298,6 +403,7 @@
       eventControl: "Account settings changed",
       eventLogin: "Login state updated",
       eventRuntime: "Browser runtime recovered",
+      eventProject: "Conversation project",
       eventGeneric: "Operational event",
       activityRequestAccepted: "The request was assigned to this account",
       activityRequestAcceptedWithUploads: "The request was assigned with {count} attachment(s)",
@@ -313,6 +419,20 @@
       activityImageStarted: "Requested upstream image generation",
       activityImageCompleted: "Retrieved {count} generated image(s)",
       activityImageFailed: "Image generation ended without a retrievable image",
+      activityAccountControl: "Account control settings were updated",
+      activityLoginRetryCancelled: "Controlled login recovery was cancelled",
+      activityLoginRetryFailed: "Controlled login recovery failed; inspect account diagnostics",
+      activityLoginRetryFinished: "Controlled login recovery finished",
+      activityRuntimeClosed: "The browser runtime closed unexpectedly",
+      activityRuntimeRecovered: "The browser runtime was rebuilt",
+      activityProjectRoutingFailed: "Conversation project routing failed",
+      activityLoginRetryStarted: "Controlled login recovery started",
+      activityStreamBridgeWarmed: "The browser request bridge was warmed",
+      activityCapabilityRecorded: "Capability usage counters were updated",
+      activityCapabilityRateLimited: "A capability entered upstream cooldown",
+      activityChatRateLimited: "Chat quota entered its recovery window",
+      activityProjectCreated: "A conversation project was created",
+      activityProjectRouted: "The conversation was routed to its project",
       activitySource: "Source: {source}",
       invalidKey: "The console administrator key is invalid",
       forbidden: "This key cannot perform the requested operation",
@@ -323,6 +443,40 @@
       refreshComplete: "State refreshed",
       frontendFailure: "The console script failed. Reopen the page or inspect the developer console.",
     },
+  };
+
+  const OPERATIONAL_STATE_KEYS = {
+    ready: "stateReady",
+    chat_in_progress: "stateChatInProgress",
+    login_recovery_running: "stateLoginRecoveryRunning",
+    verification_pending: "stateVerificationPending",
+    chat_quota_cooldown: "stateChatQuotaCooldown",
+    session_reauthentication_required: "stateReauthenticationRequired",
+    account_unavailable: "stateAccountUnavailable",
+    credentials_rejected: "stateCredentialsRejected",
+    verification_required: "stateVerificationRequired",
+    provider_security_check: "stateProviderSecurityCheck",
+    provider_login_cooldown: "stateProviderLoginCooldown",
+    browser_bridge_unavailable: "stateBrowserBridgeUnavailable",
+    browser_page_startup_failed: "stateBrowserPageStartupFailed",
+    login_transport_failure: "stateLoginTransportFailure",
+    login_state_unrecognized: "stateLoginUnrecognized",
+    login_starting: "stateLoginStarting",
+    manually_disabled: "stateManuallyDisabled",
+    runtime_not_ready: "stateRuntimeNotReady",
+    browser_runtime_recovery_needed: "stateBrowserRuntimeRecoveryNeeded",
+    login_recovery_pending: "stateLoginRecoveryPending",
+    not_initialized: "stateNotInitialized",
+  };
+
+  const FAILURE_KIND_KEYS = {
+    account_locked: "failureAccountLocked",
+    need_verification: "failureNeedVerification",
+    risk_blocked: "failureRiskBlocked",
+    rate_limited: "failureRateLimited",
+    transient: "failureTransient",
+    bad_credentials: "failureBadCredentials",
+    unknown: "failureUnknown",
   };
 
   class ApiError extends Error {
@@ -351,8 +505,10 @@
     submitting: new Set(),
     lastUpdated: null,
     accountFilter: "",
+    activityLevel: "all",
     reconnectTimer: null,
     reconnectAttempts: 0,
+    pendingRefresh: false,
   };
 
   const elements = {};
@@ -385,6 +541,9 @@
       accountIndex: document.querySelector("#account-index"),
       accountRows: document.querySelector("#account-rows"),
       activityList: document.querySelector("#activity-list"),
+      activityPreview: document.querySelector("#activity-preview"),
+      activityLevel: document.querySelector("#activity-level"),
+      openActivity: document.querySelector("#open-activity"),
       verificationBadge: document.querySelector("#verification-badge"),
       verificationCount: document.querySelector("#verification-count"),
       challengeList: document.querySelector("#challenge-list"),
@@ -396,6 +555,8 @@
       clientKeySecret: document.querySelector("#client-key-secret"),
       copySecret: document.querySelector("#copy-secret"),
       logLines: document.querySelector("#log-lines"),
+      logLevel: document.querySelector("#log-level"),
+      logFollow: document.querySelector("#log-follow"),
       refreshLogs: document.querySelector("#refresh-logs"),
       logMessage: document.querySelector("#log-message"),
       runtimeLog: document.querySelector("#runtime-log"),
@@ -421,6 +582,9 @@
       node.title = value;
       node.setAttribute("aria-label", value);
     });
+    document.querySelectorAll("[data-i18n-aria-label]").forEach((node) => {
+      node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+    });
     document.querySelectorAll("[data-language]").forEach((node) => {
       node.setAttribute("aria-pressed", String(node.dataset.language === state.language));
     });
@@ -445,7 +609,6 @@
     elements.authDot.className = elements.sidebarDot.className;
     elements.authStrip.classList.toggle("is-ready", kind === "ready");
     elements.authStrip.classList.toggle("is-error", kind === "error");
-    elements.refresh.classList.toggle("is-spinning", kind === "loading");
     if (kind === "ready") {
       elements.authDescription.textContent = t("connectedToCore");
     } else if (kind === "error") {
@@ -483,6 +646,11 @@
     }
   }
 
+  function setRefreshing(refreshing) {
+    elements.refresh.classList.toggle("is-spinning", refreshing);
+    elements.refresh.setAttribute("aria-busy", String(refreshing));
+  }
+
   function shouldReconnect(error) {
     if (!currentKey()) return false;
     const status = Number(error?.status || 0);
@@ -496,7 +664,7 @@
       RECONNECT_INITIAL_DELAY_MS * (2 ** state.reconnectAttempts),
     );
     state.reconnectAttempts += 1;
-    setConnection("loading", "reconnecting");
+    if (!state.connected) setConnection("loading", "reconnecting");
     state.reconnectTimer = window.setTimeout(() => {
       state.reconnectTimer = null;
       refreshAll(true);
@@ -582,21 +750,32 @@
   }
 
   function accountState(item) {
+    const operational = String(item.operational_state || "");
     if (item.manual_disabled) return { label: t("disabled"), className: "disabled" };
-    if (item.status === "Working") {
+    if (item.status === "Working" || operational === "chat_in_progress") {
       return { label: t("working"), className: "working" };
     }
-    if (item.login_retry_pending || item.status === "Login") {
-      return { label: t("working"), className: "working attention-state" };
+    if (item.login_retry_pending || item.status === "Login" || operational === "login_starting") {
+      return { label: t("recovering"), className: "recovering" };
     }
-    if (item.status === "Recovering") {
-      return { label: t("recovering"), className: "working" };
+    if (item.status === "Recovering" || [
+      "login_recovery_running",
+      "browser_bridge_unavailable",
+      "browser_page_startup_failed",
+      "login_transport_failure",
+      "browser_runtime_recovery_needed",
+      "login_recovery_pending",
+      "not_initialized",
+    ].includes(operational)) {
+      return { label: t("recovering"), className: "recovering" };
     }
     if (isAccountReady(item)) return { label: t("ready"), className: "ready" };
-    if (item.login_failure_kind === "need_verification") {
+    if (["verification_pending", "verification_required"].includes(operational)
+        || item.login_failure_kind === "need_verification") {
       return { label: t("needsVerification"), className: "attention" };
     }
-    if (item.login_failure_kind === "rate_limited") {
+    if (["chat_quota_cooldown", "provider_login_cooldown"].includes(operational)
+        || item.login_failure_kind === "rate_limited") {
       return { label: t("coolingDown"), className: "attention" };
     }
     if (item.login_failure_kind === "transient") {
@@ -607,13 +786,42 @@
   }
 
   function accountNeedsAttention(item) {
-    if (item.status === "Working") return false;
-    return !isAccountReady(item);
+    const operational = String(item.operational_state || "");
+    if (["Working", "Login", "Recovering"].includes(item.status)) return false;
+    if ([
+      "ready",
+      "chat_in_progress",
+      "login_recovery_running",
+      "login_starting",
+      "chat_quota_cooldown",
+      "provider_login_cooldown",
+      "provider_security_check",
+      "browser_bridge_unavailable",
+      "browser_page_startup_failed",
+      "login_transport_failure",
+      "browser_runtime_recovery_needed",
+      "login_recovery_pending",
+      "not_initialized",
+    ].includes(operational)) return false;
+    if ([
+      "manually_disabled",
+      "verification_pending",
+      "verification_required",
+      "session_reauthentication_required",
+      "account_unavailable",
+      "credentials_rejected",
+      "login_state_unrecognized",
+    ].includes(operational)) return true;
+    if (item.manual_disabled || isAccountReady(item)) return false;
+    return ["account_locked", "bad_credentials", "need_verification", "unknown"]
+      .includes(item.login_failure_kind);
   }
 
   function accountIndexLabel(email) {
-    const local = String(email || "--").split("@", 1)[0];
-    return local.length > 13 ? `${local.slice(0, 11)}…` : local;
+    const [local = "--", domain = ""] = String(email || "--").split("@", 2);
+    const compactLocal = local.length > 10 ? `${local.slice(0, 9)}…` : local;
+    const compactDomain = domain.split(".", 1)[0];
+    return compactDomain ? `${compactLocal}@${compactDomain}` : compactLocal;
   }
 
   function focusAccount(index) {
@@ -642,6 +850,7 @@
       dot.className = "account-index-dot";
       dot.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
+      label.className = "account-index-label";
       label.textContent = accountIndexLabel(item.email);
       button.append(dot, label);
       button.addEventListener("click", () => focusAccount(index));
@@ -693,6 +902,20 @@
     return lines.join("\n");
   }
 
+  function operationalGuidance(item) {
+    const key = OPERATIONAL_STATE_KEYS[String(item.operational_state || "")];
+    if (key) return t(key);
+    if (item.status === "Working") return t("stateChatInProgress");
+    if (item.status === "Recovering" || item.status === "Login") return t("stateLoginRecoveryRunning");
+    if (isAccountReady(item)) return t("stateReady");
+    return t("stateRuntimeNotReady");
+  }
+
+  function failureLabel(kind) {
+    const key = FAILURE_KIND_KEYS[String(kind || "")];
+    return key ? t(key) : t("failureUnknown");
+  }
+
   function accountDiagnostics(item) {
     const plan = item.account_plan && item.account_plan !== "unknown"
       ? `${item.account_plan} (${t("observed")})`
@@ -702,10 +925,10 @@
       `${t("plan")}: ${plan}`,
       `${t("models")}: ${item.observed_model_count || 0} (${item.observed_models_source || t("sourceUnavailable")})`,
       `${t("login")}: ${item.login_state ? t("loginReady") : t("loginNotReady")}`,
+      operationalGuidance(item),
     ];
-    if (item.login_guidance) parts.push(String(item.login_guidance));
-    if (item.login_failure_kind) {
-      parts.push(`${t("failure")}: ${item.login_failure_kind} (${item.login_fail_count || 0}/${item.max_login_failures || "--"})`);
+    if (item.login_failure_kind && item.status !== "Working" && item.operational_state !== "chat_in_progress") {
+      parts.push(`${t("failure")}: ${failureLabel(item.login_failure_kind)} (${item.login_fail_count || 0}/${item.max_login_failures || "--"})`);
     }
     const wait = retryTime(item);
     if (wait) parts.push(`${t("retryWait")}: ${wait}`);
@@ -750,6 +973,9 @@
     const list = Array.isArray(state.status?.accounts) ? state.status.accounts : [];
     const ready = list.filter(isAccountReady).length;
     const attention = list.filter(accountNeedsAttention).length;
+    const presentedStates = list.map(accountState);
+    const working = presentedStates.filter((value) => value.className === "working").length;
+    const recovering = presentedStates.filter((value) => value.className === "recovering").length;
     const sessions = list.reduce((total, item) => total + Number(item.conversation_count || 0), 0);
     elements.total.textContent = String(list.length);
     elements.ready.textContent = String(ready);
@@ -762,7 +988,7 @@
       .filter(({ item }) => !query || String(item.email || "").toLocaleLowerCase().includes(query));
     elements.accountSummary.textContent = query
       ? t("visibleAccounts", { visible: visible.length, total: list.length })
-      : t("accountSummary", { ready, total: list.length });
+      : t("accountSummary", { ready, working, recovering, attention, total: list.length });
     renderAccountIndex(list);
     elements.accountRows.replaceChildren();
     if (!list.length) {
@@ -826,8 +1052,9 @@
     if (name.includes("capability")) return t("eventCapability");
     if (name === "account_control") return t("eventControl");
     if (name.includes("login")) return t("eventLogin");
-    if (name.includes("runtime") || name.includes("context")) return t("eventRuntime");
-    return name || t("eventGeneric");
+    if (name.includes("runtime") || name.includes("context") || name.includes("bridge")) return t("eventRuntime");
+    if (name.includes("project")) return t("eventProject");
+    return t("eventGeneric");
   }
 
   function formatDuration(value) {
@@ -876,20 +1103,33 @@
       return t("activityImageCompleted", { count });
     }
     if (event === "image_generation_failed") return t("activityImageFailed");
+    if (event === "account_control") return t("activityAccountControl");
+    if (event === "login_retry_cancelled") return t("activityLoginRetryCancelled");
+    if (event === "login_retry_failed") return t("activityLoginRetryFailed");
+    if (event === "login_retry_finished") return t("activityLoginRetryFinished");
+    if (event === "runtime_closed") return t("activityRuntimeClosed");
+    if (event === "bridge_context_recovery") return t("activityRuntimeRecovered");
+    if (event === "project_routing_failed") return t("activityProjectRoutingFailed");
+    if (event === "login_retry_started") return t("activityLoginRetryStarted");
+    if (event === "stream_bridge_warmed") return t("activityStreamBridgeWarmed");
+    if (event === "capability_usage_recorded") return t("activityCapabilityRecorded");
+    if (event === "capability_rate_limited") return t("activityCapabilityRateLimited");
+    if (event === "chat_rate_limited") return t("activityChatRateLimited");
+    if (event === "project_created") return t("activityProjectCreated");
+    if (event === "project_routed") return t("activityProjectRouted");
     return item.message || "--";
   }
 
-  function renderActivity() {
-    const list = Array.isArray(state.activity?.events) ? state.activity.events : [];
-    elements.activityList.replaceChildren();
+  function renderActivityList(target, list) {
+    target.replaceChildren();
     if (!list.length) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
       empty.textContent = t("noActivity");
-      elements.activityList.append(empty);
+      target.append(empty);
       return;
     }
-    for (const item of list.slice(0, 30)) {
+    for (const item of list) {
       const row = document.createElement("div");
       const severity = ["debug", "info", "warning", "error", "critical"].includes(item.severity)
         ? item.severity
@@ -911,8 +1151,19 @@
       const source = typeof details.source === "string" ? details.source : "";
       detail.textContent = `${activityDescription(item)}${source ? ` · ${t("activitySource", { source })}` : ""}`;
       row.append(time, account, event, detail);
-      elements.activityList.append(row);
+      target.append(row);
     }
+  }
+
+  function renderActivity() {
+    const list = Array.isArray(state.activity?.events) ? state.activity.events : [];
+    const severityRank = { debug: 10, info: 20, warning: 30, error: 40, critical: 50 };
+    const minimum = state.activityLevel === "warning" ? 30 : state.activityLevel === "error" ? 40 : 0;
+    const filtered = list.filter((item) => (
+      (severityRank[String(item.severity || "info")] || 20) >= minimum
+    ));
+    renderActivityList(elements.activityPreview, list.slice(0, 8));
+    renderActivityList(elements.activityList, filtered.slice(0, 100));
   }
 
   async function submitChallenge(item, code, form) {
@@ -1102,8 +1353,15 @@
     if (!state.connected || state.logRefreshing) return;
     state.logRefreshing = true;
     elements.refreshLogs.disabled = true;
+    const wasNearBottom = (
+      elements.runtimeLog.scrollHeight - elements.runtimeLog.scrollTop - elements.runtimeLog.clientHeight
+    ) < 48;
     try {
-      const payload = await api(`/v1/runtime/logs?lines=${encodeURIComponent(elements.logLines.value)}`);
+      const query = new URLSearchParams({
+        lines: elements.logLines.value,
+        level: elements.logLevel.value,
+      });
+      const payload = await api(`/v1/runtime/logs?${query}`);
       if (!payload.available) {
         elements.logMessage.textContent = payload.message || t("logUnavailable");
         elements.runtimeLog.textContent = payload.message || t("logUnavailable");
@@ -1123,11 +1381,14 @@
             ? entry.level
             : "info";
           line.className = `log-line log-${level}`;
+          line.dataset.level = level;
           line.textContent = String(entry.text || "");
           elements.runtimeLog.append(line);
         }
       }
-      elements.runtimeLog.scrollTop = elements.runtimeLog.scrollHeight;
+      if (elements.logFollow.checked || wasNearBottom) {
+        elements.runtimeLog.scrollTop = elements.runtimeLog.scrollHeight;
+      }
     } catch (error) {
       elements.logMessage.textContent = error.message;
       elements.runtimeLog.textContent = error.message;
@@ -1139,12 +1400,14 @@
   }
 
   async function refreshAll(force = false) {
-    if (state.refreshing) return;
-    if (!force && state.submitting.size) return;
-    if (!force && document.activeElement?.closest?.(".challenge")) return;
+    if (state.refreshing) {
+      if (force) state.pendingRefresh = true;
+      return;
+    }
+    const wasConnected = state.connected;
     state.refreshing = true;
-    setConnection("loading", state.connected ? "refreshing" : "connecting");
-    elements.refresh.disabled = true;
+    setRefreshing(true);
+    if (!wasConnected) setConnection("loading", "connecting");
     try {
       state.status = normalizeStatus(await api("/v1/account/status"));
       state.connected = true;
@@ -1152,6 +1415,8 @@
       state.reconnectAttempts = 0;
       sessionStorage.setItem(STORAGE_KEY, currentKey());
       setConnection("ready", "connected");
+      state.lastUpdated = new Date();
+      renderCurrentState();
       const optional = await Promise.allSettled([
         api("/v1/activity?limit=50"),
         api("/v1/verification"),
@@ -1164,23 +1429,32 @@
           setNotice(result.reason.message, "error");
         }
       }
-      state.lastUpdated = new Date();
       renderCurrentState();
       if (state.view === "logs") await refreshLogs();
     } catch (error) {
-      state.connected = false;
-      setConnection("error", "connectionFailed");
-      setNotice(error.message, "error");
       if (error.status === 401 || error.status === 403) {
+        state.connected = false;
+        setConnection("error", "connectionFailed");
+        setNotice(error.message, "error");
         clearReconnectTimer();
         state.reconnectAttempts = 0;
         if (error.status === 401) sessionStorage.removeItem(STORAGE_KEY);
       } else {
+        const keepHealthyAppearance = wasConnected && state.reconnectAttempts === 0;
+        if (!keepHealthyAppearance) {
+          state.connected = false;
+          setConnection("loading", "reconnecting");
+          setNotice(error.message, "error");
+        }
         scheduleReconnect(error);
       }
     } finally {
       state.refreshing = false;
-      elements.refresh.disabled = false;
+      setRefreshing(false);
+      if (state.pendingRefresh) {
+        state.pendingRefresh = false;
+        window.queueMicrotask(() => refreshAll(true));
+      }
     }
   }
 
@@ -1203,6 +1477,7 @@
     activityEmpty.className = "empty-state";
     activityEmpty.textContent = t("connectToLoad");
     elements.activityList.append(activityEmpty);
+    elements.activityPreview.replaceChildren(activityEmpty.cloneNode(true));
     elements.verificationBadge.hidden = true;
     elements.verificationCount.textContent = "";
     elements.challengeList.replaceChildren(activityEmpty.cloneNode(true));
@@ -1215,7 +1490,7 @@
   }
 
   function activateView(name, updateLocation = true) {
-    const allowed = new Set(["overview", "verification", "access", "logs"]);
+    const allowed = new Set(["overview", "activity", "verification", "access", "logs"]);
     state.view = allowed.has(name) ? name : "overview";
     document.querySelectorAll("[data-view]").forEach((node) => {
       node.classList.toggle("is-active", node.dataset.view === state.view);
@@ -1324,16 +1599,28 @@
       state.accountFilter = elements.accountFilter.value;
       if (state.status) renderAccounts();
     });
+    elements.openActivity.addEventListener("click", () => activateView("activity"));
+    elements.activityLevel.addEventListener("change", () => {
+      state.activityLevel = elements.activityLevel.value;
+      renderActivity();
+    });
     elements.clientKeyForm.addEventListener("submit", createClientKey);
     elements.copySecret.addEventListener("click", copySecret);
     elements.refreshLogs.addEventListener("click", refreshLogs);
     elements.logLines.addEventListener("change", refreshLogs);
+    elements.logLevel.addEventListener("change", refreshLogs);
     window.addEventListener("hashchange", () => activateView(location.hash.slice(1), false));
     window.addEventListener("online", () => {
       if (!state.connected && currentKey()) {
         clearReconnectTimer();
         refreshAll(true);
       }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && currentKey()) refreshAll(true);
+    });
+    window.addEventListener("pageshow", () => {
+      if (currentKey()) refreshAll(true);
     });
   }
 

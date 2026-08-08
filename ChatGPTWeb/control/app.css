@@ -217,12 +217,17 @@ button:disabled {
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   min-height: 94px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
   border-bottom: 1px solid var(--line);
+  background: rgba(238, 242, 245, 0.96);
+  backdrop-filter: blur(10px);
 }
 
 .eyebrow {
@@ -630,6 +635,10 @@ select {
   box-shadow: 0 5px 16px rgba(29, 44, 68, 0.04);
 }
 
+.account-table {
+  max-height: none;
+}
+
 table {
   width: 100%;
   min-width: 1050px;
@@ -671,16 +680,16 @@ table {
 }
 
 .account-index {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   align-items: center;
-  justify-content: flex-end;
   gap: 5px;
-  overflow-x: auto;
   padding: 4px 1px;
-  scrollbar-width: thin;
 }
 
 .account-index-item {
+  width: 100%;
+  min-width: 0;
   height: 30px;
   display: inline-flex;
   align-items: center;
@@ -692,6 +701,13 @@ table {
   background: var(--surface);
   color: #536178;
   font-size: 10px;
+}
+
+.account-index-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-index-item:hover {
@@ -708,6 +724,7 @@ table {
 
 .account-index-item.ready .account-index-dot { background: var(--green); }
 .account-index-item.working .account-index-dot { background: var(--blue); }
+.account-index-item.recovering .account-index-dot { background: var(--amber); }
 .account-index-item.attention .account-index-dot { background: var(--amber); }
 .account-index-item.error .account-index-dot { background: var(--danger); }
 .account-index-item.disabled .account-index-dot { background: #8993a0; }
@@ -787,6 +804,11 @@ tbody tr:hover:not(.empty-row) {
   color: var(--blue);
 }
 
+.status-pill.recovering {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
 .status-pill.attention {
   background: var(--amber-soft);
   color: var(--amber);
@@ -845,6 +867,20 @@ tbody tr:hover:not(.empty-row) {
   border-radius: 7px;
   overflow: hidden;
   background: var(--surface);
+}
+
+.activity-preview .activity-item:nth-child(n+9) {
+  display: none;
+}
+
+.activity-page-intro,
+.activity-controls {
+  align-items: flex-end;
+}
+
+.activity-controls {
+  display: flex;
+  gap: 8px;
 }
 
 .activity-item {
@@ -1038,6 +1074,24 @@ tbody tr:hover:not(.empty-row) {
   gap: 8px;
 }
 
+.toggle-field {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.toggle-field input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
 .runtime-log {
   min-height: 520px;
   max-height: calc(100vh - 245px);
@@ -1056,24 +1110,35 @@ tbody tr:hover:not(.empty-row) {
 .runtime-log .log-line {
   display: block;
   min-height: 1.62em;
+  margin: 0 -5px;
+  border-left: 3px solid transparent;
+  padding: 1px 7px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+.runtime-log .log-line:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
 .runtime-log .log-debug {
+  border-left-color: #5c8da8;
   color: #8eb7cf;
 }
 
 .runtime-log .log-info {
+  border-left-color: #3d8d82;
   color: #d8e4e8;
 }
 
 .runtime-log .log-warning {
+  border-left-color: #d9a83e;
   color: #f3cf7c;
 }
 
 .runtime-log .log-error,
 .runtime-log .log-critical {
+  border-left-color: #d15b5b;
   color: #ff9c9c;
 }
 
@@ -1208,7 +1273,7 @@ tbody tr:hover:not(.empty-row) {
   }
 
   .account-index {
-    justify-content: flex-start;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 
   .activity-item {

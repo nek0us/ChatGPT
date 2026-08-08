@@ -1302,6 +1302,28 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["source"], "memory")
         self.assertEqual(payload["entries"][-1]["level"], "error")
 
+    async def test_runtime_logs_filter_by_minimum_level(self):
+        headers = {"Authorization": "Bearer test-key"}
+
+        response = await self.client.get(
+            "/v1/runtime/logs?lines=20&level=warning",
+            headers=headers,
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["minimum_level"], "warning")
+        self.assertEqual(payload["entries"], [{
+            "text": "2026-01-01 ERROR request failed",
+            "level": "error",
+        }])
+
+        invalid = await self.client.get(
+            "/v1/runtime/logs?level=verbose",
+            headers=headers,
+        )
+        self.assertEqual(invalid.status, 400)
+
     async def test_account_control_requires_auth_and_valid_action(self):
         headers = {"Authorization": "Bearer test-key"}
         unauthorized = await self.client.post(
@@ -1335,6 +1357,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Authorization": "Bearer test-key"},
             )
             body = await page.text()
+            css = await stylesheet.text()
             javascript = await script.text()
         finally:
             await console.close()
@@ -1351,6 +1374,13 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("RECONNECT_INITIAL_DELAY_MS", javascript)
         self.assertIn('eventChatQueued: "Request queued"', javascript)
         self.assertIn('activityRequestAdmitted: "Assigned an account after {duration}"', javascript)
+        self.assertIn('new Set(["overview", "activity", "verification", "access", "logs"])', javascript)
+        self.assertIn('if (!wasConnected) setConnection("loading", "connecting")', javascript)
+        self.assertIn("level: elements.logLevel.value", javascript)
+        self.assertIn('data-panel="activity"', body)
+        self.assertIn('id="log-level"', body)
+        self.assertIn(".account-table", css)
+        self.assertIn("max-height: none", css)
         self.assertNotIn("test-key", body)
         self.assertEqual(protected.status, 401)
         self.assertEqual(authorized.status, 200)

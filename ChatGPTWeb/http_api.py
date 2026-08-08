@@ -33,7 +33,7 @@ from .remote_files import (
     RemoteFilePolicy,
     resolve_remote_input_payload,
 )
-from .runtime_logging import log_level_from_text, strip_ansi
+from .runtime_logging import log_level_from_text, normalize_log_level, strip_ansi
 from .service import ChatRequest, ChatResult, ChatService, ConversationOperation
 from .verification import VerificationBroker
 from .responses_stream import (
@@ -1187,30 +1187,61 @@ def create_http_app(
             lines = max(20, min(int(request.query.get("lines", "160")), 800))
         except ValueError as error:
             raise web.HTTPBadRequest(text="lines must be an integer") from error
+        level_order = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
+        minimum_level = request.query.get("level", "debug").strip().lower()
+        if minimum_level not in level_order:
+            raise web.HTTPBadRequest(text="level must be debug, info, warning, error, or critical")
+
+        def filtered_entries(entries: list[dict[str, Any]]) -> list[dict[str, str]]:
+            selected = []
+            for entry in entries:
+                text = strip_ansi(str(entry.get("text") or ""))
+                level = normalize_log_level(entry.get("level") or log_level_from_text(text))
+                if level_order[level] >= level_order[minimum_level]:
+                    selected.append({"text": text, "level": level})
+            return selected[-lines:]
+
         if log_path:
             try:
                 with log_path.open("rb") as handle:
                     handle.seek(0, 2)
                     size = handle.tell()
-                    handle.seek(max(0, size - 256 * 1024))
+                    handle.seek(max(0, size - 1024 * 1024))
                     text = handle.read().decode("utf8", errors="replace")
             except FileNotFoundError:
                 pass
             except OSError as error:
                 logger.warning("could not read runtime log %s: %s", log_path, error)
             else:
-                selected = [strip_ansi(line) for line in text.splitlines()[-lines:]]
+                entries = filtered_entries([
+                    {"text": line, "level": log_level_from_text(line)}
+                    for line in text.splitlines()
+                ])
                 return web.json_response({
                     "available": True,
                     "source": "file",
                     "message": "",
-                    "entries": [
-                        {"text": line, "level": log_level_from_text(line)}
-                        for line in selected
-                    ],
-                    "lines": selected,
+                    "minimum_level": minimum_level,
+                    "entries": entries,
+                    "lines": [entry["text"] for entry in entries],
                 })
-        return web.json_response(await service.get_runtime_logs(limit=lines))
+        payload = await service.get_runtime_logs(limit=800)
+        raw_entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(raw_entries, list):
+            raw_lines = payload.get("lines", []) if isinstance(payload, dict) else []
+            raw_entries = [
+                {"text": line, "level": log_level_from_text(str(line))}
+                for line in raw_lines
+            ]
+        entries = filtered_entries([
+            entry for entry in raw_entries if isinstance(entry, dict)
+        ])
+        return web.json_response({
+            **payload,
+            "minimum_level": minimum_level,
+            "entries": entries,
+            "lines": [entry["text"] for entry in entries],
+        })
 
     async def control_account(request: web.Request) -> web.Response:
         require_admin(request)

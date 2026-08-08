@@ -66,6 +66,16 @@ class RequestAdmissionActivityTests(unittest.TestCase):
         self.assertEqual(self.runtime._activity, [])
         self.assertLess(request.request_admission_ms, 1000)
 
+    def test_pending_admission_does_not_present_account_hint_as_assignment(self):
+        request = self._request(1.0)
+        request.account_hint = "preferred@example.com"
+
+        item = self.runtime._begin_request_admission(request)
+
+        self.assertEqual(item["account"], "")
+        self.assertEqual(item["details"]["requested_account"], "preferred@example.com")
+        self.assertTrue(item["details"]["pending"])
+
     def test_slow_admission_keeps_wait_duration_and_assigned_account(self):
         request = self._request(2.0)
         item = self.runtime._begin_request_admission(request)

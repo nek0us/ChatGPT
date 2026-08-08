@@ -392,6 +392,24 @@ class RuntimeStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account["operational_state"], "account_unavailable")
         self.assertEqual(account["recommended_action"], "restore_account")
 
+    async def test_token_status_prioritizes_active_chat_over_stale_login_failure(self):
+        runtime = self._runtime()
+        runtime.Sessions = [Session(
+            email="working@example.com",
+            status=Status.Working.value,
+            login_state=True,
+            login_failure_kind="transient",
+            last_login_error="old bridge failure",
+        )]
+
+        account = (await runtime.token_status())["accounts"][0]
+
+        self.assertFalse(account["available"])
+        self.assertTrue(account["busy"])
+        self.assertEqual(account["operational_state"], "chat_in_progress")
+        self.assertEqual(account["recommended_action"], "wait")
+        self.assertEqual(account["login_guidance"], "A chat request is currently in progress.")
+
     async def test_token_status_distinguishes_bridge_and_reauthentication_failures(self):
         runtime = self._runtime()
         runtime.Sessions = [

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime
 import logging
 import os
+from pathlib import Path
 import re
 import sys
+import traceback
 from typing import Any
 
 
@@ -25,6 +28,7 @@ _LEVEL_COLORS = {
     "CRITICAL": "\x1b[1;38;5;203m",
 }
 _RESET = "\x1b[0m"
+_LOG_LEVELS = {"debug", "info", "warning", "error", "critical"}
 
 
 def strip_ansi(value: str) -> str:
@@ -37,6 +41,54 @@ def log_level_from_text(value: str) -> str:
         return "info"
     level = match.group("level").lower()
     return "warning" if level == "warn" else "info" if level == "success" else level
+
+
+def normalize_log_level(value: Any) -> str:
+    """Normalize standard logging and Loguru level names for the control API."""
+    level = str(getattr(value, "name", value) or "info").lower()
+    if level == "warn":
+        return "warning"
+    if level == "success":
+        return "info"
+    return level if level in _LOG_LEVELS else "info"
+
+
+def is_core_log_record(record: dict[str, Any], package_root: Path) -> bool:
+    """Keep only records emitted from this package when attached to a host logger."""
+    file_value = record.get("file")
+    source = getattr(file_value, "path", "")
+    if not source:
+        return False
+    try:
+        Path(source).resolve().relative_to(package_root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def format_loguru_record(record: dict[str, Any]) -> tuple[str, str]:
+    """Format a Loguru record once, without re-formatting its rendered message."""
+    timestamp = record.get("time")
+    if not isinstance(timestamp, datetime):
+        timestamp = datetime.now()
+    file_value = record.get("file")
+    filename = getattr(file_value, "name", "runtime")
+    level_value = record.get("level")
+    display_level = str(getattr(level_value, "name", level_value) or "INFO").upper()
+    message = str(record.get("message") or "")
+    exception = record.get("exception")
+    if exception is not None:
+        exception_text = "".join(traceback.format_exception(
+            getattr(exception, "type", None),
+            getattr(exception, "value", None),
+            getattr(exception, "traceback", None),
+        )).strip()
+        if exception_text:
+            message = f"{message}\n{exception_text}" if message else exception_text
+    return (
+        f"{timestamp:%Y/%m/%d %H:%M:%S} {filename} {display_level} {message}",
+        normalize_log_level(level_value),
+    )
 
 
 def color_output_enabled(stream: Any) -> bool:
@@ -69,7 +121,13 @@ class BoundedLogHandler(logging.Handler):
 
     def __init__(self, *, capacity: int = 2000) -> None:
         super().__init__()
-        self.lines: deque[str] = deque(maxlen=max(100, capacity))
+        self.entries: deque[dict[str, str]] = deque(maxlen=max(100, capacity))
+
+    def append(self, value: str, *, level: str = "info") -> None:
+        normalized = normalize_log_level(level)
+        plain = strip_ansi(value)
+        for line in plain.splitlines() or [plain]:
+            self.entries.append({"text": line, "level": normalized})
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -77,14 +135,10 @@ class BoundedLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
             return
-        self.lines.extend(value.splitlines() or [value])
+        self.append(value, level=record.levelname)
 
     def snapshot(self, limit: int) -> list[dict[str, str]]:
-        selected = list(self.lines)[-max(1, limit):]
-        return [
-            {"text": line, "level": log_level_from_text(line)}
-            for line in selected
-        ]
+        return [entry.copy() for entry in list(self.entries)[-max(1, limit):]]
 
 
 def default_stream() -> Any:

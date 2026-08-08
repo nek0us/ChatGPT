@@ -11,7 +11,7 @@
 <body>
   <div id="fatal-banner" class="fatal-banner" role="alert" hidden></div>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Console navigation">
+    <aside class="sidebar" aria-label="Console navigation" data-i18n-aria-label="consoleNavigation">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">CW</span>
         <span>
@@ -24,17 +24,21 @@
           <span class="nav-symbol" aria-hidden="true">01</span>
           <span data-i18n="overview">运行概览</span>
         </button>
-        <button class="nav-item" type="button" data-view="verification">
+        <button class="nav-item" type="button" data-view="activity">
           <span class="nav-symbol" aria-hidden="true">02</span>
+          <span data-i18n="activity">最近活动</span>
+        </button>
+        <button class="nav-item" type="button" data-view="verification">
+          <span class="nav-symbol" aria-hidden="true">03</span>
           <span data-i18n="verification">登录验证</span>
           <span id="verification-badge" class="nav-badge" hidden>0</span>
         </button>
         <button class="nav-item" type="button" data-view="access">
-          <span class="nav-symbol" aria-hidden="true">03</span>
+          <span class="nav-symbol" aria-hidden="true">04</span>
           <span data-i18n="access">访问密钥</span>
         </button>
         <button class="nav-item" type="button" data-view="logs">
-          <span class="nav-symbol" aria-hidden="true">04</span>
+          <span class="nav-symbol" aria-hidden="true">05</span>
           <span data-i18n="logs">运行日志</span>
         </button>
       </nav>
@@ -57,7 +61,7 @@
             <span id="connection-label" data-i18n="notConnected">尚未连接</span>
             <time id="last-updated"></time>
           </div>
-          <div class="segmented" aria-label="Language">
+          <div class="segmented" aria-label="Language" data-i18n-aria-label="languageSelector">
             <button type="button" data-language="zh">中文</button>
             <button type="button" data-language="en">EN</button>
           </div>
@@ -90,7 +94,7 @@
 
       <main>
         <section class="view is-active" data-panel="overview">
-          <div class="metrics" aria-label="Account summary">
+          <div class="metrics" aria-label="Account summary" data-i18n-aria-label="accountMetrics">
             <div class="metric metric-blue">
               <span data-i18n="configuredAccounts">配置账户</span>
               <strong id="metric-total">--</strong>
@@ -131,9 +135,9 @@
                 placeholder="搜索账户"
               >
             </label>
-            <div id="account-index" class="account-index" aria-label="Account quick index"></div>
+            <div id="account-index" class="account-index" aria-label="Account quick index" data-i18n-aria-label="accountQuickIndex"></div>
           </div>
-          <div class="table-frame">
+          <div class="table-frame account-table">
             <table>
               <thead>
                 <tr>
@@ -155,6 +159,29 @@
             <div>
               <h2 data-i18n="recentActivity">最近活动</h2>
               <p data-i18n="activitySubtitle">当前核心进程内的运维事件</p>
+            </div>
+            <button id="open-activity" class="button" type="button" data-i18n="viewAllActivity">查看全部</button>
+          </div>
+          <div class="activity-list activity-preview" id="activity-preview">
+            <div class="empty-state" data-i18n="connectToLoad">连接后加载账户状态</div>
+          </div>
+        </section>
+
+        <section class="view" data-panel="activity">
+          <div class="page-intro activity-page-intro">
+            <div>
+              <h2 data-i18n="activity">最近活动</h2>
+              <p data-i18n="activityPageSubtitle">查看请求、附件、登录和浏览器恢复事件</p>
+            </div>
+            <div class="activity-controls">
+              <label class="field compact-field">
+                <span data-i18n="activityLevel">等级</span>
+                <select id="activity-level">
+                  <option value="all" data-i18n="allLevels">全部</option>
+                  <option value="warning" data-i18n="warningsAndErrors">警告及错误</option>
+                  <option value="error" data-i18n="errorsOnly">仅错误</option>
+                </select>
+              </label>
             </div>
           </div>
           <div class="activity-list" id="activity-list">
@@ -232,6 +259,15 @@
             </div>
             <div class="log-controls">
               <label class="field compact-field">
+                <span data-i18n="logLevel">最低等级</span>
+                <select id="log-level">
+                  <option value="debug" data-i18n="levelDebug">调试</option>
+                  <option value="info" data-i18n="levelInfo" selected>信息</option>
+                  <option value="warning" data-i18n="levelWarning">警告</option>
+                  <option value="error" data-i18n="levelError">错误</option>
+                </select>
+              </label>
+              <label class="field compact-field">
                 <span data-i18n="lines">行数</span>
                 <select id="log-lines">
                   <option value="80">80</option>
@@ -239,6 +275,10 @@
                   <option value="320">320</option>
                   <option value="800">800</option>
                 </select>
+              </label>
+              <label class="toggle-field">
+                <input id="log-follow" type="checkbox" checked>
+                <span data-i18n="followLogs">自动跟随</span>
               </label>
               <button id="refresh-logs" class="button" type="button" data-i18n="refreshLogs">刷新日志</button>
             </div>

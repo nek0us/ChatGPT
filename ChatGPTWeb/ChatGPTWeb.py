@@ -85,6 +85,8 @@ from .runtime_logging import (
     ColorFormatter,
     color_output_enabled,
     default_stream,
+    format_loguru_record,
+    is_core_log_record,
 )
 
 class chatgpt:
@@ -254,6 +256,7 @@ class chatgpt:
         self.logger = logging.getLogger("logger")
         self._standard_logger = self.logger
         self._nonebot_runtime_sink_id = None
+        self._nonebot_control_file_sink_id = None
         self.logger.setLevel(logger_level)
         sh = logging.StreamHandler()
         sh.setFormatter(ColorFormatter(
@@ -317,14 +320,38 @@ class chatgpt:
                 self._standard_logger.removeHandler(self._stream_log_handler)
                 self._stream_log_handler.close()
                 self._stream_log_handler = None
-            self._standard_logger.removeHandler(self._runtime_log_handler)
             self.logger = logger
+
+            package_root = Path(__file__).resolve().parent
+
+            def core_record_filter(record: Dict[str, Any]) -> bool:
+                return is_core_log_record(record, package_root)
+
+            def capture_core_record(message: Any) -> None:
+                value, level = format_loguru_record(message.record)
+                self._runtime_log_handler.append(value, level=level)
+
             self._nonebot_runtime_sink_id = self.logger.add(
-                self._runtime_log_handler,
+                capture_core_record,
                 level=logger_level,
-                format="{time:YYYY/MM/DD HH:mm:ss} {file.name} {level} {message}",
+                filter=core_record_filter,
+                format="{message}",
                 colorize=False,
             )
+            if self.control_log_path:
+                try:
+                    self.control_log_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._nonebot_control_file_sink_id = self.logger.add(
+                        str(self.control_log_path),
+                        level=logger_level,
+                        filter=core_record_filter,
+                        format="{time:YYYY/MM/DD HH:mm:ss} {file.name} {level} {message}",
+                        colorize=False,
+                    )
+                except OSError as error:
+                    self.logger.warning(
+                        f"could not open control runtime log {self.control_log_path}: {error}"
+                    )
 
         '''
         data : base data type | 内部数据类型
@@ -1342,12 +1369,13 @@ class chatgpt:
     def _begin_request_admission(self, msg_data: MsgData) -> Dict[str, object]:
         """Expose a pending request while it waits for scheduler and account admission."""
         return self._record_activity(
-            msg_data.account_hint,
+            "",
             "chat_queued",
             "waiting for an available account",
             details={
                 "pending": True,
                 "priority": msg_data.request_priority,
+                **({"requested_account": msg_data.account_hint} if msg_data.account_hint else {}),
                 **self._request_activity_details(msg_data),
             },
         )
@@ -1770,13 +1798,14 @@ class chatgpt:
             log_handler.close()
             self._control_log_handler = None
 
-        nonebot_sink_id = getattr(self, "_nonebot_runtime_sink_id", None)
-        if nonebot_sink_id is not None:
-            try:
-                self.logger.remove(nonebot_sink_id)
-            except (TypeError, ValueError):
-                pass
-            self._nonebot_runtime_sink_id = None
+        for attribute in ("_nonebot_runtime_sink_id", "_nonebot_control_file_sink_id"):
+            nonebot_sink_id = getattr(self, attribute, None)
+            if nonebot_sink_id is not None:
+                try:
+                    self.logger.remove(nonebot_sink_id)
+                except (TypeError, ValueError):
+                    pass
+                setattr(self, attribute, None)
 
         for attribute in ("_stream_log_handler", "_runtime_log_handler"):
             handler = getattr(self, attribute, None)
@@ -6089,6 +6118,7 @@ class chatgpt:
                 "email": session.email,
                 "mode": session.mode,
                 "status": session.status,
+                "busy": session.status == Status.Working.value,
                 "login_state": session.login_state,
                 "available": bool(session.login_state and session.status == Status.Ready.value and not disabled and not chat_rate_limited),
                 "disabled": disabled,
@@ -6181,6 +6211,8 @@ class chatgpt:
         """Return safe, operator-facing login state without exposing page/error text."""
         if session.manual_disabled:
             return "Disabled by operator.", "enable"
+        if session.status == Status.Working.value:
+            return "A chat request is currently in progress.", "wait"
         if retry_pending:
             return "Manual login retry is running.", "wait"
         if session.is_chat_rate_limited():
@@ -6221,6 +6253,12 @@ class chatgpt:
                 "state": "manually_disabled",
                 "guidance": "The operator disabled this account. Enable it before scheduling new work.",
                 "action": "enable_account",
+            }
+        if session.status == Status.Working.value:
+            return {
+                "state": "chat_in_progress",
+                "guidance": "This account is currently serving a chat request.",
+                "action": "wait",
             }
         if retry_pending:
             return {
@@ -6301,12 +6339,6 @@ class chatgpt:
                 "state": "login_state_unrecognized",
                 "guidance": "The provider login page did not match a known state. Review local diagnostics before retrying.",
                 "action": "review_then_retry",
-            }
-        if session.status == Status.Working.value:
-            return {
-                "state": "chat_in_progress",
-                "guidance": "This account is currently serving a chat request.",
-                "action": "wait",
             }
         if session.login_state and session.status == Status.Ready.value:
             return {
