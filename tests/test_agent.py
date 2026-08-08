@@ -122,6 +122,16 @@ class AgentDecisionTests(unittest.TestCase):
         self.assertEqual(unknown.kind, "error")
         self.assertEqual(malformed.kind, "error")
 
+    def test_plain_text_can_be_a_safe_final_when_host_opted_in(self):
+        decision = parse_agent_decision(
+            "A normal knowledge answer without a tool request.",
+            _tools(),
+            allow_plain_final=True,
+        )
+
+        self.assertEqual(decision.kind, "final")
+        self.assertEqual(decision.answer, "A normal knowledge answer without a tool request.")
+
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_limit_preserves_a_retry_later_agent_error(self):
@@ -200,7 +210,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(backend.requests), 5)
         self.assertIn("previous response was not a valid agent decision", backend.requests[-1].msg_send)
         self.assertIn("create a note", backend.requests[-1].msg_send)
-        self.assertIn("workspace.write_text", backend.requests[-1].msg_send)
+        self.assertNotIn("Current registered tools JSON", backend.requests[-1].msg_send)
         self.assertEqual(backend.requests[-1].conversation_id, "agent-conversation")
         self.assertEqual(backend.requests[-1].p_msg_id, "message-4")
 
@@ -217,6 +227,46 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         repair_prompt = backend.requests[-1].msg_send
         self.assertIn("wrongly claimed", repair_prompt)
         self.assertIn("registered host tools", repair_prompt)
+
+    async def test_required_tool_call_repairs_an_unverified_final(self):
+        backend = _Backend([
+            '{"type":"final","answer":"I checked the file, but it was missing."}',
+            '{"type":"tool_call","tool":"workspace.write_text","arguments":{"path":"note.txt","content":"hello"},"summary":"inspect with a real tool"}',
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "inspect the local file",
+            _tools(),
+            allow_plain_final=True,
+            require_tool_call=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "tool_call")
+        repair = backend.requests[-1]
+        self.assertIn("A final answer is forbidden", repair.msg_send)
+        self.assertIn("Current registered tools JSON", repair.msg_send)
+        self.assertIn("requires at least one registered tool call", repair.msg_send)
+        self.assertEqual(repair.conversation_id, "agent-conversation")
+        self.assertEqual(repair.p_msg_id, "message-3")
+
+    async def test_required_tool_repair_rejects_a_second_plain_refusal(self):
+        backend = _Backend([
+            "I cannot access files on your computer. Please upload it.",
+            "I still cannot access files on your computer.",
+        ])
+
+        result = await AgentService(ChatService(backend)).turn(
+            "read Downloads/requirements.txt",
+            _tools(),
+            allow_plain_final=True,
+            require_tool_call=True,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.decision.kind, "error")
+        self.assertIn("JSON", result.decision.error)
+        self.assertEqual(backend.requests[-1].p_msg_id, "message-3")
 
     async def test_invalid_enum_is_repaired_with_the_allowed_values(self):
         backend = _Backend([

@@ -96,6 +96,13 @@ class ChatStreamParser:
         self.model = ""
         self.usage: Dict[str, Any] = {}
         self.metadata: Dict[str, Any] = {}
+        # V8_4_COMPACT_TEXT_PATCH_CONTINUATION
+        # ChatGPT's compact delta encoding may omit p/o on consecutive values.
+        # Retain only an active assistant text append target; never inherit
+        # arbitrary metadata or root patch operations.
+        self._compact_text_path = ""
+        self._compact_text_op = ""
+        self._compact_text_continuation_seen = False
 
     def _record_metadata(self, item: Dict[str, Any]):
         metadata = item.get("metadata")
@@ -105,6 +112,10 @@ class ChatStreamParser:
                 "model_slug",
                 "default_model_slug",
                 "requested_model_slug",
+                "channel",
+                "recipient",
+                "phase",
+                "message_type",
                 "finish_details",
                 "content_references",
                 "citations",
@@ -165,34 +176,81 @@ class ChatStreamParser:
             if not value:
                 return []
         self.text += value
-        return [ChatStreamEvent(type="delta", text=value, raw=raw)]
+        return [ChatStreamEvent(
+            type="delta",
+            text=value,
+            message_id=self.message_id,
+            conversation_id=self.conversation_id,
+            model=self.model,
+            metadata=self.metadata.copy(),
+            raw=raw,
+        )]
 
-    def _merge_full_text(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+
+    # V8_5_EXACT_COMPACT_APPEND
+    def _append_exact_delta(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+        """Append an authoritative protocol append value without overlap guessing."""
         if not value:
             return []
-        if value == self.text:
-            return []
-        if value.startswith(self.text):
-            return self._append_delta(value[len(self.text):], raw)
-        if self.text.startswith(value):
-            # Conversation streams may replay an older, shorter message snapshot
-            # after tool/citation metadata arrives.  It is not an authoritative
-            # replacement for text that has already been observed.
-            return []
+        self.text += value
+        return [ChatStreamEvent(
+            type="delta",
+            text=value,
+            message_id=self.message_id,
+            conversation_id=self.conversation_id,
+            model=self.model,
+            metadata=self.metadata.copy(),
+            raw=raw,
+        )]
+    def _merge_full_text(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+            if not value:
+                return []
+            if value == self.text:
+                return []
+            if value.startswith(self.text):
+                return self._append_delta(value[len(self.text):], raw)
+            if self.text.startswith(value):
+                # A shorter replay is an older snapshot, not a replacement.
+                return []
 
-        max_overlap = min(len(self.text), len(value))
-        for overlap in range(max_overlap, 0, -1):
-            if self.text.endswith(value[:overlap]):
-                return self._append_delta(value[overlap:], raw)
+            max_overlap = min(len(self.text), len(value))
+            for overlap in range(max_overlap, 0, -1):
+                if self.text.endswith(value[:overlap]):
+                    return self._append_delta(value[overlap:], raw)
 
-        # A disjoint full snapshot can only be useful when it is longer than the
-        # accumulated response.  Prefer preserving the longer value over silently
-        # truncating an already delivered answer.
-        if len(value) > len(self.text):
-            delta = value
+            # A disjoint full snapshot cannot be appended to an irreversible client
+            # stream.  Keep it as the parser's authoritative state and ask the service
+            # layer to reconcile against the final conversation node.
             self.text = value
-            return [ChatStreamEvent(type="delta", text=delta, raw=raw)]
-        return []
+            metadata = self.metadata.copy()
+            metadata["stream_replacement"] = True
+            return [ChatStreamEvent(
+                type="reconcile",
+                text=value,
+                message_id=self.message_id,
+                conversation_id=self.conversation_id,
+                model=self.model,
+                metadata=metadata,
+                raw=raw,
+            )]
+
+    def _replace_full_text(self, value: str, raw: Dict[str, Any]) -> List[ChatStreamEvent]:
+            if value == self.text:
+                return []
+            if value.startswith(self.text):
+                return self._append_delta(value[len(self.text):], raw)
+            self.text = value
+            metadata = self.metadata.copy()
+            metadata["stream_replacement"] = True
+            return [ChatStreamEvent(
+                type="reconcile",
+                text=value,
+                message_id=self.message_id,
+                conversation_id=self.conversation_id,
+                model=self.model,
+                metadata=metadata,
+                raw=raw,
+            )]
 
     def _handle_message(self, item: Dict[str, Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         events: List[ChatStreamEvent] = []
@@ -205,7 +263,7 @@ class ChatStreamParser:
 
         author = message.get("author")
         role = author.get("role") if isinstance(author, dict) else ""
-        if message.get("id") and (role == "assistant" or not self.message_id):
+        if message.get("id") and role == "assistant":
             self.message_id = message["id"]
 
         if role == "tool":
@@ -219,15 +277,22 @@ class ChatStreamParser:
                 events.extend(self._handle_image_results(image_results, raw))
 
         content = message.get("content", {})
+        if isinstance(content, dict):
+            content_type = content.get("content_type")
+            if isinstance(content_type, str) and content_type:
+                self.metadata["content_type"] = content_type
+        message_status = message.get("status")
+        if isinstance(message_status, str) and message_status:
+            self.metadata["message_status"] = message_status
+        for key in ("channel", "recipient", "phase", "message_type"):
+            value = message.get(key)
+            if isinstance(value, str) and value:
+                self.metadata[key] = value
         if role == "tool" and isinstance(content, dict):
             parts = content.get("parts")
             if isinstance(parts, list):
                 events.extend(self._handle_image_asset_parts(parts, raw))
         if role == "assistant" and isinstance(content, dict):
-            parts = content.get("parts")
-            if parts and isinstance(parts[0], str):
-                events.extend(self._merge_full_text(parts[0], raw))
-        elif not role and isinstance(content, dict):
             parts = content.get("parts")
             if parts and isinstance(parts[0], str):
                 events.extend(self._merge_full_text(parts[0], raw))
@@ -277,11 +342,59 @@ class ChatStreamParser:
             return [ChatStreamEvent(type="image", image_urls=self.image_urls.copy(), raw=raw)]
         return []
 
+
     def _handle_patch(self, patch: Dict[str, Any], raw: Dict[str, Any]) -> List[ChatStreamEvent]:
         events: List[ChatStreamEvent] = []
-        path = patch.get("p") or patch.get("path") or ""
-        op = patch.get("o") or patch.get("op") or ""
+        has_path = "p" in patch or "path" in patch
+        has_op = "o" in patch or "op" in patch
+        path_value = patch.get("p") if "p" in patch else patch.get("path")
+        op_value = patch.get("o") if "o" in patch else patch.get("op")
         value = patch.get("v") if "v" in patch else patch.get("value")
+
+        path = str(path_value or "")
+        op = str(op_value or "").lower()
+        exact_append = False
+
+        # ChatGPT's compact delta protocol sends the first text append with
+        # p/o, then may send many frames containing only {"v": "..."}.
+        # Those pathless values are authoritative append fragments, not replay
+        # snapshots, so arbitrary suffix/prefix overlap removal would corrupt
+        # ordinary word boundaries such as "will be" + " better".
+        if (
+            not has_path
+            and not has_op
+            and isinstance(value, str)
+            and self._compact_text_path
+            and self._compact_text_op == "append"
+        ):
+            path = self._compact_text_path
+            op = self._compact_text_op
+            exact_append = True
+            self._compact_text_continuation_seen = True
+        elif has_path or has_op:
+            is_text_append = (
+                path.endswith("/message/content/parts/0")
+                and op == "append"
+                and isinstance(value, str)
+            )
+            if is_text_append:
+                # The terminal root patch list commonly returns to an explicit
+                # p/o append after a compact pathless run. It is the next exact
+                # fragment of that same run and must not be overlap-trimmed.
+                exact_append = (
+                    self._compact_text_continuation_seen
+                    and self._compact_text_path == path
+                    and self._compact_text_op == op
+                )
+                self._compact_text_path = path
+                self._compact_text_op = op
+            elif not (path == "" and op == "patch" and isinstance(value, list)):
+                # An explicit unrelated patch ends the compact text run. A root
+                # patch list is handled recursively so its child patches decide
+                # whether a text continuation remains active.
+                self._compact_text_path = ""
+                self._compact_text_op = ""
+                self._compact_text_continuation_seen = False
 
         if path in ("/conversation_id", "conversation_id") and isinstance(value, str):
             self.conversation_id = value
@@ -289,10 +402,20 @@ class ChatStreamParser:
             self.message_id = value
 
         if path.endswith("/message/content/parts/0") and isinstance(value, str):
-            events.extend(self._append_delta(value, raw))
+            if op in {"replace", "set"}:
+                events.extend(self._replace_full_text(value, raw))
+            elif op == "append" and exact_append:
+                events.extend(self._append_exact_delta(value, raw))
+            else:
+                # Preserve the legacy replay/snapshot overlap handling for
+                # explicit append frames that are not part of a compact run.
+                events.extend(self._append_delta(value, raw))
         elif path.endswith("/message/content/parts") and isinstance(value, list):
             if value and isinstance(value[0], str):
-                events.extend(self._merge_full_text(value[0], raw))
+                if op in {"replace", "set"}:
+                    events.extend(self._replace_full_text(value[0], raw))
+                else:
+                    events.extend(self._merge_full_text(value[0], raw))
         elif (
             path.endswith("/message/metadata/image_results")
             or path.endswith("/metadata/image_results")
@@ -381,6 +504,10 @@ class ChatStreamDecoder:
         self.buffer = ""
         self.parser = ChatStreamParser()
         self.done = False
+        # V8_6_1_MESSAGE_STREAM_COMPLETE_EARLY_FINISH
+        # ChatGPT may keep the HTTP response open for UI-only tail events after
+        # publishing this explicit semantic completion marker.
+        self.semantic_complete = False
         self._final_sent = False
 
     def _feed_block(self, block: str) -> List[ChatStreamEvent]:
@@ -396,6 +523,7 @@ class ChatStreamDecoder:
             return events
         if payload == "[DONE]":
             self.done = True
+            self.semantic_complete = True
             if not self._final_sent and (self.parser.text or self.parser.image_gen):
                 self._final_sent = True
                 events.append(self.parser.final_event())
@@ -405,7 +533,10 @@ class ChatStreamDecoder:
         except json.JSONDecodeError:
             payload = payload.replace("\\\\", "\\")
             item = json.loads(payload)
-        events.extend(self.parser.feed(item))
+        if isinstance(item, dict) and item.get("type") == "message_stream_complete":
+            self.semantic_complete = True
+        parsed_events = self.parser.feed(item)
+        events.extend(parsed_events)
         if events and events[-1].type == "final" and (events[-1].text or events[-1].image_urls):
             self._final_sent = True
         return events

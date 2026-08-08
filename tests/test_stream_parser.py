@@ -14,6 +14,7 @@ from ChatGPTWeb.api import ChatStreamDecoder, ChatStreamEvent, ChatStreamParser
 from ChatGPTWeb.config import IOFile, MsgData, Session
 from ChatGPTWeb.http_api import (
     _openai_agent_tools,
+    _opencode_task_requires_host_tools,
     _response_agent_task,
     chat_request_from_payload,
     create_control_app,
@@ -33,6 +34,21 @@ class ChatStreamParserTests(unittest.TestCase):
         ]})
 
         self.assertEqual(task, "inspect the project")
+
+    def test_opencode_routes_only_host_operations_to_the_planner(self):
+        self.assertFalse(_opencode_task_requires_host_tools("解析一下小石潭记"))
+        self.assertFalse(_opencode_task_requires_host_tools("Explain the passage"))
+        self.assertTrue(_opencode_task_requires_host_tools("读取 pyproject.toml"))
+        self.assertTrue(_opencode_task_requires_host_tools("Read pyproject.toml"))
+
+    def test_responses_agent_task_can_keep_only_the_latest_user_turn(self):
+        task = _response_agent_task({"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "解析滕王阁序"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "first answer"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "再解析阿房宫赋"}]},
+        ]}, latest_user_only=True)
+
+        self.assertEqual(task, "再解析阿房宫赋")
 
     def test_openai_agent_tools_accepts_responses_flat_function_shape(self):
         tools = _openai_agent_tools({"tools": [{
@@ -252,6 +268,7 @@ class _FakeBackend:
         return await self.continue_chat(msg_data)
 
     async def continue_chat_stream(self, msg_data):
+        self.sent.append(msg_data)
         yield ChatStreamEvent(type="status", metadata={"phase": "waiting_for_upstream", "idle_seconds": 15})
         yield ChatStreamEvent(type="delta", text="stream response", raw={"request": msg_data.msg_send})
         parser = ChatStreamParser()
@@ -895,6 +912,83 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend.sent[-1].msg_send, "second turn")
         self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-service")
 
+    async def test_responses_api_reuses_opencode_prompt_cache_key_without_response_id(self):
+        headers = {
+            "Authorization": "Bearer test-key",
+            "User-Agent": "opencode/1.18.15 ai-sdk/provider-utils/4.0.38",
+        }
+        first = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "auto",
+                "prompt_cache_key": "ses_local_follow_up",
+                "input": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "解析滕王阁序"}],
+                }],
+            },
+            headers=headers,
+        )
+        second = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "auto",
+                "prompt_cache_key": "ses_local_follow_up",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "解析滕王阁序"}],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "这是一篇骈文。"}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "再解析下赤壁赋"}],
+                    },
+                ],
+            },
+            headers=headers,
+        )
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        self.assertEqual(self.backend.sent[-1].msg_send, "再解析下赤壁赋")
+        self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-service")
+
+    async def test_streaming_responses_reuses_opencode_session_without_response_id(self):
+        headers = {
+            "Authorization": "Bearer test-key",
+            "User-Agent": "opencode/1.18.15 ai-sdk/provider-utils/4.0.38",
+            "X-Session-Id": "ses_stream_follow_up",
+        }
+        first = await self.client.post(
+            "/v1/responses",
+            json={"model": "auto", "input": "解析滕王阁序", "stream": True},
+            headers=headers,
+        )
+        await first.text()
+        second = await self.client.post(
+            "/v1/responses",
+            json={
+                "model": "auto",
+                "stream": True,
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "解析滕王阁序"}]},
+                    {"role": "assistant", "content": [{"type": "output_text", "text": "这是一篇骈文。"}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": "再解析下赤壁赋"}]},
+                ],
+            },
+            headers=headers,
+        )
+        await second.text()
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        self.assertEqual(self.backend.sent[-1].msg_send, "再解析下赤壁赋")
+        self.assertEqual(self.backend.sent[-1].conversation_id, "conversation-stream")
+
     async def test_responses_api_forwards_inline_image_and_file(self):
         response = await self.client.post(
             "/v1/responses",
@@ -987,6 +1081,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         replies = iter((
             '{"type":"tool_call","tool":"glob","arguments":{"pattern":"pyproject.toml"}}',
             '{"type":"final","answer":"The project name is ChatGPTWeb."}',
+            "The project name is ChatGPTWeb.",
         ))
 
         async def agent_reply(msg_data):
@@ -1093,6 +1188,7 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: response.content_part.added", body)
         self.assertIn("event: response.output_text.delta", body)
         self.assertIn("event: response.completed", body)
+        self.assertIn('"phase": "final_answer"', body)
         self.assertIn('"input_tokens": 0', body)
         self.assertIn('"output_tokens":', body)
 
@@ -1253,6 +1349,8 @@ class HttpApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chatgptweb-control-key'", javascript)
         self.assertIn("scheduleReconnect", javascript)
         self.assertIn("RECONNECT_INITIAL_DELAY_MS", javascript)
+        self.assertIn('eventChatQueued: "Request queued"', javascript)
+        self.assertIn('activityRequestAdmitted: "Assigned an account after {duration}"', javascript)
         self.assertNotIn("test-key", body)
         self.assertEqual(protected.status, 401)
         self.assertEqual(authorized.status, 200)

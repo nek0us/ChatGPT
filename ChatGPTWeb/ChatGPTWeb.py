@@ -1316,7 +1316,7 @@ class chatgpt:
         *,
         severity: str = "info",
         details: Optional[Dict[str, object]] = None,
-    ) -> None:
+    ) -> Dict[str, object]:
         """Record bounded, credential-free diagnostics for the local console."""
         activity = getattr(self, "_activity", None)
         if activity is None:
@@ -1337,6 +1337,59 @@ class chatgpt:
         activity.append(item)
         if len(activity) > 200:
             del activity[:-200]
+        return item
+
+    def _begin_request_admission(self, msg_data: MsgData) -> Dict[str, object]:
+        """Expose a pending request while it waits for scheduler and account admission."""
+        return self._record_activity(
+            msg_data.account_hint,
+            "chat_queued",
+            "waiting for an available account",
+            details={
+                "pending": True,
+                "priority": msg_data.request_priority,
+                **self._request_activity_details(msg_data),
+            },
+        )
+
+    def _finish_request_admission(
+        self,
+        item: Dict[str, object] | None,
+        msg_data: MsgData,
+        session: Session | None,
+        *,
+        outcome: str = "admitted",
+    ) -> None:
+        """Finalize or discard the live queue item once account selection ends."""
+        now = time.monotonic()
+        admission_ms = (
+            max(0, int((now - msg_data.request_queued_at) * 1000))
+            if msg_data.request_queued_at else 0
+        )
+        msg_data.request_admission_ms = admission_ms
+        if item is None:
+            return
+        activity = getattr(self, "_activity", [])
+        if admission_ms < 1000:
+            for index, candidate in enumerate(activity):
+                if candidate is item:
+                    del activity[index]
+                    break
+            return
+        if session is not None:
+            item["account"] = session.email
+        item["message"] = (
+            f"admitted after {admission_ms} ms"
+            if outcome == "admitted"
+            else f"admission ended after {admission_ms} ms: {outcome}"
+        )
+        details = item.setdefault("details", {})
+        if isinstance(details, dict):
+            details.update({
+                "pending": False,
+                "admission_ms": admission_ms,
+                "outcome": outcome,
+            })
 
     async def get_activity(self, limit: int = 50) -> Dict[str, object]:
         """Return recent local control/runtime activity without secrets or prompts."""
@@ -3188,6 +3241,7 @@ class chatgpt:
 
         decoder = ChatStreamDecoder()
         done = False
+        semantic_complete = False
         emitted_final_signatures = set()
         pending_final: ChatStreamEvent | None = None
         stream_tail = ""
@@ -3254,6 +3308,10 @@ class chatgpt:
                     for event in ready_events(events):
                         self._apply_stream_event(msg_data, event)
                         yield event
+                    if decoder.semantic_complete:
+                        semantic_complete = True
+                        done = True
+                        break
                     continue
                 if payload.get("type") == "done":
                     done = True
@@ -3263,7 +3321,19 @@ class chatgpt:
                         yield event
                     break
 
-            result = await stream_task
+            if semantic_complete:
+                # V8_6_1_MESSAGE_STREAM_COMPLETE_EARLY_FINISH
+                # ChatGPT has completed the semantic response. Abort the browser
+                # reader instead of waiting for web-UI-only tail events or the
+                # fetch timeout before returning response.completed to API clients.
+                await self._cleanup_browser_stream(page, stream_id, abort=True)
+                if not stream_task.done():
+                    stream_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await stream_task
+                result = {"ok": True, "semanticComplete": True}
+            else:
+                result = await stream_task
             if not isinstance(result, dict) or not result.get("ok"):
                 raise RuntimeError(f"browser stream bridge returned invalid result: {result}")
             if not done:
@@ -3286,11 +3356,21 @@ class chatgpt:
                     decoder.parser.image_gen
                     or IMAGE_GENERATION in msg_data.required_capabilities
                 )
-                final_event = await self._reconcile_stream_final(
-                    session,
-                    pending_final,
-                    settle=settle_images,
-                )
+                if semantic_complete and not settle_images:
+                    # V8_6_2_SEMANTIC_FINAL_NO_BLOCKING_RECONCILE
+                    # message_stream_complete/[DONE] is the authoritative end of
+                    # the text stream. The parser has already applied every append
+                    # and replacement patch, so a second conversation-tree fetch
+                    # must not hold response.completed behind a slow browser call.
+                    final_event = pending_final
+                    final_event.metadata = final_event.metadata.copy()
+                    final_event.metadata["semantic_stream_complete"] = True
+                else:
+                    final_event = await self._reconcile_stream_final(
+                        session,
+                        pending_final,
+                        settle=settle_images,
+                    )
                 # A sparse stream may reveal image processing only when the
                 # conversation tree is queried. Probe every empty existing turn
                 # once, then extend the wait only when upstream confirms it.
@@ -5105,19 +5185,47 @@ class chatgpt:
         """Queue a buffered request before entering the browser/account runtime."""
         if not msg_data.request_queued_at:
             msg_data.request_queued_at = time.monotonic()
+        admission_activity = self._begin_request_admission(msg_data)
         lease = await self._acquire_request_lease(msg_data)
         if not lease:
+            self._finish_request_admission(
+                admission_activity,
+                msg_data,
+                None,
+                outcome="request_queue_timeout",
+            )
+            self._record_activity(
+                msg_data.account_hint,
+                "chat_failed",
+                "request queue timeout",
+                severity="error",
+                details={
+                    "error_kind": "request_queue_timeout",
+                    "admission_ms": msg_data.request_admission_ms,
+                    **self._request_activity_details(msg_data),
+                },
+            )
             return msg_data
         try:
-            return await self._continue_chat_direct(msg_data)
+            return await self._continue_chat_direct(msg_data, admission_activity)
         finally:
             await lease.release()
 
-    async def _continue_chat_direct(self, msg_data: MsgData) -> MsgData:
+    async def _continue_chat_direct(
+        self,
+        msg_data: MsgData,
+        admission_activity: Dict[str, object] | None = None,
+    ) -> MsgData:
         """
         Message processing entry, please use this
         """
         session = await self._prepare_chat_session(msg_data)
+        self._finish_request_admission(
+            admission_activity,
+            msg_data,
+            session,
+            outcome="admitted" if session else "session_unavailable",
+        )
         if not session:
             error = msg_data.error_list[-1] if msg_data.error_list else {}
             self._record_activity(
@@ -5133,9 +5241,10 @@ class chatgpt:
             return msg_data
 
         msg_data.request_started_at = time.monotonic()
-        msg_data.request_admission_ms = max(
-            0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
-        ) if msg_data.request_queued_at else 0
+        if admission_activity is None:
+            msg_data.request_admission_ms = max(
+                0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
+            ) if msg_data.request_queued_at else 0
         await self._preflight_stream_bridge(session, msg_data)
         msg_data.request_upload_count = len(msg_data.upload_file)
         msg_data.request_image_upload_count = sum(
@@ -5162,6 +5271,7 @@ class chatgpt:
             details={
                 "uploads": msg_data.request_upload_count,
                 "new_conversation": not bool(msg_data.conversation_id),
+                "admission_ms": msg_data.request_admission_ms,
                 **self._request_activity_details(msg_data),
             },
         )
@@ -5354,8 +5464,26 @@ class chatgpt:
         """Queue a streaming request and retain its lease until the stream closes."""
         if not msg_data.request_queued_at:
             msg_data.request_queued_at = time.monotonic()
+        admission_activity = self._begin_request_admission(msg_data)
         lease = await self._acquire_request_lease(msg_data)
         if not lease:
+            self._finish_request_admission(
+                admission_activity,
+                msg_data,
+                None,
+                outcome="request_queue_timeout",
+            )
+            self._record_activity(
+                msg_data.account_hint,
+                "chat_failed",
+                "request queue timeout",
+                severity="error",
+                details={
+                    "error_kind": "request_queue_timeout",
+                    "admission_ms": msg_data.request_admission_ms,
+                    **self._request_activity_details(msg_data),
+                },
+            )
             yield ChatStreamEvent(
                 type="error",
                 text=msg_data.error_info or "request queue timeout",
@@ -5363,14 +5491,24 @@ class chatgpt:
             )
             return
         try:
-            async for event in self._continue_chat_stream_direct(msg_data):
+            async for event in self._continue_chat_stream_direct(msg_data, admission_activity):
                 yield event
         finally:
             await lease.release()
 
-    async def _continue_chat_stream_direct(self, msg_data: MsgData) -> AsyncIterator[ChatStreamEvent]:
+    async def _continue_chat_stream_direct(
+        self,
+        msg_data: MsgData,
+        admission_activity: Dict[str, object] | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
         """Stream chat events from the browser fetch transport."""
         session = await self._prepare_chat_session(msg_data)
+        self._finish_request_admission(
+            admission_activity,
+            msg_data,
+            session,
+            outcome="admitted" if session else "session_unavailable",
+        )
         if not session:
             error = msg_data.error_list[-1] if msg_data.error_list else {}
             self._record_activity(
@@ -5400,9 +5538,10 @@ class chatgpt:
         context_num = session.email
         msg_data.from_email = session.email
         msg_data.request_started_at = time.monotonic()
-        msg_data.request_admission_ms = max(
-            0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
-        ) if msg_data.request_queued_at else 0
+        if admission_activity is None:
+            msg_data.request_admission_ms = max(
+                0, int((msg_data.request_started_at - msg_data.request_queued_at) * 1000)
+            ) if msg_data.request_queued_at else 0
         await self._preflight_stream_bridge(session, msg_data)
         msg_data.request_upload_count = len(msg_data.upload_file)
         msg_data.request_image_upload_count = sum(
@@ -5429,6 +5568,7 @@ class chatgpt:
             details={
                 "uploads": msg_data.request_upload_count,
                 "new_conversation": not bool(msg_data.conversation_id),
+                "admission_ms": msg_data.request_admission_ms,
                 **self._request_activity_details(msg_data),
             },
         )

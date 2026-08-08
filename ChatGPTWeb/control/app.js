@@ -133,6 +133,7 @@
       refreshCapabilities: "刷新账户能力",
       accountUpdated: "账户状态已更新",
       eventChat: "对话已完成",
+      eventChatQueued: "请求排队中",
       eventChatStarted: "对话已开始",
       eventChatFailed: "对话失败",
       eventAttachment: "附件上传",
@@ -144,6 +145,10 @@
       eventGeneric: "运维事件",
       activityRequestAccepted: "请求已进入账户执行",
       activityRequestAcceptedWithUploads: "请求已进入账户执行，包含 {count} 个附件",
+      activityRequestQueued: "正在等待可用账户",
+      activityRequestAdmitted: "等待 {duration} 后已分配账户",
+      activityRequestAdmissionFailed: "等待 {duration} 后仍未取得可用账户",
+      activityWaitingAccount: "等待分配",
       activityChatCompleted: "对话完成，模型 {model}，耗时 {duration}",
       activityChatFailed: "请求失败：{kind}",
       activityAttachmentStarted: "开始上传 {count} 个附件",
@@ -284,6 +289,7 @@
       refreshCapabilities: "Refresh capabilities",
       accountUpdated: "Account state updated",
       eventChat: "Chat completed",
+      eventChatQueued: "Request queued",
       eventChatStarted: "Chat started",
       eventChatFailed: "Chat failed",
       eventAttachment: "Attachment upload",
@@ -295,6 +301,10 @@
       eventGeneric: "Operational event",
       activityRequestAccepted: "The request was assigned to this account",
       activityRequestAcceptedWithUploads: "The request was assigned with {count} attachment(s)",
+      activityRequestQueued: "Waiting for an available account",
+      activityRequestAdmitted: "Assigned an account after {duration}",
+      activityRequestAdmissionFailed: "No account became available after {duration}",
+      activityWaitingAccount: "Awaiting assignment",
       activityChatCompleted: "Completed with {model} in {duration}",
       activityChatFailed: "Request failed: {kind}",
       activityAttachmentStarted: "Uploading {count} attachment(s)",
@@ -808,6 +818,7 @@
   function activityLabel(event) {
     const name = String(event || "");
     if (name === "chat_completed") return t("eventChat");
+    if (name === "chat_queued") return t("eventChatQueued");
     if (name === "chat_started") return t("eventChatStarted");
     if (name === "chat_failed") return t("eventChatFailed");
     if (name.includes("attachment_upload")) return t("eventAttachment");
@@ -830,6 +841,13 @@
     const details = item.details && typeof item.details === "object" ? item.details : {};
     const event = String(item.event || "");
     const count = Number(details.count ?? details.uploads ?? 0);
+    if (event === "chat_queued") {
+      if (details.pending) return t("activityRequestQueued");
+      const key = details.outcome === "admitted"
+        ? "activityRequestAdmitted"
+        : "activityRequestAdmissionFailed";
+      return t(key, { duration: formatDuration(details.admission_ms) });
+    }
     if (event === "chat_started") {
       return count > 0
         ? t("activityRequestAcceptedWithUploads", { count })
@@ -881,7 +899,9 @@
       time.textContent = formatTime(item.at);
       const account = document.createElement("span");
       account.className = "activity-account";
-      account.textContent = item.account || "--";
+      account.textContent = item.account || (
+        item.event === "chat_queued" ? t("activityWaitingAccount") : "--"
+      );
       const event = document.createElement("span");
       event.className = "activity-event";
       event.textContent = activityLabel(item.event);

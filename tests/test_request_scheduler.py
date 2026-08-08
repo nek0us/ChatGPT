@@ -1,8 +1,11 @@
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from ChatGPTWeb.ChatGPTWeb import chatgpt
+from ChatGPTWeb.config import MsgData, Session
 from ChatGPTWeb.request_scheduler import RequestScheduler
 from ChatGPTWeb.storage import RuntimeStorage
 
@@ -34,6 +37,67 @@ class RequestSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await first.release()
         next_lease = await scheduler.acquire(priority=100, client_id="api:next", timeout_seconds=1)
         await next_lease.release()
+
+
+class RequestAdmissionActivityTests(unittest.TestCase):
+    def setUp(self):
+        self.runtime = chatgpt.__new__(chatgpt)
+        self.runtime._activity = []
+        self.runtime.api_key_store = None
+
+    @staticmethod
+    def _request(wait_seconds: float) -> MsgData:
+        return MsgData(
+            msg_send="hello",
+            client_id="api:test-key",
+            request_queued_at=time.monotonic() - wait_seconds,
+        )
+
+    def test_fast_admission_removes_the_transient_queue_item(self):
+        request = self._request(0.1)
+        item = self.runtime._begin_request_admission(request)
+
+        self.runtime._finish_request_admission(
+            item,
+            request,
+            Session(email="fast@example.com"),
+        )
+
+        self.assertEqual(self.runtime._activity, [])
+        self.assertLess(request.request_admission_ms, 1000)
+
+    def test_slow_admission_keeps_wait_duration_and_assigned_account(self):
+        request = self._request(2.0)
+        item = self.runtime._begin_request_admission(request)
+
+        self.runtime._finish_request_admission(
+            item,
+            request,
+            Session(email="ready@example.com"),
+        )
+
+        self.assertEqual(len(self.runtime._activity), 1)
+        self.assertEqual(item["event"], "chat_queued")
+        self.assertEqual(item["account"], "ready@example.com")
+        self.assertEqual(item["details"]["pending"], False)
+        self.assertEqual(item["details"]["outcome"], "admitted")
+        self.assertGreaterEqual(item["details"]["admission_ms"], 2000)
+
+    def test_failed_slow_admission_remains_visible(self):
+        request = self._request(1.5)
+        item = self.runtime._begin_request_admission(request)
+
+        self.runtime._finish_request_admission(
+            item,
+            request,
+            None,
+            outcome="request_queue_timeout",
+        )
+
+        self.assertEqual(len(self.runtime._activity), 1)
+        self.assertEqual(item["account"], "")
+        self.assertEqual(item["details"]["pending"], False)
+        self.assertEqual(item["details"]["outcome"], "request_queue_timeout")
 
 
 class ConversationClientOwnershipTests(unittest.TestCase):

@@ -65,3 +65,37 @@ class ChatContentTests(unittest.TestCase):
         self.assertEqual(normalizer.feed("Sources: \ue200url\ue202Example"), "Sources: ")
         self.assertEqual(normalizer.feed(" source\ue202turn0search0"), "")
         self.assertEqual(normalizer.feed("\ue201 done"), "Example source done")
+
+# V6_UNKNOWN_UPSTREAM_MARKUP_REGRESSION
+class UnknownUpstreamMarkupRegressionTests(unittest.TestCase):
+    def test_buffered_renderer_preserves_unstructured_private_wrapper(self):
+        body = "ordinary answer text that must remain visible"
+        content = build_chat_content(f"before \ue200{body}\ue201 after")
+        self.assertEqual(content.markdown, f"before {body} after")
+
+    def test_incremental_normalizer_preserves_the_missing_middle(self):
+        normalizer = UpstreamMarkupNormalizer()
+        prefix = "[P01] Realtime API streaming enables applications to exchange"
+        middle = (
+            " data continuously between clients and servers. "
+            "[P02] This middle section must not disappear. "
+            "[P10] Successful implementations require thoughtful planning around performance"
+        )
+        suffix = (
+            ", security, reliability, and user needs. As digital services evolve, "
+            "streaming APIs will remain a core technology for modern interactive platforms.\n\n[END]"
+        )
+
+        self.assertEqual(normalizer.feed(prefix + "\ue200"), prefix)
+        self.assertEqual(normalizer.feed(middle + "\ue201" + suffix), middle + suffix)
+
+    def test_known_structured_tokens_remain_hidden(self):
+        content = build_chat_content(
+            "A\ue200cite\ue202turn0search0\ue201B"
+            "\ue200genui\ue202payload\ue201C"
+        )
+        self.assertEqual(content.markdown, "ABC")
+
+    def test_unknown_structured_token_is_not_leaked(self):
+        content = build_chat_content("A\ue200future\ue202opaque\ue201B")
+        self.assertEqual(content.markdown, "AB")

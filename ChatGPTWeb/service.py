@@ -50,6 +50,10 @@ class ChatRequest:
     # A ChatGPT Project name used only while creating a new physical conversation.
     # The backend resolves it per account; existing conversations keep their owner.
     conversation_project: str = ""
+    # V8_3_1_INTERNAL_CONTROL_STREAM
+    # Internal Agent planner traffic keeps the streaming transport,
+    # but only its canonical final node is authoritative.
+    internal_control_stream: bool = False
 
     def to_msg_data(self) -> MsgData:
         msg_data = MsgData(
@@ -197,29 +201,173 @@ class ChatService:
         msg_data = await self._execute_buffered_request(request)
         return self._result_from_msg_data(msg_data)
 
+    # V7_SAFE_STREAM_RECONCILIATION
+    # V8_6_RICH_STREAM_NORMALIZATION
     async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
-        """Yield upstream stream events without exposing Playwright objects."""
-        if request.operation is not ConversationOperation.SEND:
-            raise ValueError("Only the send operation supports streaming")
-        upstream = self._backend.continue_chat_stream(request.to_msg_data())
-        normalizer = UpstreamMarkupNormalizer()
-        try:
-            async for event in upstream:
-                if event.type == "delta":
-                    text = normalizer.feed(event.text)
-                    if not text:
+            """Yield a monotonic client stream and reconcile unsafe upstream changes.
+
+            Plain append-only browser output is forwarded immediately. Known ChatGPT
+            inline entities, citations, URLs, supplemental widgets, and rich-text tags
+            are converted to a stable generic-client representation while streaming.
+            Only unknown structures or replacement snapshots fall back to the settled
+            canonical node, preserving correctness without buffering ordinary rich turns.
+            """
+            if request.operation is not ConversationOperation.SEND:
+                raise ValueError("Only the send operation supports streaming")
+
+            stream_method = getattr(self._backend, "continue_chat_stream", None)
+            if not callable(stream_method):
+                # ``ChatService`` is also the compatibility facade for small
+                # embedding backends. Keep their pre-stream contract usable
+                # instead of making the HTTP adapter require a second runtime.
+                result = await self.send(request)
+                metadata = dict(result.metadata)
+                if result.ok:
+                    yield ChatStreamEvent(
+                        type="final",
+                        text=result.text,
+                        message_id=result.message_id,
+                        conversation_id=result.conversation_id,
+                        image_urls=result.image_urls.copy(),
+                        model=result.used_model,
+                        usage=result.usage.copy(),
+                        metadata=metadata,
+                        files=result.files.copy(),
+                    )
+                else:
+                    error = result.errors[0] if result.errors else {}
+                    yield ChatStreamEvent(
+                        type="error",
+                        text=str(error.get("message") or result.text or "stream request failed"),
+                        message_id=result.message_id,
+                        conversation_id=result.conversation_id,
+                        model=result.used_model,
+                        metadata={"error_kind": str(error.get("kind") or "stream_error")},
+                    )
+                return
+
+            upstream = stream_method(request.to_msg_data())
+            normalizer = UpstreamMarkupNormalizer()
+            emitted_text = ""
+            final_seen = False
+            fallback_to_final = False
+
+            def final_delta(event: ChatStreamEvent, text: str) -> ChatStreamEvent:
+                metadata = dict(event.metadata)
+                if fallback_to_final:
+                    metadata["stream_fallback"] = "canonical_final"
+                return ChatStreamEvent(
+                    type="delta",
+                    text=text,
+                    message_id=event.message_id,
+                    conversation_id=event.conversation_id,
+                    image_urls=event.image_urls.copy(),
+                    model=event.model,
+                    usage=event.usage.copy(),
+                    metadata=metadata,
+                    files=event.files.copy(),
+                    raw=event.raw,
+                    raw_text=event.raw_text or event.text,
+                )
+
+            try:
+                async for event in upstream:
+                    if request.internal_control_stream:
+                        if event.type == "final":
+                            final_seen = True
+                            content = build_chat_content(
+                                event.text,
+                                event.image_urls,
+                                event.metadata,
+                            )
+                            yield replace(
+                                event,
+                                text=content.markdown,
+                                raw_text=event.raw_text or event.text,
+                            )
+                        elif event.type in ("status", "error"):
+                            yield event
+                        # Planner deltas/reconcile snapshots are private control text.
                         continue
-                    yield replace(event, text=text, raw_text=event.text)
-                    continue
-                if event.type == "final":
-                    content = build_chat_content(event.text, event.image_urls, event.metadata)
-                    yield replace(event, text=content.markdown, raw_text=event.text)
-                    continue
-                yield event
-        finally:
-            close = getattr(upstream, "aclose", None)
-            if close:
-                await close()
+
+                    if event.type == "delta":
+                        raw_text = event.text or ""
+
+                        if fallback_to_final:
+                            normalizer.feed(raw_text, event.metadata)
+                            continue
+
+                        # Known inline annotations (entity/url/cite), supplemental
+                        # widget tokens, and ChatGPT rich-text tags are normalized
+                        # deterministically. An incomplete token buffers only itself;
+                        # ordinary surrounding prose remains realtime.
+                        text = normalizer.feed(raw_text, event.metadata)
+                        if normalizer.requires_final_reconciliation:
+                            fallback_to_final = True
+                            continue
+                        if not text:
+                            continue
+
+                        emitted_text += text
+                        yield replace(event, text=text, raw_text=raw_text)
+                        continue
+
+                    if event.type == "reconcile" or event.metadata.get("stream_replacement"):
+                        fallback_to_final = True
+                        continue
+
+                    if event.type == "final":
+                        final_seen = True
+                        normalizer.close()
+                        if normalizer.requires_final_reconciliation:
+                            fallback_to_final = True
+                        content = build_chat_content(event.text, event.image_urls, event.metadata)
+                        canonical_text = content.markdown
+
+                        if canonical_text:
+                            if canonical_text.startswith(emitted_text):
+                                suffix = canonical_text[len(emitted_text):]
+                                # A plain append-only stream retains the
+                                # established delta/final shape. Reconciled
+                                # streams are different: their omitted tail
+                                # must be released before the canonical final
+                                # snapshot so consumers never keep half of a
+                                # rich or replacement response.
+                                if suffix and fallback_to_final:
+                                    yield final_delta(event, suffix)
+                                    emitted_text += suffix
+                            elif not emitted_text:
+                                yield final_delta(event, canonical_text)
+                                emitted_text = canonical_text
+                            else:
+                                raise RuntimeError(
+                                    "canonical final answer does not extend the already "
+                                    "streamed prefix; refusing to complete a corrupted stream"
+                                )
+                        elif fallback_to_final and emitted_text:
+                            raise RuntimeError(
+                                "unsafe upstream stream had no canonical final text for reconciliation"
+                            )
+
+                        final_metadata = dict(event.metadata)
+                        if fallback_to_final:
+                            final_metadata["stream_fallback"] = "canonical_final"
+                        yield replace(
+                            event,
+                            text=canonical_text or emitted_text,
+                            metadata=final_metadata,
+                            raw_text=event.text,
+                        )
+                        continue
+
+                    yield event
+
+                if not final_seen and normalizer.has_pending_markup:
+                    normalizer.close()
+            finally:
+                close = getattr(upstream, "aclose", None)
+                if close:
+                    await close()
 
     async def stream_to_callback(self, request: ChatRequest, callback: StreamCallback) -> ChatResult:
         """Deliver stream events in order and return the final normalized result.
